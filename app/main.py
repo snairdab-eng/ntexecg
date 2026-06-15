@@ -13,7 +13,19 @@ from app.web.routes_dashboard import router as dashboard_router
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     setup_logging(settings.LOG_LEVEL)
+
+    from app.services.market_data_service import get_market_data_service
+    from app.core.scheduler import HeartbeatMonitor
+
+    market_data = get_market_data_service(settings)
+    app.state.market_data = market_data
+
+    monitor = HeartbeatMonitor(market_data)
+    monitor.start()
+
     yield
+
+    monitor.stop()
 
 
 def create_app() -> FastAPI:
