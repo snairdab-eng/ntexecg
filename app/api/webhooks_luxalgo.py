@@ -33,6 +33,7 @@ from app.services.repositories import (
     get_strategy_by_id,
 )
 from app.services.signal_normalizer import SignalNormalizer
+from app.services.market_data_service import MarketDataService, get_market_data_service
 
 router = APIRouter()
 
@@ -53,20 +54,23 @@ async def process_signal(
     strategy_id: str,
     raw_signal_id: uuid.UUID,
     body: dict,
+    market_data: "MarketDataService",
 ) -> StrategyDecision:
-    """Normalize → deduplicate → route signal. Returns the StrategyDecision.
+    """Normalize → deduplicate → FilterPipeline → Decision.
 
-    Always saves a NormalizedSignal. Duplicates get a "dup:" prefixed dedupe_key
-    (unique UUID suffix) to satisfy the FK constraint while preserving audit trail.
+    Always saves a NormalizedSignal and StrategyDecision.
+    Duplicates get a "dup:" prefixed dedupe_key for UNIQUE constraint.
+
+    market_data is injected (never instantiated here) so the provider is the
+    one selected at startup, and tests can pass MockMarketDataProvider.
     """
     normalizer = SignalNormalizer()
     norm = await normalizer.normalize(db, raw_signal_id, strategy_id, body)
     original_dedupe_key = norm.dedupe_key
 
-    # Deduplicate BEFORE saving — only checks already-persisted rows
+    # Deduplicate BEFORE saving
     deduplicator = Deduplicator()
     if await deduplicator.is_duplicate(db, original_dedupe_key):
-        # Prefix makes this key unique while signalling it's a dup
         norm.dedupe_key = f"dup:{uuid.uuid4().hex}"
         norm.status = "duplicate"
         db.add(norm)
@@ -85,12 +89,13 @@ async def process_signal(
         )
         return decision
 
-    # Not a duplicate: persist and route
+    # Not a duplicate: persist and evaluate through pipeline
     db.add(norm)
     await db.flush()
 
     strategy = await get_strategy_by_id(db, strategy_id)
 
+    # Auto-create strategy if unknown
     if strategy is None:
         strategy = await create_strategy(db, strategy_id, strategy_id, None)
         await create_audit_log(
@@ -102,35 +107,41 @@ async def process_signal(
             reason="auto_created_from_unknown_signal",
         )
         logger.info("strategy_auto_created strategy_id={}", strategy_id)
-        outcome, block_reason, block_level, score = "QUEUE_FOR_REVIEW", "strategy_candidate", 1, None
 
-    elif strategy.status == "candidate":
-        outcome, block_reason, block_level, score = "QUEUE_FOR_REVIEW", "strategy_candidate", 1, None
+    # Run through FilterPipeline (market_data injected by caller)
+    from app.services.filter_pipeline import FilterPipeline
+    from app.services.config_resolver import ConfigResolver
 
-    elif strategy.status == "quarantined":
-        outcome, block_reason, block_level, score = "BLOCK", "strategy_quarantined", 3, None
+    pipeline = FilterPipeline(market_data)
 
-    elif strategy.status == "retired":
-        outcome, block_reason, block_level, score = "BLOCK", "strategy_retired", 5, None
+    # AssetProfile is keyed by the base ticker ("MES"), which is exactly
+    # ticker_received — NOT the mapped contract ("MESU2025"). Passing
+    # mapped_symbol here would silently skip all asset-level config
+    # (session hours, sl_atr_multiplier, daily_loss_stop).
+    config = await ConfigResolver().resolve(db, strategy_id, norm.ticker_received)
 
-    elif strategy.status == "paused" and norm.action in ("buy", "sell"):
-        outcome, block_reason, block_level, score = "BLOCK", "strategy_paused", 2, None
-
-    else:
-        # shadow / paper / micro / limited_live / live
-        # Phase 1 stub: APPROVE with score=100; full FilterPipeline in Phase 2
-        outcome, block_reason, block_level, score = "APPROVE", None, None, 100
+    pipeline_result = await pipeline.evaluate(db, norm, strategy, config)
 
     norm.status = "processed"
     decision = StrategyDecision(
         normalized_signal_id=norm.id,
         strategy_id=strategy_id,
-        outcome=outcome,
-        block_reason=block_reason,
-        block_level=block_level,
-        score=score,
+        outcome=pipeline_result.outcome,
+        block_reason=pipeline_result.block_reason,
+        block_level=pipeline_result.block_level,
+        score=pipeline_result.score,
+        sl_price=pipeline_result.sl_price,
+        tp_price=pipeline_result.tp_price,
+        atr_value=pipeline_result.atr_value,
+        market_data_provider=pipeline_result.market_data_provider,
+        pipeline_execution_json=pipeline_result.pipeline_execution_json,
     )
     db.add(decision)
+    logger.info(
+        "signal_evaluated strategy={} mapped_symbol={} outcome={} score={}",
+        strategy_id, norm.mapped_symbol, pipeline_result.outcome,
+        pipeline_result.score,
+    )
     return decision
 
 
@@ -142,11 +153,14 @@ async def _background_process_signal(
     strategy_id: str,
     raw_signal_id_str: str,
     body: dict,
+    market_data: MarketDataService,
 ) -> None:
     factory = _get_bg_factory()
     async with factory() as db:
         try:
-            await process_signal(db, strategy_id, uuid.UUID(raw_signal_id_str), body)
+            await process_signal(
+                db, strategy_id, uuid.UUID(raw_signal_id_str), body, market_data
+            )
             await db.commit()
         except Exception as exc:
             logger.error(
@@ -224,7 +238,14 @@ async def receive_luxalgo_webhook(
         strategy_id, body.get("ticker"), body.get("action"), body.get("sentiment"),
     )
 
+    # Use the MarketDataService selected at startup (app.state). Fall back to
+    # building from settings if lifespan didn't populate it (e.g. some test setups).
+    market_data = getattr(request.app.state, "market_data", None)
+    if market_data is None:
+        market_data = get_market_data_service(settings)
+
     background_tasks.add_task(
-        _background_process_signal, strategy_id, str(raw_signal.id), body
+        _background_process_signal,
+        strategy_id, str(raw_signal.id), body, market_data,
     )
     return {"received": True, "signal_id": str(raw_signal.id)}

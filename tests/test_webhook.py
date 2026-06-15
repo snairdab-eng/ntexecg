@@ -24,7 +24,24 @@ from app.models.decision import StrategyDecision
 from app.models.normalized_signal import NormalizedSignal
 from app.models.raw_signal import RawSignal
 from app.models.strategy import Strategy
+from app.services.market_data_service import MarketDataService
 from app.services.repositories import get_strategy_by_id
+
+
+# Injected MarketDataService for direct process_signal tests — NEVER real yfinance.
+# get_atr→8.0, is_active→True (matches conftest.MockMarketDataProvider).
+class _MockMD:
+    async def get_bars(self, *a, **kw) -> list:
+        return []
+
+    async def get_atr(self, *a, **kw) -> float:
+        return 8.0
+
+    async def is_active(self, symbol: str) -> bool:
+        return True
+
+
+_MD = MarketDataService(_MockMD())
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +170,19 @@ async def _make_raw(db: AsyncSession, strategy_id: str) -> RawSignal:
 @pytest.mark.asyncio
 async def test_process_signal_approve_for_live_strategy(db: AsyncSession) -> None:
     from app.models.strategy import Strategy
+    from app.models.symbol_map import SymbolMap
 
+    # A live strategy can only APPROVE if the ticker maps to an active contract.
+    # Without this SymbolMap the pipeline correctly BLOCKs at level 1.4
+    # (symbol_not_mapped) — that is the contract behavior, not an APPROVE.
+    db.add(SymbolMap(
+        tv_symbol="MES",
+        mapped_symbol="MESU2025",
+        exchange="CME",
+        contract_type="futures_micro",
+        pine_script_config='"ticker": "MES"',
+        active=True,
+    ))
     strategy = Strategy(
         strategy_id="live_strat",
         name="Live Strategy",
@@ -165,9 +194,47 @@ async def test_process_signal_approve_for_live_strategy(db: AsyncSession) -> Non
     await db.flush()
 
     raw = await _make_raw(db, "live_strat")
-    decision = await process_signal(db, "live_strat", raw.id, _PAYLOAD)
+    decision = await process_signal(db, "live_strat", raw.id, _PAYLOAD, _MD)
     assert decision.outcome == "APPROVE"
     assert decision.score == 100
+    # Approved entries MUST carry a calculated SL (contract rule 6)
+    assert decision.sl_price is not None
+
+
+@pytest.mark.asyncio
+async def test_asset_profile_config_applied_via_ticker_received(
+    db: AsyncSession,
+) -> None:
+    """Regression: ConfigResolver must look up AssetProfile by ticker_received
+    ("MES"), not mapped_symbol ("MESU2025"). Otherwise asset-level config
+    (here sl_atr_multiplier=2.0) is silently dropped and the default 1.5 is used.
+    """
+    from app.models.strategy import Strategy
+    from app.models.symbol_map import SymbolMap
+    from app.models.asset_profile import AssetProfile
+
+    db.add(SymbolMap(
+        tv_symbol="MES", mapped_symbol="MESU2025", exchange="CME",
+        contract_type="futures_micro", pine_script_config='"ticker": "MES"',
+        active=True,
+    ))
+    db.add(AssetProfile(
+        symbol="MES", name="Micro S&P", contract_type="futures_micro",
+        sl_atr_multiplier=2.0,  # asset-level override; default would be 1.5
+    ))
+    db.add(Strategy(
+        strategy_id="asset_strat", name="Asset Strat", asset_symbol="MES",
+        status="live", enabled=True,
+    ))
+    await db.flush()
+
+    raw = await _make_raw(db, "asset_strat")
+    decision = await process_signal(db, "asset_strat", raw.id, _PAYLOAD, _MD)
+
+    # ATR mock=8.0, multiplier must be the asset's 2.0 → SL = 5500 - 8*2 = 5484
+    # If the bug regressed (default 1.5), SL would be 5488.
+    assert decision.outcome == "APPROVE"
+    assert float(decision.sl_price) == 5484.0
 
 
 @pytest.mark.asyncio
@@ -185,7 +252,7 @@ async def test_process_signal_queue_for_candidate_strategy(db: AsyncSession) -> 
     await db.flush()
 
     raw = await _make_raw(db, "cand_strat")
-    decision = await process_signal(db, "cand_strat", raw.id, _PAYLOAD)
+    decision = await process_signal(db, "cand_strat", raw.id, _PAYLOAD, _MD)
     assert decision.outcome == "QUEUE_FOR_REVIEW"
     assert decision.block_reason == "strategy_candidate"
 
@@ -205,7 +272,7 @@ async def test_process_signal_block_for_retired_strategy(db: AsyncSession) -> No
     await db.flush()
 
     raw = await _make_raw(db, "ret_strat")
-    decision = await process_signal(db, "ret_strat", raw.id, _PAYLOAD)
+    decision = await process_signal(db, "ret_strat", raw.id, _PAYLOAD, _MD)
     assert decision.outcome == "BLOCK"
     assert decision.block_reason == "strategy_retired"
 
@@ -214,7 +281,7 @@ async def test_process_signal_block_for_retired_strategy(db: AsyncSession) -> No
 async def test_unknown_strategy_auto_created_as_candidate(db: AsyncSession) -> None:
     """When strategy_id is not in the DB, it should be auto-created as candidate."""
     raw = await _make_raw(db, "brand_new_strat")
-    decision = await process_signal(db, "brand_new_strat", raw.id, _PAYLOAD)
+    decision = await process_signal(db, "brand_new_strat", raw.id, _PAYLOAD, _MD)
 
     assert decision.outcome == "QUEUE_FOR_REVIEW"
     assert decision.block_reason == "strategy_candidate"
@@ -229,13 +296,13 @@ async def test_unknown_strategy_auto_created_as_candidate(db: AsyncSession) -> N
 async def test_duplicate_signal_within_60s(db: AsyncSession) -> None:
     """Second signal with identical dedupe_key within the window → IGNORE_DUPLICATE."""
     raw1 = await _make_raw(db, "dedup_strat")
-    decision1 = await process_signal(db, "dedup_strat", raw1.id, _PAYLOAD)
+    decision1 = await process_signal(db, "dedup_strat", raw1.id, _PAYLOAD, _MD)
     # First signal should not be a duplicate
     assert decision1.outcome != "IGNORE_DUPLICATE"
 
     # Same payload + strategy → same dedupe_key
     raw2 = await _make_raw(db, "dedup_strat")
-    decision2 = await process_signal(db, "dedup_strat", raw2.id, _PAYLOAD)
+    decision2 = await process_signal(db, "dedup_strat", raw2.id, _PAYLOAD, _MD)
     assert decision2.outcome == "IGNORE_DUPLICATE"
     assert decision2.block_reason == "duplicate_signal"
 
@@ -245,11 +312,11 @@ async def test_different_ticker_not_duplicate(db: AsyncSession) -> None:
     """Different ticker → different dedupe_key → not a duplicate."""
     raw1 = await _make_raw(db, "nd_strat")
     payload_mes = {**_PAYLOAD, "ticker": "MES"}
-    await process_signal(db, "nd_strat", raw1.id, payload_mes)
+    await process_signal(db, "nd_strat", raw1.id, payload_mes, _MD)
 
     raw2 = await _make_raw(db, "nd_strat")
     payload_mnq = {**_PAYLOAD, "ticker": "MNQ"}
-    decision2 = await process_signal(db, "nd_strat", raw2.id, payload_mnq)
+    decision2 = await process_signal(db, "nd_strat", raw2.id, payload_mnq, _MD)
     assert decision2.outcome != "IGNORE_DUPLICATE"
 
 
@@ -257,7 +324,7 @@ async def test_different_ticker_not_duplicate(db: AsyncSession) -> None:
 async def test_normalized_signal_created(db: AsyncSession) -> None:
     """process_signal always creates a NormalizedSignal."""
     raw = await _make_raw(db, "norm_strat")
-    await process_signal(db, "norm_strat", raw.id, _PAYLOAD)
+    await process_signal(db, "norm_strat", raw.id, _PAYLOAD, _MD)
 
     result = await db.execute(
         select(NormalizedSignal).where(NormalizedSignal.strategy_id == "norm_strat")
@@ -271,7 +338,7 @@ async def test_normalized_signal_created(db: AsyncSession) -> None:
 async def test_decision_linked_to_normalized_signal(db: AsyncSession) -> None:
     """StrategyDecision.normalized_signal_id must reference the NormalizedSignal."""
     raw = await _make_raw(db, "link_strat")
-    decision = await process_signal(db, "link_strat", raw.id, _PAYLOAD)
+    decision = await process_signal(db, "link_strat", raw.id, _PAYLOAD, _MD)
 
     result = await db.execute(
         select(NormalizedSignal).where(

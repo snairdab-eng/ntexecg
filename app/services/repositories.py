@@ -167,3 +167,20 @@ async def upsert_market_data_status(
         status.updated_at = _utcnow()
     await db.flush()
     return status
+
+
+# ---------------------------------------------------------------------------
+# Strategy Profile (for ConfigResolver)
+# ---------------------------------------------------------------------------
+
+async def get_strategy_profile(
+    db: AsyncSession, strategy_id: str
+) -> object | None:  # StrategyProfile | None
+    from app.models.strategy_profile import StrategyProfile
+
+    result = await db.execute(
+        select(StrategyProfile).where(
+            StrategyProfile.strategy_id == strategy_id
+        )
+    )
+    return result.scalar_one_or_none()

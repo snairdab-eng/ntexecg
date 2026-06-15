@@ -61,6 +61,14 @@ def mock_market_data() -> MockMarketDataProvider:
     return MockMarketDataProvider()
 
 
+@pytest.fixture
+def market_data_service(mock_market_data: MockMarketDataProvider):
+    """Wrap MockMarketDataProvider in MarketDataService for pipeline tests."""
+    from app.services.market_data_service import MarketDataService
+
+    return MarketDataService(mock_market_data)
+
+
 @pytest.fixture(autouse=True)
 def _clear_symbol_mapper_cache() -> None:
     """Reset module-level SymbolMapper cache before every test.
