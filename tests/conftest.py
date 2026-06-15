@@ -59,3 +59,15 @@ async def client(db: AsyncSession) -> AsyncClient:
 @pytest.fixture
 def mock_market_data() -> MockMarketDataProvider:
     return MockMarketDataProvider()
+
+
+@pytest.fixture(autouse=True)
+def _clear_symbol_mapper_cache() -> None:
+    """Reset module-level SymbolMapper cache before every test.
+
+    The cache is module-level with 5-minute TTL for production use.
+    Tests create fresh SQLite DBs each function, so stale cache entries
+    from a previous test would return wrong results.
+    """
+    import app.services.symbol_mapper as _sm
+    _sm.clear_cache()
