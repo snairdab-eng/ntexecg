@@ -12,9 +12,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Import Base and all models so Alembic sees the metadata.
-# Add model imports here as they are created.
+# Import Base first, then all models so Alembic sees every table.
 from app.db.base import Base  # noqa: E402
+import app.models  # noqa: F401 — registers all ORM models with Base.metadata
 
 target_metadata = Base.metadata
 
