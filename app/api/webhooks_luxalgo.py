@@ -14,7 +14,12 @@ without going through the HTTP layer.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, Request
 from loguru import logger
@@ -137,12 +142,98 @@ async def process_signal(
         pipeline_execution_json=pipeline_result.pipeline_execution_json,
     )
     db.add(decision)
+    await db.flush()  # decision.id needed for WebhookDelivery FK
     logger.info(
         "signal_evaluated strategy={} mapped_symbol={} outcome={} score={}",
         strategy_id, norm.mapped_symbol, pipeline_result.outcome,
         pipeline_result.score,
     )
+
+    # Track performance metrics for every decision (never blocks the flow)
+    from app.services.performance_tracker import PerformanceTracker
+    try:
+        await PerformanceTracker().update(db, strategy_id, decision)
+    except Exception as exc:
+        logger.error("performance_update_failed strategy={} error={}", strategy_id, exc)
+
+    # Dispatch to TradersPost only on APPROVE
+    if pipeline_result.outcome == "APPROVE":
+        await _dispatch_approved(db, norm, strategy, config, pipeline_result, decision)
+
     return decision
+
+
+async def _dispatch_approved(
+    db: AsyncSession,
+    norm: NormalizedSignal,
+    strategy: object,
+    config: dict,
+    pipeline_result: object,
+    decision: StrategyDecision,
+) -> None:
+    """Build payload, send to TradersPost, record WebhookDelivery, update state."""
+    from app.services.payload_builder import PayloadBuilder
+    from app.services.traderspost_client import TradersPostClient
+    from app.services.position_service import PositionService
+    from app.models.webhook_delivery import WebhookDelivery
+
+    payload = PayloadBuilder().build(norm, strategy, config, pipeline_result)
+    webhook_url = config.get("traderspost_webhook_url")
+    dry_run = config.get("dry_run", True)
+
+    client = TradersPostClient(settings)
+    result = await client.send(
+        webhook_url or "",
+        payload,
+        signal_role=norm.signal_role or "",
+        dry_run=dry_run,
+        signal_ts=norm.signal_ts,
+    )
+
+    delivery = WebhookDelivery(
+        decision_id=decision.id,
+        strategy_id=norm.strategy_id,
+        destination="traderspost",
+        url_masked=result.url_masked,
+        payload_json=result.payload_json,
+        response_status_code=result.response_status_code,
+        response_body=result.response_body,
+        status=result.status,
+        attempts=result.attempts,
+        latency_ms=result.latency_ms,
+        error_message=result.error_message,
+        sent_at=_utcnow() if result.status == "SENT" else None,
+    )
+    db.add(delivery)
+
+    # Update estimated position state
+    is_exit = norm.action == "exit"
+    account_id = config.get("account_id", "paper_default")
+    position_service = PositionService()
+    if is_exit:
+        await position_service.on_exit_approved(
+            db, norm.strategy_id, account_id, norm.mapped_symbol
+        )
+    else:
+        direction = "long" if norm.action == "buy" else "short"
+        await position_service.on_entry_approved(
+            db, norm.strategy_id, account_id, norm.mapped_symbol,
+            direction, norm.quantity or 1,
+            float(norm.price) if norm.price is not None else None,
+            norm.id,
+        )
+
+    # SENT (not DRY_RUN) → count as dispatched, confirm estimated position
+    if result.status == "SENT":
+        decision_perf_symbol = norm.mapped_symbol
+        await position_service.on_delivery_confirmed(
+            db, norm.strategy_id, account_id, decision_perf_symbol
+        )
+
+    logger.info(
+        "dispatch_complete strategy={} status={} attempts={}",
+        norm.strategy_id, result.status, result.attempts,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -202,6 +202,53 @@ async def test_process_signal_approve_for_live_strategy(db: AsyncSession) -> Non
 
 
 @pytest.mark.asyncio
+async def test_approved_entry_dispatches_dry_run_and_advances_position(
+    db: AsyncSession,
+) -> None:
+    """End-to-end: APPROVE → DRY_RUN WebhookDelivery + position → PENDING_LONG.
+
+    dry_run defaults True (no GlobalProfile in test DB), so no HTTP is attempted.
+    """
+    from app.models.strategy import Strategy
+    from app.models.symbol_map import SymbolMap
+    from app.models.webhook_delivery import WebhookDelivery
+    from app.models.position_state import PositionState
+
+    db.add(SymbolMap(
+        tv_symbol="MES", mapped_symbol="MESU2025", exchange="CME",
+        contract_type="futures_micro", pine_script_config='"ticker": "MES"',
+        active=True,
+    ))
+    db.add(Strategy(
+        strategy_id="disp_strat", name="Dispatch Strat", asset_symbol="MES",
+        status="live", enabled=True,
+    ))
+    await db.flush()
+
+    raw = await _make_raw(db, "disp_strat")
+    decision = await process_signal(db, "disp_strat", raw.id, _PAYLOAD, _MD)
+    assert decision.outcome == "APPROVE"
+
+    # WebhookDelivery recorded as DRY_RUN, token never stored raw
+    result = await db.execute(
+        select(WebhookDelivery).where(WebhookDelivery.strategy_id == "disp_strat")
+    )
+    delivery = result.scalar_one_or_none()
+    assert delivery is not None
+    assert delivery.status == "DRY_RUN"
+    assert delivery.decision_id == decision.id
+
+    # Estimated position advanced to PENDING_LONG (buy entry)
+    result = await db.execute(
+        select(PositionState).where(PositionState.symbol == "MESU2025")
+    )
+    position = result.scalar_one_or_none()
+    assert position is not None
+    assert position.state == "PENDING_LONG"
+    assert position.state_source == "estimated"
+
+
+@pytest.mark.asyncio
 async def test_asset_profile_config_applied_via_ticker_received(
     db: AsyncSession,
 ) -> None:
