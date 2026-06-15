@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Symbol Mapper — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="space-y-4" x-data="{ showForm: false }">
+    <div class="flex items-center justify-between">
+        <h1 class="text-xl font-bold text-white">Symbol Mapper</h1>
+        <button @click="showForm = !showForm" class="bg-green-700 hover:bg-green-600 text-white px-4 py-2 rounded text-sm">+ Nuevo Mapeo</button>
+    </div>
+
+    <div class="bg-sky-900/30 border border-sky-700 text-sky-200 px-4 py-3 rounded text-sm">
+        ℹ️ La columna <strong>Pine Script Config</strong> muestra el ticker exacto para LuxAlgo.
+        Cada instrumento tiene su símbolo en CME. Ej: Micro Yen = <code class="text-sky-300">"MJY"</code>
+        (no <code>"M6J"</code> — ese símbolo no existe en CME).
+    </div>
+
+    <!-- New mapping form -->
+    <form method="post" action="/ui/symbol-map/new" x-show="showForm" x-cloak
+          class="bg-gray-900 border border-gray-800 rounded p-4 grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+        <input name="tv_symbol" required placeholder="TV Symbol (MES)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 font-mono">
+        <input name="mapped_symbol" required placeholder="Contrato (MESU2025)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 font-mono">
+        <input name="exchange" value="CME" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100">
+        <input name="expiry_date" type="date" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100">
+        <button type="submit" class="bg-green-700 hover:bg-green-600 text-white px-3 py-1 rounded">Crear</button>
+    </form>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                    <th class="px-3 py-2">Pine Script Config</th>
+                    <th class="px-3 py-2">TV Symbol</th>
+                    <th class="px-3 py-2">Contrato</th>
+                    <th class="px-3 py-2">Tipo</th>
+                    <th class="px-3 py-2">Expira</th>
+                    <th class="px-3 py-2">Activo</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in mappings %}
+                <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                    <td class="px-3 py-2"><code class="text-sky-300 font-mono">{{ m.pine_script_config }}</code></td>
+                    <td class="px-3 py-2 text-gray-300 font-mono">{{ m.tv_symbol }}</td>
+                    <td class="px-3 py-2 text-gray-300 font-mono">{{ m.mapped_symbol }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ m.contract_type }}</td>
+                    <td class="px-3 py-2 text-gray-400">
+                        {{ m.expiry_date.strftime('%d/%m/%y') if m.expiry_date else '—' }}
+                        {% if m.expiring %}<span class="ml-1 bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded text-xs">⚠ pronto</span>{% endif %}
+                    </td>
+                    <td class="px-3 py-2">
+                        <form method="post" action="/ui/symbol-map/{{ m.id }}/toggle">
+                            <button class="{% if m.active %}text-green-400{% else %}text-gray-600{% endif %} hover:underline">
+                                {{ '✅ Activo' if m.active else '○ Inactivo' }}
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="6">Sin mapeos.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "_macros.html" import position_badge %}
+{% block title %}Posiciones — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <h1 class="text-xl font-bold text-white">Posiciones</h1>
+
+    <!-- Estimated state warning -->
+    <div class="bg-yellow-900/40 border border-yellow-700 text-yellow-200 px-4 py-3 rounded text-sm">
+        ⚠️ <strong>Estado estimado</strong> basado en señales enviadas.
+        Verificar posiciones reales en TradersPost / NinjaTrader.
+        <span class="text-yellow-400/70">(~ = estimado, no confirmado por broker)</span>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                    <th class="px-3 py-2">Cuenta</th>
+                    <th class="px-3 py-2">Symbol</th>
+                    <th class="px-3 py-2">Estado~</th>
+                    <th class="px-3 py-2">Dir</th>
+                    <th class="px-3 py-2">Qty</th>
+                    <th class="px-3 py-2">Entry</th>
+                    <th class="px-3 py-2">Actualizado</th>
+                    <th class="px-3 py-2">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in positions %}
+                <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                    <td class="px-3 py-2 text-gray-300 font-mono">{{ p.account_id }}</td>
+                    <td class="px-3 py-2 text-gray-300 font-mono">{{ p.symbol }}</td>
+                    <td class="px-3 py-2">{{ position_badge(p.state) }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ p.direction or '—' }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ p.quantity }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ p.entry_price or '—' }}</td>
+                    <td class="px-3 py-2 text-gray-500 text-xs">{{ p.updated_at.strftime('%m-%d %H:%M') }}</td>
+                    <td class="px-3 py-2">
+                        <div class="flex gap-1">
+                            <form method="post" action="/ui/positions/{{ p.id }}/flatten" onsubmit="return confirm('¿Flatten {{ p.symbol }}?');">
+                                <button class="bg-red-700 hover:bg-red-600 text-white px-2 py-1 rounded text-xs">🔻 Flatten</button>
+                            </form>
+                            <form method="post" action="/ui/positions/{{ p.id }}/lock" onsubmit="return confirm('¿Lock {{ p.symbol }}?');">
+                                <button class="bg-orange-700 hover:bg-orange-600 text-white px-2 py-1 rounded text-xs">🔒 Lock</button>
+                            </form>
+                            <form method="post" action="/ui/positions/{{ p.id }}/unlock" onsubmit="return confirm('¿Unlock {{ p.symbol }}?');">
+                                <button class="bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded text-xs">🔓 Unlock</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="8">Sin posiciones estimadas.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

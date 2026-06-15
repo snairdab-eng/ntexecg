@@ -8,6 +8,14 @@ from app.core.logging import setup_logging
 from app.api.health import router as health_router
 from app.api.webhooks_luxalgo import router as webhooks_router
 from app.web.routes_dashboard import router as dashboard_router
+from app.web.routes_strategies import router as strategies_router
+from app.web.routes_signals import router as signals_router
+from app.web.routes_positions import router as positions_router
+from app.web.routes_symbol_map import router as symbol_map_router
+from app.web.routes_assets import router as assets_router
+from app.web.routes_strategy_templates import router as templates_router
+from app.web.routes_settings import router as settings_router
+from app.web.routes_audit import router as audit_router
 
 
 @asynccontextmanager
@@ -37,6 +45,14 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(webhooks_router)
     app.include_router(dashboard_router)
+    app.include_router(strategies_router)
+    app.include_router(signals_router)
+    app.include_router(positions_router)
+    app.include_router(symbol_map_router)
+    app.include_router(assets_router)
+    app.include_router(templates_router)
+    app.include_router(settings_router)
+    app.include_router(audit_router)
     return app
 
 

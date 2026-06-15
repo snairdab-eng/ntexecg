@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block title %}Estrategias — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="space-y-4" x-data="{ selected: [] }">
+
+    <div class="flex items-center justify-between">
+        <h1 class="text-xl font-bold text-white">Estrategias</h1>
+        <a href="/ui/strategies/new" class="bg-green-700 hover:bg-green-600 text-white px-4 py-2 rounded text-sm font-medium">+ Nueva Estrategia</a>
+    </div>
+
+    <!-- Batch actions -->
+    <form method="post" action="/ui/strategies/batch-action" class="flex items-center gap-2 text-sm"
+          x-show="selected.length > 0" x-cloak>
+        <span class="text-gray-400" x-text="selected.length + ' seleccionada(s)'"></span>
+        <template x-for="sid in selected" :key="sid">
+            <input type="hidden" name="selected" :value="sid">
+        </template>
+        <select name="action" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+            <option value="pause">Pausar</option>
+            <option value="resume">Reanudar (paper)</option>
+            <option value="shadow">Shadow</option>
+            <option value="quarantine">Quarantine</option>
+            <option value="retire">Retirar</option>
+        </select>
+        <button type="submit" class="bg-blue-700 hover:bg-blue-600 text-white px-3 py-1 rounded">Aplicar</button>
+    </form>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                    <th class="px-3 py-2 w-8"></th>
+                    <th class="px-3 py-2">strategy_id</th>
+                    <th class="px-3 py-2">Nombre</th>
+                    <th class="px-3 py-2">Activo</th>
+                    <th class="px-3 py-2">TF</th>
+                    <th class="px-3 py-2">Status</th>
+                    <th class="px-3 py-2">Recibidas</th>
+                    <th class="px-3 py-2">Pass rate</th>
+                    <th class="px-3 py-2">Enabled</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in strategies %}
+                <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                    <td class="px-3 py-2">
+                        <input type="checkbox" :value="'{{ s.strategy_id }}'" @change="
+                            $event.target.checked ? selected.push('{{ s.strategy_id }}') : selected = selected.filter(x => x !== '{{ s.strategy_id }}')
+                        " class="accent-blue-500">
+                    </td>
+                    <td class="px-3 py-2">
+                        <a href="/ui/strategies/{{ s.strategy_id }}" class="text-blue-400 hover:text-blue-300 font-mono">{{ s.strategy_id }}</a>
+                    </td>
+                    <td class="px-3 py-2 text-gray-300">{{ s.name }}</td>
+                    <td class="px-3 py-2 text-gray-400 font-mono">{{ s.asset_symbol or '—' }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ s.timeframe or '—' }}</td>
+                    <td class="px-3 py-2">{{ status_badge(s.status) }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ s.total_received }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ '%.0f%%'|format(s.pass_rate * 100) if s.pass_rate is not none else '—' }}</td>
+                    <td class="px-3 py-2">
+                        {% if s.enabled %}<span class="text-green-400">●</span>{% else %}<span class="text-gray-600">○</span>{% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="9">No hay estrategias. <a href="/ui/strategies/new" class="text-blue-400">Crear la primera</a>.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+</div>
+{% endblock %}

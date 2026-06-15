@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_macros.html" import outcome_badge %}
+{% block title %}Señales — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <h1 class="text-xl font-bold text-white">Señales</h1>
+
+    <!-- Filters -->
+    <form method="get" action="/ui/signals" class="flex flex-wrap items-end gap-3 bg-gray-900 border border-gray-800 rounded p-3 text-sm">
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">Estrategia</label>
+            <select name="strategy" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+                <option value="">Todas</option>
+                {% for sid in strategy_ids %}
+                <option value="{{ sid }}" {% if sid == filter_strategy %}selected{% endif %}>{{ sid }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">Outcome</label>
+            <select name="outcome" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+                <option value="">Todos</option>
+                {% for o in ['APPROVE','BLOCK','IGNORE_DUPLICATE','QUEUE_FOR_REVIEW'] %}
+                <option value="{{ o }}" {% if o == filter_outcome %}selected{% endif %}>{{ o }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded">Filtrar</button>
+        <a href="/ui/signals" class="text-gray-400 hover:text-gray-200 px-2 py-1.5">Limpiar</a>
+    </form>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                    <th class="px-3 py-2">Hora</th>
+                    <th class="px-3 py-2">Estrategia</th>
+                    <th class="px-3 py-2">ticker_received</th>
+                    <th class="px-3 py-2">mapped_symbol</th>
+                    <th class="px-3 py-2">Acción</th>
+                    <th class="px-3 py-2">Outcome</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in signals %}
+                <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50 cursor-pointer"
+                    onclick="window.location='/ui/signals/{{ s.id }}'">
+                    <td class="px-3 py-2 text-gray-500 font-mono text-xs whitespace-nowrap">{{ s.time.strftime('%m-%d %H:%M:%S') }}</td>
+                    <td class="px-3 py-2 text-gray-300">{{ s.strategy_id }}</td>
+                    <td class="px-3 py-2 text-gray-400 font-mono">{{ s.ticker_received }}</td>
+                    <td class="px-3 py-2 text-gray-400 font-mono">{{ s.mapped_symbol or '—' }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ s.action }}</td>
+                    <td class="px-3 py-2">{{ outcome_badge(s.outcome) }}</td>
+                </tr>
+                {% else %}
+                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="6">Sin señales.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="flex justify-between text-sm">
+        {% if page > 1 %}
+        <a href="/ui/signals?strategy={{ filter_strategy }}&outcome={{ filter_outcome }}&page={{ page - 1 }}" class="text-blue-400 hover:text-blue-300">← Anterior</a>
+        {% else %}<span></span>{% endif %}
+        <span class="text-gray-500">Página {{ page }}</span>
+        {% if signals|length == 50 %}
+        <a href="/ui/signals?strategy={{ filter_strategy }}&outcome={{ filter_outcome }}&page={{ page + 1 }}" class="text-blue-400 hover:text-blue-300">Siguiente →</a>
+        {% else %}<span></span>{% endif %}
+    </div>
+</div>
+{% endblock %}

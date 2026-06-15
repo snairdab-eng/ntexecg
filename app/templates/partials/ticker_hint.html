@@ -1,0 +1,18 @@
+{% if pine %}
+<div class="bg-sky-900/30 border border-sky-700 rounded p-3" x-data="{ copied: false }">
+    <div class="text-xs text-sky-300 mb-1">📋 Ticker para configurar en LuxAlgo</div>
+    <div class="flex items-center gap-2">
+        <code class="bg-gray-950 px-2 py-1 rounded text-sky-200 font-mono text-sm" x-ref="pine">{{ pine }}</code>
+        <button type="button" class="text-xs bg-sky-700 hover:bg-sky-600 text-white px-2 py-1 rounded"
+                @click="navigator.clipboard.writeText($refs.pine.innerText); copied = true; setTimeout(() => copied = false, 1500)">
+            <span x-show="!copied">Copiar</span>
+            <span x-show="copied" x-cloak>✓ Copiado</span>
+        </button>
+    </div>
+    <p class="text-xs text-gray-500 mt-1">Usa este valor exacto en el JSON de la alerta de LuxAlgo.</p>
+</div>
+{% elif asset_symbol %}
+<div class="bg-yellow-900/30 border border-yellow-700 rounded p-3 text-xs text-yellow-300">
+    No hay AssetProfile configurado para "{{ asset_symbol }}".
+</div>
+{% endif %}

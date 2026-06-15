@@ -26,16 +26,21 @@
         </span>
 
         <!-- Nav links -->
+        {% set path = request.url.path %}
+        {% macro nav(href, label, exact=False) %}
+            {% set is_active = (path == href) if exact else (path == href or path.startswith(href + '/')) %}
+            <a href="{{ href }}" class="px-3 py-1 rounded transition {% if is_active %}bg-gray-700 text-white{% else %}text-gray-300 hover:bg-gray-700 hover:text-white{% endif %}">{{ label }}</a>
+        {% endmacro %}
         <div class="flex items-center gap-1 flex-wrap text-sm">
-            <a href="/ui"                      class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Dashboard</a>
-            <a href="/ui/strategies"           class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Estrategias</a>
-            <a href="/ui/signals"              class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Señales</a>
-            <a href="/ui/positions"            class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Posiciones</a>
-            <a href="/ui/assets"               class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Activos</a>
-            <a href="/ui/symbol-map"           class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Symbol Mapper</a>
-            <a href="/ui/strategy-templates"   class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Templates</a>
-            <a href="/ui/settings"             class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Settings</a>
-            <a href="/ui/audit"                class="px-3 py-1 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition">Audit</a>
+            {{ nav('/ui', 'Dashboard', exact=True) }}
+            {{ nav('/ui/strategies', 'Estrategias') }}
+            {{ nav('/ui/signals', 'Señales') }}
+            {{ nav('/ui/positions', 'Posiciones') }}
+            {{ nav('/ui/assets', 'Activos') }}
+            {{ nav('/ui/symbol-map', 'Symbol Mapper') }}
+            {{ nav('/ui/strategy-templates', 'Templates') }}
+            {{ nav('/ui/settings', 'Settings') }}
+            {{ nav('/ui/audit', 'Audit') }}
         </div>
 
         <!-- Right badges -->
@@ -47,13 +52,20 @@
             </span>
             {% endif %}
 
-            <!-- Global mode badge (placeholder for Phase 1) -->
-            <span class="bg-green-700 text-white px-2 py-0.5 rounded uppercase tracking-wide text-xs">
-                NORMAL
+            <!-- Global mode badge -->
+            {% set mode = (global_mode | default('normal')) | lower %}
+            <span class="text-white px-2 py-0.5 rounded uppercase tracking-wide text-xs
+                {% if mode == 'normal' %}bg-green-700
+                {% elif mode == 'defensive' %}bg-yellow-700
+                {% elif mode == 'flatten_only' %}bg-orange-700
+                {% elif mode == 'paused' %}bg-red-700
+                {% else %}bg-gray-700{% endif %}">
+                {{ mode | upper }}
             </span>
 
-            <!-- Bridge status badge (placeholder for Phase 1) -->
-            <span class="text-gray-400 flex items-center gap-1">
+            <!-- Bridge status badge (live via HTMX, falls back to neutral dot) -->
+            <span class="text-gray-400 flex items-center gap-1"
+                  hx-get="/ui/partials/bridge-badge" hx-trigger="load, every 30s" hx-swap="innerHTML">
                 <span class="w-2 h-2 rounded-full bg-gray-500 inline-block"></span>
                 Bridge
             </span>

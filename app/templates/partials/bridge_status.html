@@ -1,0 +1,30 @@
+<table class="w-full text-sm">
+    <thead>
+        <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+            <th class="px-3 py-2">Symbol</th>
+            <th class="px-3 py-2">Estado</th>
+            <th class="px-3 py-2">ATR 5m</th>
+            <th class="px-3 py-2">ATR 1h</th>
+            <th class="px-3 py-2">Heartbeat</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in rows %}
+        <tr class="border-b border-gray-800 last:border-0">
+            <td class="px-3 py-2 font-mono text-gray-300">{{ r.symbol }}</td>
+            <td class="px-3 py-2">
+                {% if r.active %}
+                <span class="text-green-400 flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500 inline-block"></span> Activo</span>
+                {% else %}
+                <span class="text-orange-400 flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-orange-500 inline-block"></span> Inactivo</span>
+                {% endif %}
+            </td>
+            <td class="px-3 py-2 text-gray-400">{{ '%.2f'|format(r.atr_5m) if r.atr_5m else '—' }}</td>
+            <td class="px-3 py-2 text-gray-400">{{ '%.2f'|format(r.atr_1h) if r.atr_1h else '—' }}</td>
+            <td class="px-3 py-2 text-gray-500 text-xs">{{ r.heartbeat_age ~ 's' if r.heartbeat_age is not none else '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="px-3 py-6 text-center text-gray-600" colspan="5">Sin símbolos monitoreados.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>

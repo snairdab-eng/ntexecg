@@ -1,0 +1,52 @@
+{# Reusable display macros — no logic, only presentation #}
+
+{% macro status_badge(status) %}
+    {% set colors = {
+        'candidate': 'bg-gray-600 text-gray-100',
+        'shadow': 'bg-sky-700 text-sky-100',
+        'paper': 'bg-blue-700 text-blue-100',
+        'micro': 'bg-orange-700/70 text-orange-100',
+        'limited_live': 'bg-orange-700 text-orange-100',
+        'live': 'bg-green-700 text-green-100',
+        'paused': 'bg-yellow-700 text-yellow-100',
+        'quarantined': 'bg-red-700 text-red-100',
+        'retired': 'bg-gray-800 text-gray-400',
+    } %}
+    <span class="px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wide {{ colors.get(status, 'bg-gray-600 text-gray-100') }}">{{ status }}</span>
+{% endmacro %}
+
+{% macro outcome_badge(outcome) %}
+    {% set colors = {
+        'APPROVE': 'bg-green-700 text-green-100',
+        'BLOCK': 'bg-red-700 text-red-100',
+        'IGNORE_DUPLICATE': 'bg-gray-600 text-gray-200',
+        'QUEUE_FOR_REVIEW': 'bg-yellow-700 text-yellow-100',
+        'ERROR': 'bg-red-900 text-red-200',
+    } %}
+    <span class="px-2 py-0.5 rounded text-xs font-semibold {{ colors.get(outcome, 'bg-gray-600 text-gray-200') }}">{{ outcome }}</span>
+{% endmacro %}
+
+{% macro delivery_badge(status) %}
+    {% set colors = {
+        'SENT': 'bg-green-700 text-green-100',
+        'DRY_RUN': 'bg-orange-700 text-orange-100',
+        'FAILED': 'bg-red-700 text-red-100',
+        'RETRYING': 'bg-yellow-700 text-yellow-100',
+    } %}
+    <span class="px-2 py-0.5 rounded text-xs font-semibold {{ colors.get(status, 'bg-gray-600 text-gray-200') }}">{{ status }}</span>
+{% endmacro %}
+
+{% macro position_badge(state) %}
+    {% set colors = {
+        'FLAT': 'bg-gray-600 text-gray-100',
+        'LONG': 'bg-green-700 text-green-100',
+        'SHORT': 'bg-red-700 text-red-100',
+        'PENDING_LONG': 'bg-green-800/60 text-green-200',
+        'PENDING_SHORT': 'bg-red-800/60 text-red-200',
+        'EXITING': 'bg-yellow-700 text-yellow-100',
+        'REVERSING': 'bg-purple-700 text-purple-100',
+        'LOCKED': 'bg-orange-700 text-orange-100',
+        'UNKNOWN': 'bg-gray-800 text-gray-400',
+    } %}
+    <span class="px-2 py-0.5 rounded text-xs font-semibold {{ colors.get(state, 'bg-gray-600 text-gray-100') }}">{{ state }}~</span>
+{% endmacro %}

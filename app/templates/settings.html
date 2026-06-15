@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Settings — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto space-y-4">
+    <h1 class="text-xl font-bold text-white">Settings</h1>
+
+    <form method="post" action="/ui/settings" class="space-y-5 bg-gray-900 border border-gray-800 rounded p-5 text-sm">
+
+        <fieldset class="space-y-3">
+            <legend class="text-xs uppercase tracking-wider text-gray-500 mb-2">Sistema</legend>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Modo global</label>
+                <select name="mode" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+                    {% for m in ['normal','defensive','flatten_only','paused'] %}
+                    <option value="{{ m }}" {% if gp.mode == m %}selected{% endif %}>{{ m|upper }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="grid grid-cols-2 gap-3 text-xs text-gray-400">
+                <div>dry_run: <span class="text-gray-200">{{ gp.dry_run }}</span></div>
+                <div>traderspost_enabled: <span class="text-gray-200">{{ gp.traderspost_enabled }}</span></div>
+                <div>timezone: <span class="text-gray-200">{{ gp.timezone }}</span></div>
+            </div>
+        </fieldset>
+
+        <fieldset class="space-y-3">
+            <legend class="text-xs uppercase tracking-wider text-gray-500 mb-2">Riesgo global</legend>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Max posiciones</label>
+                    <input name="max_open_positions" type="number" value="{{ gp.max_open_positions }}"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Daily loss stop ($)</label>
+                    <input name="daily_loss_stop" type="number" step="0.01" value="{{ gp.daily_loss_stop or '' }}"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="space-y-3">
+            <legend class="text-xs uppercase tracking-wider text-gray-500 mb-2">Pipeline</legend>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Score mínimo</label>
+                    <input name="score_minimum" type="number" value="{{ gp.score_minimum }}"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">News window (min)</label>
+                    <input name="news_window_minutes" type="number" value="{{ gp.news_window_minutes }}"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="space-y-3">
+            <legend class="text-xs uppercase tracking-wider text-gray-500 mb-2">TradersPost</legend>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Retry attempts</label>
+                <input name="retry_attempts" type="number" value="{{ gp.retry_attempts }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+            </div>
+        </fieldset>
+
+        <fieldset class="space-y-1 text-xs text-gray-400">
+            <legend class="text-xs uppercase tracking-wider text-gray-500 mb-2">Datos de mercado (read-only, via .env)</legend>
+            <div>Provider: <span class="text-gray-200 font-mono">{{ market_provider }}</span></div>
+            <div>Bridge path: <span class="text-gray-200 font-mono">{{ bridge_path }}</span></div>
+            <div>Heartbeat max age: <span class="text-gray-200">{{ heartbeat_max_age }}s</span></div>
+            <p class="text-gray-600 mt-1">Cambiar provider requiere editar .env y reiniciar (confirmación de impacto).</p>
+        </fieldset>
+
+        <button type="submit" class="bg-green-700 hover:bg-green-600 text-white px-5 py-2 rounded">Guardar configuración</button>
+    </form>
+</div>
+{% endblock %}

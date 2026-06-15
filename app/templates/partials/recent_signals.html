@@ -1,0 +1,16 @@
+{% from "_macros.html" import outcome_badge %}
+<table class="w-full text-sm">
+    <tbody>
+        {% for s in signals %}
+        <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+            <td class="px-3 py-2 text-gray-500 font-mono text-xs whitespace-nowrap">{{ s.time.strftime('%H:%M:%S') }}</td>
+            <td class="px-3 py-2">{{ outcome_badge(s.outcome) }}</td>
+            <td class="px-3 py-2 text-gray-300">{{ s.strategy_id }}</td>
+            <td class="px-3 py-2 text-gray-400">{{ s.ticker }}</td>
+            <td class="px-3 py-2 text-gray-400">{{ s.action }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="px-3 py-6 text-center text-gray-600" colspan="5">Sin señales recientes.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>

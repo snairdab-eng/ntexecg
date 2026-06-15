@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Clonar {{ source.strategy_id }} — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="max-w-xl mx-auto space-y-4">
+    <h1 class="text-xl font-bold text-white">Clonar Estrategia</h1>
+    <p class="text-sm text-gray-400">Clonando desde: <span class="font-mono text-blue-400">{{ source.strategy_id }}</span></p>
+
+    <form method="post" action="/ui/strategies/{{ source.strategy_id }}/clone"
+          class="space-y-4 bg-gray-900 border border-gray-800 rounded p-5">
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Nuevo strategy_id <span class="text-red-400">*</span></label>
+            <input name="new_strategy_id" required pattern="[a-zA-Z0-9_]+"
+                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 font-mono text-sm">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Activo base</label>
+            <select name="asset_symbol" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                <option value="">Mismo que origen ({{ source.asset_symbol or '—' }})</option>
+                {% for a in assets %}
+                <option value="{{ a.symbol }}">{{ a.symbol }} — {{ a.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">TradersPost Webhook URL (nueva)</label>
+            <input name="traderspost_webhook_url" placeholder="https://webhooks.traderspost.io/..."
+                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+        </div>
+        <div class="text-xs text-gray-500">El clon arranca en estado <strong>candidate</strong> y hereda la configuración del perfil origen.</div>
+        <div class="flex gap-2">
+            <button type="submit" class="bg-green-700 hover:bg-green-600 text-white px-5 py-2 rounded text-sm">Clonar</button>
+            <a href="/ui/strategies/{{ source.strategy_id }}" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-5 py-2 rounded text-sm">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

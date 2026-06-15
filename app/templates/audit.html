@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Audit — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <h1 class="text-xl font-bold text-white">Audit Log</h1>
+
+    <form method="get" action="/ui/audit" class="flex flex-wrap items-end gap-3 bg-gray-900 border border-gray-800 rounded p-3 text-sm">
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">Acción</label>
+            <select name="action" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+                <option value="">Todas</option>
+                {% for a in actions %}
+                <option value="{{ a }}" {% if a == filter_action %}selected{% endif %}>{{ a }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">Actor</label>
+            <select name="actor" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+                <option value="">Todos</option>
+                {% for a in actors %}
+                <option value="{{ a }}" {% if a == filter_actor %}selected{% endif %}>{{ a }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded">Filtrar</button>
+        <a href="/ui/audit" class="text-gray-400 hover:text-gray-200 px-2 py-1.5">Limpiar</a>
+    </form>
+
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                    <th class="px-3 py-2">Fecha/hora</th>
+                    <th class="px-3 py-2">Actor</th>
+                    <th class="px-3 py-2">Acción</th>
+                    <th class="px-3 py-2">Objeto</th>
+                    <th class="px-3 py-2">Motivo</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                    <td class="px-3 py-2 text-gray-500 font-mono text-xs whitespace-nowrap">{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td class="px-3 py-2 text-gray-300">{{ log.actor }}</td>
+                    <td class="px-3 py-2"><span class="bg-gray-800 px-2 py-0.5 rounded text-xs text-gray-300">{{ log.action }}</span></td>
+                    <td class="px-3 py-2 text-gray-400">{{ log.object_type }}{% if log.object_id %} <span class="text-gray-600 font-mono">{{ log.object_id }}</span>{% endif %}</td>
+                    <td class="px-3 py-2 text-gray-500 text-xs">{{ log.reason or '—' }}</td>
+                </tr>
+                {% else %}
+                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="5">Sin registros de auditoría.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="flex justify-between text-sm">
+        {% if page > 1 %}
+        <a href="/ui/audit?action={{ filter_action }}&actor={{ filter_actor }}&page={{ page - 1 }}" class="text-blue-400 hover:text-blue-300">← Anterior</a>
+        {% else %}<span></span>{% endif %}
+        <span class="text-gray-500">Página {{ page }}</span>
+        {% if logs|length == 50 %}
+        <a href="/ui/audit?action={{ filter_action }}&actor={{ filter_actor }}&page={{ page + 1 }}" class="text-blue-400 hover:text-blue-300">Siguiente →</a>
+        {% else %}<span></span>{% endif %}
+    </div>
+</div>
+{% endblock %}

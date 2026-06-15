@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% from "_macros.html" import outcome_badge, delivery_badge %}
+{% block title %}Señal {{ signal.ticker_received }} — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-4" x-data="{ showRaw: false }">
+
+    <a href="/ui/signals" class="text-blue-400 hover:text-blue-300 text-sm">← Volver a señales</a>
+
+    <!-- Header -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <div class="flex items-center justify-between">
+            <h1 class="text-lg font-bold text-white">
+                <span class="font-mono">{{ signal.ticker_received }}</span>
+                <span class="text-gray-500">→</span>
+                <span class="font-mono text-blue-400">{{ signal.mapped_symbol or '(sin mapear)' }}</span>
+            </h1>
+            {{ outcome_badge(decision.outcome) }}
+        </div>
+        <div class="grid grid-cols-3 gap-2 mt-3 text-sm text-gray-400">
+            <div><span class="text-gray-500">Acción:</span> {{ signal.action }}</div>
+            <div><span class="text-gray-500">Sentiment:</span> {{ signal.sentiment }}</div>
+            <div><span class="text-gray-500">Role:</span> {{ signal.signal_role }}</div>
+            <div><span class="text-gray-500">Precio:</span> {{ signal.price }}</div>
+            <div><span class="text-gray-500">Qty:</span> {{ signal.quantity }}</div>
+            <div><span class="text-gray-500">TF:</span> {{ signal.timeframe }}</div>
+        </div>
+    </div>
+
+    <!-- Pipeline breakdown -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-3">Pipeline de filtros</h2>
+        <div class="space-y-2">
+            {% set levels = [('level_1','Nivel 1 — Sistema'),('level_2','Nivel 2 — Temporal'),('level_3','Nivel 3 — Riesgo'),('level_4','Nivel 4 — Score'),('level_5','Nivel 5 — SL/TP')] %}
+            {% for key, label in levels %}
+            {% set lv = pipeline.get(key) %}
+            <div class="flex items-start gap-3 text-sm border-b border-gray-800 last:border-0 pb-2">
+                <div class="w-6 text-center">
+                    {% if lv is none %}
+                        <span class="text-gray-600">⏭</span>
+                    {% elif lv.get('skipped') %}
+                        <span class="text-gray-500">⏭</span>
+                    {% elif lv.get('failed') or lv.get('passed') == false %}
+                        <span class="text-red-400">❌</span>
+                    {% elif lv.get('outcome') and lv.get('outcome') not in ['CONTINUE'] %}
+                        <span class="text-yellow-400">⚠</span>
+                    {% else %}
+                        <span class="text-green-400">✅</span>
+                    {% endif %}
+                </div>
+                <div class="flex-1">
+                    <div class="text-gray-200">{{ label }}</div>
+                    <div class="text-xs text-gray-500">
+                        {% if lv is none %}No evaluado
+                        {% elif lv.get('skipped') %}Saltado ({{ lv.get('reason') }})
+                        {% elif lv.get('failed') %}Bloqueado: {{ lv.get('reason') }}
+                        {% elif key == 'level_4' and lv.get('score') is not none %}Score {{ lv.get('score') }}
+                        {% elif key == 'level_5' and lv.get('sl_price') %}SL {{ lv.get('sl_price') }} (ATR {{ lv.get('atr') }})
+                        {% else %}Pasó{% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="mt-4 pt-3 border-t border-gray-800">
+            {% if decision.outcome == 'APPROVE' %}
+            <div class="text-sm text-green-400">DECISIÓN: APPROVE ✅ — Score: {{ decision.score }}</div>
+            <div class="grid grid-cols-2 gap-2 mt-2 text-xs text-gray-400">
+                <div><span class="text-gray-500">SL price:</span> {{ decision.sl_price }}</div>
+                <div><span class="text-gray-500">ATR:</span> {{ decision.atr_value }}</div>
+                <div><span class="text-gray-500">Provider:</span> {{ decision.market_data_provider }}</div>
+                <div><span class="text-gray-500">TP:</span> {{ decision.tp_price or 'Builtin-Exits' }}</div>
+            </div>
+            {% else %}
+            <div class="text-sm text-red-400">DECISIÓN: {{ decision.outcome }}{% if decision.block_reason %} — {{ decision.block_reason }}{% endif %}
+                {% if decision.block_level %}<span class="text-gray-500">(Nivel {{ decision.block_level }})</span>{% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Delivery -->
+    {% if delivery %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-2">Delivery TradersPost</h2>
+        <div class="flex items-center gap-3 text-sm">
+            {{ delivery_badge(delivery.status) }}
+            <span class="text-gray-400">HTTP: {{ delivery.response_status_code or '—' }}</span>
+            <span class="text-gray-400">Intentos: {{ delivery.attempts }}</span>
+            {% if delivery.latency_ms %}<span class="text-gray-400">{{ delivery.latency_ms }}ms</span>{% endif %}
+        </div>
+        <div class="text-xs text-gray-600 mt-1 break-all">{{ delivery.url_masked }}</div>
+    </div>
+    {% endif %}
+
+    <!-- Raw payload (collapsible) -->
+    {% if raw %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <button @click="showRaw = !showRaw" class="text-sm text-gray-400 hover:text-gray-200">
+            <span x-text="showRaw ? '▼' : '▶'"></span> Raw payload
+        </button>
+        <pre x-show="showRaw" x-cloak class="mt-2 bg-gray-950 rounded p-3 text-xs text-gray-300 overflow-x-auto">{{ raw.payload_json | tojson(indent=2) }}</pre>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}
