@@ -183,3 +183,171 @@ async def test_ticker_hint_shows_pine_config(
     # Jinja2 HTML-escapes the quotes; the pine config content is still present
     assert "MJY" in resp.text
     assert "Ticker para configurar en LuxAlgo" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Batch action over multiple strategies
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_batch_action_pauses_multiple(client: AsyncClient, db: AsyncSession) -> None:
+    for sid in ("ba1", "ba2"):
+        db.add(Strategy(strategy_id=sid, name=sid, status="paper", enabled=True))
+    await db.commit()
+
+    resp = await client.post("/ui/strategies/batch-action", data={
+        "action": "pause", "selected": ["ba1", "ba2"],
+    })
+    assert resp.status_code == 303
+
+    result = await db.execute(select(Strategy).where(Strategy.strategy_id.in_(["ba1", "ba2"])))
+    statuses = {s.strategy_id: s.status for s in result.scalars().all()}
+    assert statuses == {"ba1": "paused", "ba2": "paused"}
+
+
+# ---------------------------------------------------------------------------
+# Symbol map create
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_symbol_map_create(client: AsyncClient, db: AsyncSession) -> None:
+    resp = await client.post("/ui/symbol-map/new", data={
+        "tv_symbol": "MNQ", "mapped_symbol": "MNQU2025",
+        "exchange": "CME", "contract_type": "futures_micro",
+        "expiry_date": "2025-09-19",
+    })
+    assert resp.status_code == 303
+    result = await db.execute(select(SymbolMap).where(SymbolMap.tv_symbol == "MNQ"))
+    sm = result.scalar_one_or_none()
+    assert sm is not None
+    assert sm.pine_script_config == '"ticker": "MNQ"'
+
+
+# ---------------------------------------------------------------------------
+# Asset update
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_asset_update(client: AsyncClient, db: AsyncSession) -> None:
+    db.add(AssetProfile(
+        symbol="MES", name="Micro S&P", contract_type="futures_micro",
+        pine_script_config='"ticker": "MES"', sl_atr_multiplier=2.0, score_minimum=65,
+    ))
+    await db.commit()
+
+    resp = await client.post("/ui/assets/MES", data={
+        "sl_atr_multiplier": "2.5", "score_minimum": "75", "atr_period": "21",
+    })
+    assert resp.status_code == 303
+    result = await db.execute(select(AssetProfile).where(AssetProfile.symbol == "MES"))
+    a = result.scalar_one()
+    assert float(a.sl_atr_multiplier) == 2.5
+    assert a.score_minimum == 75
+
+
+# ---------------------------------------------------------------------------
+# Settings update
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_settings_update_changes_mode(client: AsyncClient, db: AsyncSession) -> None:
+    from app.models.global_profile import GlobalProfile
+
+    resp = await client.post("/ui/settings", data={
+        "mode": "defensive", "max_open_positions": "3", "score_minimum": "80",
+    })
+    assert resp.status_code == 303
+    result = await db.execute(select(GlobalProfile).where(GlobalProfile.active.is_(True)))
+    gp = result.scalar_one()
+    assert gp.mode == "defensive"
+    assert gp.max_open_positions == 3
+
+
+# ---------------------------------------------------------------------------
+# Template create
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_template_create(client: AsyncClient, db: AsyncSession) -> None:
+    from app.models.strategy_template import StrategyTemplate
+
+    resp = await client.post("/ui/strategy-templates/new", data={
+        "name": "My Template", "strategy_type": "trend_following",
+        "sl_atr_multiplier": "1.5", "score_minimum": "70",
+    })
+    assert resp.status_code == 303
+    result = await db.execute(
+        select(StrategyTemplate).where(StrategyTemplate.name == "My Template")
+    )
+    assert result.scalar_one_or_none() is not None
+
+
+# ---------------------------------------------------------------------------
+# Position flatten / lock / unlock
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_position_flatten_lock_unlock(client: AsyncClient, db: AsyncSession) -> None:
+    from app.models.position_state import PositionState
+
+    pos = PositionState(
+        strategy_id="p_strat", account_id="paper_1", symbol="MESU2025",
+        state="LONG", state_source="estimated", quantity=1,
+    )
+    db.add(pos)
+    await db.commit()
+    await db.refresh(pos)
+
+    # Flatten → EXITING
+    resp = await client.post(f"/ui/positions/{pos.id}/flatten")
+    assert resp.status_code == 303
+    result = await db.execute(select(PositionState).where(PositionState.id == pos.id))
+    assert result.scalar_one().state == "EXITING"
+
+    # Lock → LOCKED
+    resp = await client.post(f"/ui/positions/{pos.id}/lock")
+    assert resp.status_code == 303
+    result = await db.execute(select(PositionState).where(PositionState.id == pos.id))
+    assert result.scalar_one().state == "LOCKED"
+
+    # Unlock → restores EXITING
+    resp = await client.post(f"/ui/positions/{pos.id}/unlock")
+    assert resp.status_code == 303
+    result = await db.execute(select(PositionState).where(PositionState.id == pos.id))
+    assert result.scalar_one().state == "EXITING"
+
+
+# ---------------------------------------------------------------------------
+# Signal detail page renders
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_signal_detail_renders(client: AsyncClient, db: AsyncSession) -> None:
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    from app.models.raw_signal import RawSignal
+    from app.models.normalized_signal import NormalizedSignal
+    from app.models.decision import StrategyDecision
+
+    raw = RawSignal(strategy_id="sd", payload_json={"ticker": "MES"}, token_valid=True)
+    db.add(raw)
+    await db.flush()
+    norm = NormalizedSignal(
+        raw_signal_id=raw.id, strategy_id="sd", ticker_received="MES",
+        mapped_symbol="MESU2025", action="buy", sentiment="long",
+        signal_ts=datetime.now(timezone.utc), dedupe_key=_uuid.uuid4().hex,
+    )
+    db.add(norm)
+    await db.flush()
+    decision = StrategyDecision(
+        normalized_signal_id=norm.id, strategy_id="sd", outcome="APPROVE",
+        score=100, sl_price=5488.0, atr_value=8.0,
+        pipeline_execution_json={"level_1": {"outcome": "CONTINUE"}},
+    )
+    db.add(decision)
+    await db.commit()
+
+    resp = await client.get(f"/ui/signals/{decision.id}")
+    assert resp.status_code == 200
+    assert "MESU2025" in resp.text
+    assert "APPROVE" in resp.text
