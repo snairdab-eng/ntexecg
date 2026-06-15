@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6">
+
+    <!-- DRY RUN alert banner -->
+    {% if dry_run %}
+    <div class="bg-orange-900 border border-orange-600 text-orange-200 rounded-lg px-5 py-4">
+        <div class="flex items-center gap-3">
+            <span class="text-2xl">⚠️</span>
+            <div>
+                <p class="font-bold text-orange-100">Modo DRY RUN activo</p>
+                <p class="text-sm mt-0.5">
+                    Ninguna señal será enviada a TradersPost. Todas las decisiones se registran pero no se ejecutan.
+                    Desactivar en Settings cuando estés listo para operar en paper.
+                </p>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Today's metrics -->
+    <div>
+        <h2 class="text-gray-400 text-xs uppercase tracking-widest mb-3">Métricas de hoy</h2>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-white">0</p>
+                <p class="text-gray-400 text-sm mt-1">Recibidas</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-green-400">0</p>
+                <p class="text-gray-400 text-sm mt-1">Aprobadas</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-red-400">0</p>
+                <p class="text-gray-400 text-sm mt-1">Bloqueadas</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-blue-400">0</p>
+                <p class="text-gray-400 text-sm mt-1">Enviadas</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Strategy counts -->
+    <div>
+        <h2 class="text-gray-400 text-xs uppercase tracking-widest mb-3">Estrategias</h2>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-white">0</p>
+                <p class="text-gray-400 text-sm mt-1">Activas</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-blue-400">0</p>
+                <p class="text-gray-400 text-sm mt-1">Paper</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-green-400">0</p>
+                <p class="text-gray-400 text-sm mt-1">Live</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <p class="text-3xl font-bold text-yellow-400">0</p>
+                <p class="text-gray-400 text-sm mt-1">Pausadas</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bridge status -->
+    <div>
+        <h2 class="text-gray-400 text-xs uppercase tracking-widest mb-3">Datos de mercado</h2>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-sm font-medium text-gray-300">NinjaTrader Bridge (NTRADER)</span>
+                <span class="text-xs text-gray-500">Sin datos — bridge no configurado</span>
+            </div>
+            <div class="text-center py-6 text-gray-600 text-sm">
+                No hay símbolos activos configurados. Configura el bridge en Settings.
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick actions -->
+    <div>
+        <h2 class="text-gray-400 text-xs uppercase tracking-widest mb-3">Acciones rápidas</h2>
+        <div class="flex gap-3 flex-wrap">
+            <button
+                class="px-4 py-2 bg-yellow-700 hover:bg-yellow-600 text-white rounded text-sm font-medium transition"
+                onclick="return confirm('¿Pausar todo el sistema?')"
+                disabled
+            >
+                ⏸ Pausar todo
+            </button>
+            <button
+                class="px-4 py-2 bg-orange-700 hover:bg-orange-600 text-white rounded text-sm font-medium transition"
+                onclick="return confirm('¿Activar modo Flatten Only?')"
+                disabled
+            >
+                🔻 Flatten only
+            </button>
+            <button
+                class="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded text-sm font-medium transition"
+                disabled
+            >
+                ▶ Reanudar
+            </button>
+        </div>
+        <p class="text-xs text-gray-600 mt-2">Acciones disponibles cuando haya estrategias configuradas.</p>
+    </div>
+
+    <!-- Events feed -->
+    <div>
+        <h2 class="text-gray-400 text-xs uppercase tracking-widest mb-3">Eventos recientes</h2>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 text-center text-gray-600 text-sm py-10">
+            Sin eventos. Las señales recibidas aparecerán aquí.
+        </div>
+    </div>
+
+</div>
+{% endblock %}
