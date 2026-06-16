@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     WEBHOOK_TOKEN_SALT: str = "dev_salt_change_in_production_min_32_chars"
     LUXALGO_WEBHOOK_SECRET: str = "dev_global_token"
 
+    # Web UI authentication
+    UI_USERNAME: str = "admin"
+    UI_PASSWORD: str = ""          # bcrypt hash of the admin password
+    SESSION_SECRET: str = ""       # HS256 signing key for session JWTs
+
     TRADERSPOST_ENABLED: bool = False
     DRY_RUN: bool = True
 

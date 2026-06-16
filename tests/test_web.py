@@ -10,10 +10,24 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import SESSION_COOKIE_NAME, create_session_token
+from app.core.config import settings
 from app.models.asset_profile import AssetProfile
 from app.models.audit_log import AuditLog
 from app.models.strategy import Strategy
 from app.models.symbol_map import SymbolMap
+
+
+@pytest.fixture(autouse=True)
+def _authenticated(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attach a valid session cookie so the protected UI routes return 200.
+
+    These tests exercise UI behavior, not auth; auth itself is covered in
+    test_auth.py. Token is signed and verified with the same SESSION_SECRET.
+    """
+    if not settings.SESSION_SECRET:
+        monkeypatch.setattr(settings, "SESSION_SECRET", "test_session_secret_web")
+    client.cookies.set(SESSION_COOKIE_NAME, create_session_token("admin"))
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login — {{ app_name | default("NTEXECG") }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen flex items-center justify-center">
+
+    <div class="w-full max-w-sm">
+        <div class="text-center mb-6">
+            <div class="text-2xl font-bold text-white tracking-wide">NTEXECG</div>
+            <div class="text-xs text-gray-500 mt-1">Signal Gateway · v{{ app_version | default("1.0.0") }}</div>
+        </div>
+
+        <form method="post" action="/ui/login" class="bg-gray-900 border border-gray-800 rounded-lg p-6 space-y-4">
+            <h1 class="text-sm uppercase tracking-wider text-gray-500">Acceso</h1>
+
+            {% if error %}
+            <div class="bg-red-900/40 border border-red-700 text-red-200 px-3 py-2 rounded text-sm">
+                {{ error }}
+            </div>
+            {% endif %}
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Usuario</label>
+                <input name="username" type="text" autofocus required autocomplete="username"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm focus:outline-none focus:border-blue-600">
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Contraseña</label>
+                <input name="password" type="password" required autocomplete="current-password"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm focus:outline-none focus:border-blue-600">
+            </div>
+
+            <button type="submit"
+                    class="w-full bg-blue-700 hover:bg-blue-600 text-white font-medium px-4 py-2 rounded text-sm transition">
+                Iniciar sesión
+            </button>
+        </form>
+
+        <p class="text-center text-xs text-gray-700 mt-4">Acceso restringido · sesión expira en 8 h</p>
+    </div>
+
+</body>
+</html>

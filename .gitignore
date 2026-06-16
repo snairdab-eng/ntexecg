@@ -9,3 +9,5 @@ htmlcov/
 .coverage
 logs/
 *.log
+# Technical memory docs — contain production secrets, never commit
+REPORTES/
