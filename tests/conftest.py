@@ -1,3 +1,20 @@
+import os
+
+# ---------------------------------------------------------------------------
+# Test isolation — MUST run before any `app.*` import.
+#
+# app.core.config.settings is a module-level singleton built at import time.
+# These env vars (env vars outrank the env_file in pydantic-settings, and
+# APP_ENV=test redirects config to .env.test) guarantee the suite NEVER loads
+# the production .env: webhook token, salt, DRY_RUN and the DB are deterministic
+# no matter which host pytest runs on.
+# ---------------------------------------------------------------------------
+os.environ["APP_ENV"] = "test"
+os.environ["LUXALGO_WEBHOOK_SECRET"] = "dev_global_token"
+os.environ["WEBHOOK_TOKEN_SALT"] = "dev_salt_change_in_production_min_32_chars"
+os.environ["DRY_RUN"] = "true"
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

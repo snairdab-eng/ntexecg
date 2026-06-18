@@ -1,9 +1,16 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The test suite sets APP_ENV=test (in tests/conftest.py, BEFORE this module is
+# imported) so the suite NEVER loads the production .env. It reads .env.test
+# instead — settings become deterministic regardless of the host pytest runs on.
+_ENV_FILE = ".env.test" if os.getenv("APP_ENV") == "test" else ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
