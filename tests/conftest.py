@@ -21,14 +21,31 @@ _TestSessionLocal = async_sessionmaker(
 
 
 class MockMarketDataProvider:
-    async def get_bars(self, *args, **kwargs) -> list:
+    """In-memory provider for tests — never reads real bridge files or yfinance.
+
+    Records the symbols it is queried with so tests can assert the market-data
+    alias resolved correctly (e.g. a MES signal must query the bridge as "ES").
+    Defaults (atr=8.0, active=True) keep every existing test green.
+    """
+
+    def __init__(self, atr: float | None = 8.0, active: bool = True) -> None:
+        self._atr = atr
+        self._active = active
+        self.get_atr_calls: list[str] = []
+        self.get_bars_calls: list[str] = []
+        self.is_active_calls: list[str] = []
+
+    async def get_bars(self, symbol: str = "", *args, **kwargs) -> list:
+        self.get_bars_calls.append(symbol)
         return []
 
-    async def get_atr(self, *args, **kwargs) -> float:
-        return 8.0
+    async def get_atr(self, symbol: str = "", *args, **kwargs) -> float | None:
+        self.get_atr_calls.append(symbol)
+        return self._atr
 
-    async def is_active(self, symbol: str) -> bool:
-        return True
+    async def is_active(self, symbol: str = "", *args, **kwargs) -> bool:
+        self.is_active_calls.append(symbol)
+        return self._active
 
 
 @pytest_asyncio.fixture(scope="function")

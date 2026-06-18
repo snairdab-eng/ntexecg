@@ -41,8 +41,10 @@ class HeartbeatMonitor:
         from app.db.session import AsyncSessionLocal
         from app.models.symbol_map import SymbolMap
         from app.services.repositories import upsert_market_data_status
+        from app.services.symbol_mapper import SymbolMapper
 
         provider_name = type(self._svc.provider).__name__
+        mapper = SymbolMapper()
 
         async with AsyncSessionLocal() as db:
             try:
@@ -51,27 +53,56 @@ class HeartbeatMonitor:
                 )
                 symbol_maps = result.scalars().all()
 
-                for sm in symbol_maps:
-                    try:
-                        active = await self._svc.is_active(sm.mapped_symbol)
-                    except Exception as exc:
-                        logger.error(
-                            "heartbeat_is_active_failed symbol={} error={}",
-                            sm.tv_symbol, exc,
-                        )
-                        active = False
+                # Probe each distinct DATA symbol once per cycle: micro and parent
+                # share bridge files (MES → ES), so we never hit the bridge twice
+                # for the same data symbol within a single cycle.
+                probe_cache: dict[str, tuple[bool, float | None]] = {}
 
+                for sm in symbol_maps:
+                    # Resolve which bridge symbol backs this tradeable symbol.
+                    data_symbol = await mapper.resolve_market_data_symbol(
+                        db, sm.tv_symbol
+                    )
+
+                    if data_symbol not in probe_cache:
+                        try:
+                            active = await self._svc.is_active(data_symbol)
+                        except Exception as exc:
+                            logger.error(
+                                "heartbeat_is_active_failed data_symbol={} error={}",
+                                data_symbol, exc,
+                            )
+                            active = False
+
+                        atr_5m: float | None = None
+                        if active:
+                            try:
+                                atr_5m = await self._svc.get_atr(data_symbol, "5m", 14)
+                            except Exception as exc:
+                                logger.error(
+                                    "heartbeat_atr_failed data_symbol={} error={}",
+                                    data_symbol, exc,
+                                )
+                                atr_5m = None
+
+                        probe_cache[data_symbol] = (active, atr_5m)
+
+                    active, atr_5m = probe_cache[data_symbol]
+
+                    # Persist status keyed by the TRADEABLE symbol (tv_symbol),
+                    # not the data symbol — the operator monitors what they trade.
                     await upsert_market_data_status(
                         db,
                         sm.tv_symbol,
                         provider=provider_name,
                         is_active=active,
+                        last_atr_5m=atr_5m,
                     )
 
                     if not active:
                         logger.warning(
-                            "market_data_inactive symbol={} provider={}",
-                            sm.tv_symbol, provider_name,
+                            "market_data_inactive symbol={} data_symbol={} provider={}",
+                            sm.tv_symbol, data_symbol, provider_name,
                         )
 
                 await db.commit()

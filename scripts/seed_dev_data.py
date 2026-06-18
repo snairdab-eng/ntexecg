@@ -22,34 +22,64 @@ from app.models.strategy_template import StrategyTemplate
 from app.models.market_data_status import MarketDataStatus
 
 
+# All 16 tradeable symbols with their CURRENT (front) contract month as of
+# mid-2026: equity index & FX → U2026 (Sep), gold → Q2026 (Aug), crude → Q2026.
+# The 8 PARENTS the operator charts keep market_data_symbol=None (read their own
+# bridge files). The 8 MICROS alias to their parent's bridge data via
+# market_data_symbol (Anexo A.9.1; reglas 36, 38) — micro and parent share the
+# same underlying/price/contract month; only the USD multiplier differs and it
+# does NOT enter the data path.
 SYMBOL_MAPS = [
-    dict(tv_symbol="MES", mapped_symbol="MESU2025", exchange="CME",
-         contract_type="futures_micro", pine_script_config='"ticker": "MES"',
-         expiry_date=date(2025, 9, 19)),
-    dict(tv_symbol="MNQ", mapped_symbol="MNQU2025", exchange="CME",
-         contract_type="futures_micro", pine_script_config='"ticker": "MNQ"',
-         expiry_date=date(2025, 9, 19)),
-    dict(tv_symbol="MYM", mapped_symbol="MYMU2025", exchange="CBOT",
-         contract_type="futures_micro", pine_script_config='"ticker": "MYM"',
-         expiry_date=date(2025, 9, 19)),
-    dict(tv_symbol="M2K", mapped_symbol="M2KU2025", exchange="CME",
-         contract_type="futures_micro", pine_script_config='"ticker": "M2K"',
-         expiry_date=date(2025, 9, 19)),
-    dict(tv_symbol="MGC", mapped_symbol="MGCQ2025", exchange="COMEX",
-         contract_type="futures_micro", pine_script_config='"ticker": "MGC"',
-         expiry_date=date(2025, 8, 27)),
-    dict(tv_symbol="MJY", mapped_symbol="MJYU2025", exchange="CME",
-         contract_type="futures_micro", pine_script_config='"ticker": "MJY"',
-         expiry_date=date(2025, 9, 15)),
-    dict(tv_symbol="M6E", mapped_symbol="M6EU2025", exchange="CME",
-         contract_type="futures_micro", pine_script_config='"ticker": "M6E"',
-         expiry_date=date(2025, 9, 15)),
-    dict(tv_symbol="6J",  mapped_symbol="6JU2025",  exchange="CME",
+    # ── Parents (charted; own bridge data; market_data_symbol=None) ───────────
+    dict(tv_symbol="ES",  mapped_symbol="ESU2026",  exchange="CME",
+         contract_type="futures_large", pine_script_config='"ticker": "ES"',
+         expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="NQ",  mapped_symbol="NQU2026",  exchange="CME",
+         contract_type="futures_large", pine_script_config='"ticker": "NQ"',
+         expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="RTY", mapped_symbol="RTYU2026", exchange="CME",
+         contract_type="futures_large", pine_script_config='"ticker": "RTY"',
+         expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="YM",  mapped_symbol="YMU2026",  exchange="CBOT",
+         contract_type="futures_large", pine_script_config='"ticker": "YM"',
+         expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="GC",  mapped_symbol="GCQ2026",  exchange="COMEX",
+         contract_type="futures_large", pine_script_config='"ticker": "GC"',
+         expiry_date=date(2026, 8, 27)),
+    dict(tv_symbol="CL",  mapped_symbol="CLQ2026",  exchange="NYMEX",
+         contract_type="futures_large", pine_script_config='"ticker": "CL"',
+         expiry_date=date(2026, 7, 22)),
+    dict(tv_symbol="6J",  mapped_symbol="6JU2026",  exchange="CME",
          contract_type="futures_large", pine_script_config='"ticker": "6J"',
-         expiry_date=date(2025, 9, 15)),
-    dict(tv_symbol="6E",  mapped_symbol="6EU2025",  exchange="CME",
+         expiry_date=date(2026, 9, 14)),
+    dict(tv_symbol="6E",  mapped_symbol="6EU2026",  exchange="CME",
          contract_type="futures_large", pine_script_config='"ticker": "6E"',
-         expiry_date=date(2025, 9, 15)),
+         expiry_date=date(2026, 9, 14)),
+    # ── Micros (aliased to parent bridge data via market_data_symbol) ─────────
+    dict(tv_symbol="MES", mapped_symbol="MESU2026", exchange="CME",
+         contract_type="futures_micro", pine_script_config='"ticker": "MES"',
+         market_data_symbol="ES", expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="MNQ", mapped_symbol="MNQU2026", exchange="CME",
+         contract_type="futures_micro", pine_script_config='"ticker": "MNQ"',
+         market_data_symbol="NQ", expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="M2K", mapped_symbol="M2KU2026", exchange="CME",
+         contract_type="futures_micro", pine_script_config='"ticker": "M2K"',
+         market_data_symbol="RTY", expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="MYM", mapped_symbol="MYMU2026", exchange="CBOT",
+         contract_type="futures_micro", pine_script_config='"ticker": "MYM"',
+         market_data_symbol="YM", expiry_date=date(2026, 9, 18)),
+    dict(tv_symbol="MGC", mapped_symbol="MGCQ2026", exchange="COMEX",
+         contract_type="futures_micro", pine_script_config='"ticker": "MGC"',
+         market_data_symbol="GC", expiry_date=date(2026, 8, 27)),
+    dict(tv_symbol="MCL", mapped_symbol="MCLQ2026", exchange="NYMEX",
+         contract_type="futures_micro", pine_script_config='"ticker": "MCL"',
+         market_data_symbol="CL", expiry_date=date(2026, 7, 22)),
+    dict(tv_symbol="MJY", mapped_symbol="MJYU2026", exchange="CME",
+         contract_type="futures_micro", pine_script_config='"ticker": "MJY"',
+         market_data_symbol="6J", expiry_date=date(2026, 9, 14)),
+    dict(tv_symbol="M6E", mapped_symbol="M6EU2026", exchange="CME",
+         contract_type="futures_micro", pine_script_config='"ticker": "M6E"',
+         market_data_symbol="6E", expiry_date=date(2026, 9, 14)),
 ]
 
 # Pit session config (Mon-Fri)
@@ -71,6 +101,13 @@ _MGC_SESSION = {
     "entry_end": "13:30",
     "force_flat_time": "13:40",
 }
+# WTI crude RTH pit session (09:00–14:30 ET)
+_CL_SESSION = {
+    **_PIT_09_30,
+    "entry_start": "09:00",
+    "entry_end": "14:00",
+    "force_flat_time": "14:25",
+}
 # 24h forex futures session (Sun 18:00 – Fri 17:00 ET)
 _FX_24H = {
     "timezone": "America/New_York",
@@ -84,6 +121,26 @@ _FX_24H = {
 }
 
 ASSET_PROFILES = [
+    # ── Parents ───────────────────────────────────────────────────────────────
+    dict(symbol="ES",   name="E-mini S&P 500",
+         pine_script_config='"ticker": "ES"', contract_type="futures_large",
+         session_config_json=_PIT_09_30, sl_atr_multiplier=2.0),
+    dict(symbol="NQ",   name="E-mini Nasdaq-100",
+         pine_script_config='"ticker": "NQ"', contract_type="futures_large",
+         session_config_json=_PIT_09_30, sl_atr_multiplier=2.0),
+    dict(symbol="RTY",  name="E-mini Russell 2000",
+         pine_script_config='"ticker": "RTY"', contract_type="futures_large",
+         session_config_json=_PIT_09_30, sl_atr_multiplier=2.0),
+    dict(symbol="YM",   name="E-mini Dow Jones",
+         pine_script_config='"ticker": "YM"', contract_type="futures_large",
+         session_config_json=_PIT_09_30, sl_atr_multiplier=2.0),
+    dict(symbol="GC",   name="Gold",
+         pine_script_config='"ticker": "GC"', contract_type="futures_large",
+         session_config_json=_MGC_SESSION, sl_atr_multiplier=2.0),
+    dict(symbol="CL",   name="Crude Oil WTI",
+         pine_script_config='"ticker": "CL"', contract_type="futures_large",
+         session_config_json=_CL_SESSION, sl_atr_multiplier=2.0),
+    # ── Micros ────────────────────────────────────────────────────────────────
     dict(symbol="MES",  name="Micro E-mini S&P 500",
          pine_script_config='"ticker": "MES"', contract_type="futures_micro",
          session_config_json=_PIT_09_30, sl_atr_multiplier=2.0),
@@ -99,6 +156,9 @@ ASSET_PROFILES = [
     dict(symbol="MGC",  name="Micro Gold",
          pine_script_config='"ticker": "MGC"', contract_type="futures_micro",
          session_config_json=_MGC_SESSION, sl_atr_multiplier=2.0),
+    dict(symbol="MCL",  name="Micro Crude Oil WTI",
+         pine_script_config='"ticker": "MCL"', contract_type="futures_micro",
+         session_config_json=_CL_SESSION, sl_atr_multiplier=2.0),
     dict(symbol="MJY",  name="Micro JPY/USD Futures — CME",
          pine_script_config='"ticker": "MJY"', contract_type="futures_micro",
          session_config_json=_FX_24H, sl_atr_multiplier=2.0),
@@ -133,14 +193,25 @@ async def seed(session: AsyncSession) -> None:
     else:
         print("  GlobalProfile already exists")
 
-    # SymbolMaps
+    # SymbolMaps — upsert so re-runs ENSURE the current contract month and the
+    # market-data alias on rows seeded before this column existed.
     for sm in SYMBOL_MAPS:
         existing = await session.execute(
             select(SymbolMap).where(SymbolMap.tv_symbol == sm["tv_symbol"])
         )
-        if existing.scalar_one_or_none() is None:
+        row = existing.scalar_one_or_none()
+        alias = sm.get("market_data_symbol")
+        if row is None:
             session.add(SymbolMap(**sm))
-            print(f"  ✓ SymbolMap {sm['tv_symbol']} → {sm['mapped_symbol']}")
+            suffix = f"  (datos: {alias})" if alias else ""
+            print(f"  ✓ SymbolMap {sm['tv_symbol']} → {sm['mapped_symbol']}{suffix}")
+        else:
+            for key, value in sm.items():
+                setattr(row, key, value)
+            # Parents omit the key → explicitly clear any stale alias.
+            row.market_data_symbol = alias
+            suffix = f"  (datos: {alias})" if alias else ""
+            print(f"  ↻ SymbolMap {sm['tv_symbol']} → {sm['mapped_symbol']}{suffix}")
 
     # AssetProfiles
     for ap in ASSET_PROFILES:

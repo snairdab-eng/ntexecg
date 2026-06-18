@@ -27,6 +27,13 @@ class SymbolMap(Base):
     # Active contract: "MESU2025", "6JU2025"
     mapped_symbol: Mapped[str] = mapped_column(String(50), nullable=False)
 
+    # Market-data alias (Anexo A.9.1; reglas 36, 38).
+    # Read-only symbol substitution for the bridge: a micro contract reads the
+    # bridge files of its more-liquid parent (e.g. MES → ES). NULL/empty means
+    # "use tv_symbol itself". NEVER affects decisions or the TradersPost payload —
+    # those keep using mapped_symbol. Does NOT transform prices.
+    market_data_symbol: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     exchange: Mapped[str] = mapped_column(String(20), nullable=False)
     contract_type: Mapped[str] = mapped_column(String(30), nullable=False)
     underlying_name: Mapped[Optional[str]] = mapped_column(String(100))

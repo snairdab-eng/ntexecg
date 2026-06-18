@@ -221,6 +221,34 @@ async def test_bridge_get_atr_returns_none_with_no_bars(tmp_path) -> None:
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_bridge_get_bars_tolerates_utf8_bom(tmp_path) -> None:
+    """The .NET bridge writer emits files with a UTF-8 BOM. get_bars must parse
+    them (utf-8-sig) instead of failing with 'Unexpected UTF-8 BOM'.
+    """
+    import json
+
+    bars_data = [
+        {"time": f"2026-06-15T09:{i:02d}:00",
+         "open": 5490.0 + i, "high": 5500.0 + i,
+         "low": 5485.0 + i, "close": 5498.0 + i, "volume": 1000 + i}
+        for i in range(20)
+    ]
+    bars_file = tmp_path / "bars_ES_5m.json"
+    # Write the bytes WITH an explicit UTF-8 BOM prefix.
+    bars_file.write_bytes(b"\xef\xbb\xbf" + json.dumps(bars_data).encode("utf-8"))
+
+    provider = NinjaTraderBridgeProvider(bridge_path=str(tmp_path), heartbeat_max_age=60)
+
+    result = await provider.get_bars("ES", "5m")
+    assert len(result) == 20
+    assert result[0]["close"] == 5498.0
+
+    atr = await provider.get_atr("ES", "5m")
+    assert isinstance(atr, float)
+    assert atr > 0
+
+
 # ---------------------------------------------------------------------------
 # Phase 5 stubs
 # ---------------------------------------------------------------------------

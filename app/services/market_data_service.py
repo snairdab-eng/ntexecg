@@ -238,7 +238,10 @@ class NinjaTraderBridgeProvider(MarketDataProvider):
         try:
             if not bars_file.exists():
                 return []
-            data = json.loads(bars_file.read_text(encoding="utf-8"))
+            # utf-8-sig transparently strips the UTF-8 BOM the .NET bridge writer
+            # emits (and is a no-op when there is none). Without this, json.loads
+            # fails with "Unexpected UTF-8 BOM".
+            data = json.loads(bars_file.read_text(encoding="utf-8-sig"))
             if not isinstance(data, list):
                 return []
             return data[-limit:]

@@ -24,10 +24,14 @@ _CACHE_TTL = timedelta(minutes=5)
 # Module-level cache: tv_symbol → (mapped_symbol | None, cached_at)
 _cache: dict[str, tuple[str | None, datetime]] = {}
 
+# Separate cache for the market-data alias: ticker_received → (data_symbol, cached_at)
+_data_symbol_cache: dict[str, tuple[str, datetime]] = {}
+
 
 def clear_cache() -> None:
-    """Clear the symbol mapper cache. Call this in tests between fixtures."""
+    """Clear the symbol mapper caches. Call this in tests between fixtures."""
     _cache.clear()
+    _data_symbol_cache.clear()
 
 
 class SymbolMapper:
@@ -52,6 +56,34 @@ class SymbolMapper:
         symbol_map = await get_active_symbol_map(db, ticker_received)
         result = symbol_map.mapped_symbol if symbol_map else None
         _cache[ticker_received] = (result, now)
+        return result
+
+    async def resolve_market_data_symbol(
+        self, db: AsyncSession, ticker_received: str
+    ) -> str:
+        """Return the bridge symbol whose market data should be read for this ticker.
+
+        Read-only symbol substitution (Anexo A.9.1; reglas 36, 38): a micro reads
+        the bridge files of its more-liquid parent. Looks up the active SymbolMap
+        by exact tv_symbol; returns its market_data_symbol if set/non-empty,
+        otherwise the ticker_received itself (parents, and unknown tickers, map to
+        themselves). NEVER returns None — the caller always gets a symbol to read.
+
+        Same exact-match, no-string-manipulation contract as map_symbol().
+        Used ONLY for choosing which bridge files to read (is_active / get_atr).
+        Decisions and the TradersPost payload keep using the mapped contract.
+        """
+        now = datetime.now(timezone.utc)
+        if ticker_received in _data_symbol_cache:
+            cached_value, cached_at = _data_symbol_cache[ticker_received]
+            if now - cached_at < _CACHE_TTL:
+                return cached_value
+
+        symbol_map = await get_active_symbol_map(db, ticker_received)
+        alias = symbol_map.market_data_symbol if symbol_map else None
+        # NULL or empty string → fall back to the ticker itself.
+        result = alias if alias else ticker_received
+        _data_symbol_cache[ticker_received] = (result, now)
         return result
 
     async def get_pine_script_config(

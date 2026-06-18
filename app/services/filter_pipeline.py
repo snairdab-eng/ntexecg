@@ -29,6 +29,7 @@ from app.services.market_data_service import MarketDataService
 from app.services.quality_scorer import QualityScorer
 from app.services.session_validator import SessionValidator
 from app.services.sl_tp_calculator import SLTPCalculator
+from app.services.symbol_mapper import SymbolMapper
 
 # Outcomes that terminate the pipeline at Level 1 without being a "BLOCK"
 _CONTINUE = "CONTINUE"
@@ -55,6 +56,7 @@ class FilterPipeline:
         self._session_validator = SessionValidator()
         self._quality_scorer = QualityScorer()
         self._sl_tp_calc = SLTPCalculator()
+        self._symbol_mapper = SymbolMapper()
 
     async def evaluate(
         self,
@@ -68,10 +70,22 @@ class FilterPipeline:
         symbol = signal.mapped_symbol
         execution: dict = {}
 
+        # Market-data alias (Anexo A.9.1; reglas 36, 38): resolve WHICH bridge
+        # symbol to read from the ticker_received (micro → parent, e.g. MES → ES).
+        # Read-only symbol substitution — used for EVERY bridge market-data read:
+        # is_active (1.6), quality bars (4) and get_atr (5). Decisions, position
+        # state and the payload keep using the mapped contract symbol (`symbol`).
+        # Never transforms prices.
+        data_symbol = await self._symbol_mapper.resolve_market_data_symbol(
+            db, signal.ticker_received
+        )
+
         # ─────────────────────────────────────────────────────────────────
         # LEVEL 1 — SYSTEM VALIDATION
         # ─────────────────────────────────────────────────────────────────
-        l1 = await self._level_1_validation(signal, strategy, config, is_exit)
+        l1 = await self._level_1_validation(
+            signal, strategy, config, is_exit, data_symbol
+        )
         execution["level_1"] = l1
         if l1["outcome"] != _CONTINUE:
             return PipelineResult(
@@ -130,8 +144,10 @@ class FilterPipeline:
         if is_exit:
             execution["level_4"] = {"skipped": True, "reason": "exit_signal"}
         else:
+            # Quality bars come from the resolved data symbol too — a micro reuses
+            # its parent's bridge bars (MES → ES), consistent with get_atr (L5).
             bars = await self.market_data.get_bars(
-                symbol, signal.timeframe or "5m", limit=100
+                data_symbol, signal.timeframe or "5m", limit=100
             )
             score = await self._quality_scorer.score(signal, bars, config)
             score_minimum = config.get("score_minimum", 70)
@@ -153,8 +169,9 @@ class FilterPipeline:
         if is_exit:
             execution["level_5"] = {"skipped": True, "reason": "exit_signal"}
         else:
+            # Read ATR from the resolved data symbol (micro reuses parent data).
             atr_value = await self.market_data.get_atr(
-                symbol, signal.timeframe or "5m",
+                data_symbol, signal.timeframe or "5m",
                 period=config.get("atr_period", 14),
             )
             calc = await self._sl_tp_calc.calculate(
@@ -200,8 +217,13 @@ class FilterPipeline:
         strategy: Strategy | None,
         config: dict,
         is_exit: bool,
+        data_symbol: str,
     ) -> dict:
-        """Returns dict with 'outcome' = CONTINUE | BLOCK | QUEUE_FOR_REVIEW."""
+        """Returns dict with 'outcome' = CONTINUE | BLOCK | QUEUE_FOR_REVIEW.
+
+        data_symbol is the resolved bridge symbol (micro → parent) used for the
+        1.6 heartbeat check only. Symbol mapping (1.4) still uses mapped_symbol.
+        """
 
         # 1.1 Global mode — exits always pass (contract rule: exits prioritized)
         mode = config.get("mode", "normal")
@@ -231,12 +253,13 @@ class FilterPipeline:
 
         # 1.6 Market data active (NinjaTrader bridge heartbeat)
         #     Entry + inactive → BLOCK. Exit → always permitted (contract rule 25).
+        #     Checked on the resolved data_symbol (micro reuses parent heartbeat).
         if not is_exit:
             try:
-                active = await self.market_data.is_active(signal.mapped_symbol)
+                active = await self.market_data.is_active(data_symbol)
             except Exception as exc:
                 logger.error("is_active_check_failed symbol={} error={}",
-                             signal.mapped_symbol, exc)
+                             data_symbol, exc)
                 active = False
             if not active:
                 return {"outcome": "BLOCK", "reason": "market_data_not_active",

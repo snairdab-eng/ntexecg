@@ -31,6 +31,7 @@ async def list_symbol_map(
         expiring = bool(sm.expiry_date and sm.expiry_date <= warn_cutoff)
         items.append({
             "id": sm.id, "tv_symbol": sm.tv_symbol, "mapped_symbol": sm.mapped_symbol,
+            "market_data_symbol": sm.market_data_symbol,
             "exchange": sm.exchange, "contract_type": sm.contract_type,
             "pine_script_config": sm.pine_script_config, "expiry_date": sm.expiry_date,
             "active": sm.active, "expiring": expiring,
@@ -47,6 +48,7 @@ async def create_mapping(
     db: AsyncSession = Depends(get_db),
     tv_symbol: str = Form(...),
     mapped_symbol: str = Form(...),
+    market_data_symbol: str = Form(""),
     exchange: str = Form("CME"),
     contract_type: str = Form("futures_micro"),
     expiry_date: str = Form(""),
@@ -64,9 +66,11 @@ async def create_mapping(
         except ValueError:
             pass
 
+    # Empty market_data_symbol → None (symbol reads its own bridge data).
     sm = SymbolMap(
         tv_symbol=tv_symbol,
         mapped_symbol=mapped_symbol,
+        market_data_symbol=market_data_symbol.strip() or None,
         exchange=exchange,
         contract_type=contract_type,
         pine_script_config=f'"ticker": "{tv_symbol}"',
