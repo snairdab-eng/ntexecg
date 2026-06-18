@@ -36,6 +36,7 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.0",
     "aiosqlite>=0.20.0",
 ]
 phase6 = [
@@ -50,6 +51,10 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Test and its async fixtures share ONE event loop per test function, so the
+# per-test async engine is created and disposed on the same loop (no teardown
+# against a closed loop, no lingering aiosqlite worker thread).
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.coverage.run]
