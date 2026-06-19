@@ -19,6 +19,7 @@ Exit handling (contract rules 7, 11, 25):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,30 @@ from app.services.symbol_mapper import SymbolMapper
 
 # Outcomes that terminate the pipeline at Level 1 without being a "BLOCK"
 _CONTINUE = "CONTINUE"
+
+
+def _normalize_tf(value: object) -> str | None:
+    """Normalize a timeframe to a comparable canonical string (minutes).
+
+    "5" -> "5", "5m" -> "5", "15M" -> "15", "1h" -> "60", "4h" -> "240".
+    Used by the per-strategy interval guardrail (Anexo 08 #2) so that
+    "5" from LuxAlgo and "5m" declared on the strategy compare equal.
+    Returns None if the value is empty/unparseable.
+    """
+    if value is None:
+        return None
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s.endswith("m") and s[:-1].isdigit():
+        return s[:-1]
+    if s.endswith("h") and s[:-1].isdigit():
+        return str(int(s[:-1]) * 60)
+    if s.endswith("d") and s[:-1].isdigit():
+        return str(int(s[:-1]) * 1440)
+    if s.isdigit():
+        return s
+    return s
 
 
 @dataclass
@@ -100,6 +125,16 @@ class FilterPipeline:
         # Single source of truth: config["session_config_json"]
         # (already merged from AssetProfile/StrategyProfile by ConfigResolver)
         # ─────────────────────────────────────────────────────────────────
+        stale = self._check_staleness(signal, config, is_exit)
+        execution["staleness"] = stale
+        if stale["failed"]:
+            return PipelineResult(
+                outcome="BLOCK",
+                block_reason=stale["reason"],
+                block_level=2,
+                pipeline_execution_json=execution,
+            )
+
         l2 = self._level_2_temporal(config)
         execution["level_2"] = l2
         if l2["failed"]:
@@ -246,10 +281,28 @@ class FilterPipeline:
             return {"outcome": "BLOCK", "reason": "strategy_paused",
                     "check": "1.2_strategy_status"}
 
-        # 1.4 Symbol mapping — applies to entries and exits
+        # 1.4 Symbol mapping - applies to entries and exits
         if signal.mapped_symbol is None:
             return {"outcome": "BLOCK", "reason": "symbol_not_mapped",
                     "check": "1.4_symbol_map"}
+
+        # 1.7 Per-strategy symbol guardrail (Anexo 08) - opt-in.
+        if config.get("enforce_symbol_match") and config.get("expected_symbol"):
+            if signal.ticker_received != config["expected_symbol"]:
+                return {"outcome": "BLOCK", "reason": "symbol_mismatch",
+                        "check": "1.7_symbol_expected",
+                        "expected": config["expected_symbol"],
+                        "received": signal.ticker_received}
+
+        # 1.8 Per-strategy timeframe guardrail (Anexo 08) - opt-in.
+        if config.get("enforce_timeframe_match") and config.get("expected_timeframe"):
+            if _normalize_tf(signal.timeframe) != _normalize_tf(
+                config["expected_timeframe"]
+            ):
+                return {"outcome": "BLOCK", "reason": "interval_mismatch",
+                        "check": "1.8_interval_expected",
+                        "expected": config["expected_timeframe"],
+                        "received": signal.timeframe}
 
         # 1.6 Market data active (NinjaTrader bridge heartbeat)
         #     Entry + inactive → BLOCK. Exit → always permitted (contract rule 25).
@@ -283,6 +336,28 @@ class FilterPipeline:
         # 2.3 News filter — Phase 1 stub (always passes)
         return {"failed": False}
 
+    def _check_staleness(
+        self, signal: NormalizedSignal, config: dict, is_exit: bool
+    ) -> dict:
+        """Reject signals older than the configured threshold (Anexo 08)."""
+        max_age = (
+            config.get("signal_max_age_exit_seconds")
+            if is_exit
+            else config.get("signal_max_age_entry_seconds")
+        )
+        if not max_age or signal.signal_ts is None:
+            return {"failed": False, "skipped": True}
+        now = config.get("now") or datetime.now(timezone.utc)
+        ts = signal.signal_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (now - ts).total_seconds()
+        if age > float(max_age):
+            return {"failed": True, "reason": "signal_stale",
+                    "check": "2.0_staleness",
+                    "age_seconds": age, "max_age": float(max_age)}
+        return {"failed": False, "age_seconds": age}
+
     # ───────────────────────────────────────────────────────────────────────
     # LEVEL 3 — Risk management (entries only — caller skips for exits)
     # ───────────────────────────────────────────────────────────────────────
@@ -295,6 +370,29 @@ class FilterPipeline:
         UNKNOWN or LOCKED state → BLOCK entry.
         """
         from app.services.repositories import get_position_state
+
+        # Anexo 08 #2 — per-operation risk gates (opt-in, entries only).
+        qty = signal.quantity or 0
+        # 8. Max contracts
+        max_contracts = config.get("max_contracts")
+        if max_contracts is not None and qty > max_contracts:
+            return {"failed": True, "reason": "qty_exceeds_max",
+                    "check": "3.4_max_contracts",
+                    "quantity": qty, "max_contracts": max_contracts}
+        # 9. Mandatory stop (when required, a stop in ticks must be available)
+        stop_ticks = config.get("stop_ticks")
+        if config.get("stop_required") and not stop_ticks:
+            return {"failed": True, "reason": "stop_required",
+                    "check": "3.5_stop_required"}
+        # 9. Dollar risk per operation: qty * stop_ticks * tick_value <= max
+        risk_max = config.get("risk_usd_max_operation")
+        tick_value = config.get("tick_value")
+        if risk_max is not None and stop_ticks and tick_value is not None:
+            risk_usd = qty * float(stop_ticks) * float(tick_value)
+            if risk_usd > float(risk_max):
+                return {"failed": True, "reason": "risk_exceeds_max",
+                        "check": "3.6_risk_usd",
+                        "risk_usd": risk_usd, "risk_usd_max": float(risk_max)}
 
         account_id = config.get("account_id", "paper_default")
         position = await get_position_state(

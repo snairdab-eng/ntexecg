@@ -195,7 +195,19 @@ async def seed(session: AsyncSession) -> None:
 
     # SymbolMaps — upsert so re-runs ENSURE the current contract month and the
     # market-data alias on rows seeded before this column existed.
+    # Instrument catalog tick values (Anexo 08 #4): USD/tick, tick size.
+    TICK_VALUES = {
+        "ES": (12.50, 0.25), "NQ": (5.00, 0.25), "RTY": (5.00, 0.10),
+        "YM": (5.00, 1.00), "GC": (10.00, 0.10), "CL": (10.00, 0.01),
+        "6J": (6.25, 0.0000005), "6E": (6.25, 0.00005),
+        "MES": (1.25, 0.25), "MNQ": (0.50, 0.25), "M2K": (0.50, 0.10),
+        "MYM": (0.50, 1.00), "MGC": (1.00, 0.10), "MCL": (1.00, 0.01),
+        "M6E": (1.25, 0.0001), "MJY": (1.25, 0.000001), "M6J": (1.25, 0.000001),
+    }
     for sm in SYMBOL_MAPS:
+        _tv, _ts = TICK_VALUES.get(sm["tv_symbol"], (None, None))
+        sm.setdefault("tick_value", _tv)
+        sm.setdefault("tick_size", _ts)
         existing = await session.execute(
             select(SymbolMap).where(SymbolMap.tv_symbol == sm["tv_symbol"])
         )

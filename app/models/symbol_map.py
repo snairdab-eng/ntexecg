@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Index, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -37,6 +37,12 @@ class SymbolMap(Base):
     exchange: Mapped[str] = mapped_column(String(20), nullable=False)
     contract_type: Mapped[str] = mapped_column(String(30), nullable=False)
     underlying_name: Mapped[Optional[str]] = mapped_column(String(100))
+
+    # Instrument catalog (Anexo 08 #4): fixed contract properties. tick_value =
+    # USD per tick; tick_size = minimum price increment. Used by the Level-3
+    # dollar-risk gate (qty * stop_ticks * tick_value). Nullable for back-compat.
+    tick_value: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
+    tick_size: Mapped[Optional[float]] = mapped_column(Numeric(14, 8))
 
     # '"ticker": "MES"' — exact instruction for LuxAlgo JSON alert config
     pine_script_config: Mapped[str] = mapped_column(String(100), nullable=False)

@@ -8,6 +8,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.repositories import (
+    get_active_symbol_map,
     get_asset_profile,
     get_global_profile,
     get_strategy_by_id,
@@ -54,6 +55,21 @@ class ConfigResolver:
             "news_filter_enabled": True,
             "news_window_minutes": 30,
             "timezone": "America/New_York",
+            # Per-strategy guardrails (Anexo 08) - opt-in, disabled by default.
+            "expected_symbol": None,
+            "expected_timeframe": None,
+            "enforce_symbol_match": False,
+            "enforce_timeframe_match": False,
+            "signal_max_age_entry_seconds": None,
+            "signal_max_age_exit_seconds": None,
+            # Instrument catalog + per-operation risk (Anexo 08 #2/#4) - opt-in.
+            "tick_value": None,
+            "tick_size": None,
+            "contract_type": None,
+            "max_contracts": None,
+            "risk_usd_max_operation": None,
+            "stop_ticks": None,
+            "stop_required": False,
         }
 
         # Merge GlobalProfile (base)
@@ -101,6 +117,22 @@ class ConfigResolver:
             from app.models.strategy_profile import StrategyProfile
             from sqlalchemy import select
 
+            # Per-strategy guardrails (Anexo 08): expected symbol/timeframe come
+            # from the strategy record; enforcement stays OFF unless turned on
+            # via the profile's pipeline_config_json["guardrails"].
+            config["expected_symbol"] = strategy.asset_symbol
+            config["expected_timeframe"] = strategy.timeframe
+
+            # Instrument catalog (Anexo 08 #4): tick value/size from symbol_maps.
+            if strategy.asset_symbol:
+                sm = await get_active_symbol_map(db, strategy.asset_symbol)
+                if sm is not None:
+                    config["contract_type"] = sm.contract_type
+                    if sm.tick_value is not None:
+                        config["tick_value"] = float(sm.tick_value)
+                    if sm.tick_size is not None:
+                        config["tick_size"] = float(sm.tick_size)
+
             result = await db.execute(
                 select(StrategyProfile).where(
                     StrategyProfile.strategy_id == strategy_id
@@ -109,6 +141,21 @@ class ConfigResolver:
             strategy_profile = result.scalar_one_or_none()
 
             if strategy_profile:
+                guardrails = (strategy_profile.pipeline_config_json or {}).get(
+                    "guardrails", {})
+                if isinstance(guardrails, dict):
+                    for _k in ("enforce_symbol_match", "enforce_timeframe_match",
+                               "signal_max_age_entry_seconds",
+                               "signal_max_age_exit_seconds"):
+                        if guardrails.get(_k) is not None:
+                            config[_k] = guardrails[_k]
+                risk = (strategy_profile.pipeline_config_json or {}).get(
+                    "risk", {})
+                if isinstance(risk, dict):
+                    for _k in ("max_contracts", "risk_usd_max_operation",
+                               "stop_ticks", "stop_required"):
+                        if risk.get(_k) is not None:
+                            config[_k] = risk[_k]
                 updates = {
                     "mode": strategy_profile.mode,
                     "dry_run": strategy_profile.dry_run,
