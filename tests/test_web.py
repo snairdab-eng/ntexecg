@@ -540,3 +540,32 @@ async def test_config_resolver_injects_strategy_windows(
     sc = config.get("session_config_json") or {}
     assert "windows" in sc
     assert sc["windows"][0]["start"] == "09:30"
+
+
+@pytest.mark.asyncio
+async def test_create_generates_webhook_url_and_regenerate(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Anexo 08 — creation generates a token; detail shows the NTEXECG URL."""
+    resp = await client.post("/ui/strategies/new", data={
+        "strategy_id": "wh_strat", "name": "WH",
+        "asset_symbol": "MES", "timeframe": "5m", "initial_mode": "paper",
+    })
+    assert resp.status_code == 303
+    row = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == "wh_strat"))).scalar_one()
+    assert row.webhook_token
+
+    page = await client.get("/ui/strategies/wh_strat")
+    assert page.status_code == 200
+    assert "/webhooks/luxalgo/wh_strat?token=" in page.text
+    assert row.webhook_token in page.text
+
+    # Regenerate produces a different token
+    old = row.webhook_token
+    resp = await client.post("/ui/strategies/wh_strat/regenerate-token")
+    assert resp.status_code == 303
+    row2 = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == "wh_strat"))).scalar_one()
+    await db.refresh(row2)
+    assert row2.webhook_token and row2.webhook_token != old

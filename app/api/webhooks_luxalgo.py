@@ -13,6 +13,7 @@ without going through the HTTP layer.
 """
 from __future__ import annotations
 
+import hmac
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -26,7 +27,6 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import verify_token
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.decision import StrategyDecision
 from app.models.normalized_signal import NormalizedSignal
@@ -283,11 +283,14 @@ async def receive_luxalgo_webhook(
 
     # Token validation — raw token never appears in logs
     strategy = await get_strategy_by_id(db, strategy_id)
-    if strategy and strategy.webhook_token:
-        token_valid = verify_token(token, settings.WEBHOOK_TOKEN_SALT, strategy.webhook_token)
-    else:
-        # No per-strategy token configured: validate against global dev secret
-        token_valid = (token == settings.LUXALGO_WEBHOOK_SECRET)
+    # Per-strategy token if set (Anexo 08 — generated in the UI), else the global
+    # secret. Constant-time compare; the raw token never appears in logs.
+    expected = (
+        strategy.webhook_token
+        if (strategy and strategy.webhook_token)
+        else settings.LUXALGO_WEBHOOK_SECRET
+    )
+    token_valid = hmac.compare_digest(token, expected or "")
 
     # Save RawSignal ALWAYS (audit trail even for invalid tokens)
     raw_signal = RawSignal(

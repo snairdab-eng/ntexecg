@@ -394,3 +394,30 @@ async def test_decision_linked_to_normalized_signal(db: AsyncSession) -> None:
     )
     norm = result.scalar_one_or_none()
     assert norm is not None
+
+
+@pytest.mark.asyncio
+async def test_per_strategy_token(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A strategy with its own webhook_token accepts only that token."""
+    async def _noop(*args, **kwargs) -> None:
+        pass
+    monkeypatch.setattr("app.api.webhooks_luxalgo._background_process_signal", _noop)
+
+    db.add(Strategy(strategy_id="tok_strat", name="Tok",
+                    webhook_token="sekret_abc_123"))
+    await db.commit()
+
+    ok = await client.post(
+        "/webhooks/luxalgo/tok_strat?token=sekret_abc_123", json=_PAYLOAD)
+    assert ok.status_code == 200
+
+    bad = await client.post(
+        "/webhooks/luxalgo/tok_strat?token=wrong", json=_PAYLOAD)
+    assert bad.status_code == 401
+
+    # The global secret must NOT work once a per-strategy token exists.
+    glob = await client.post(
+        "/webhooks/luxalgo/tok_strat?token=dev_global_token", json=_PAYLOAD)
+    assert glob.status_code == 401

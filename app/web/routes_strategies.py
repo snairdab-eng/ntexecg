@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 
 from datetime import datetime, timezone
 
@@ -153,6 +154,8 @@ async def create_strategy_ui(
         status="candidate",
         enabled=False,
         traderspost_webhook_url=traderspost_webhook_url or None,
+        # Anexo 08 — per-strategy webhook token for the LuxAlgo URL.
+        webhook_token=secrets.token_urlsafe(24),
     )
     db.add(strategy)
 
@@ -241,12 +244,45 @@ async def strategy_detail(
         for d, s in dec_res.all()
     ]
 
+    base = str(request.base_url).rstrip("/")
+    webhook_url = (
+        f"{base}/webhooks/luxalgo/{strategy.strategy_id}?token={strategy.webhook_token}"
+        if strategy.webhook_token else None
+    )
+
     return await render(
         request, "strategy_detail.html",
         {
             "strategy": strategy, "profile": profile, "perf": perf,
-            "decisions": decisions, "messages": flash_messages(request),
+            "decisions": decisions, "webhook_url": webhook_url,
+            "messages": flash_messages(request),
         }, db=db,
+    )
+
+
+@router.post("/ui/strategies/{strategy_id}/regenerate-token")
+async def regenerate_token(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Anexo 08 — (re)generate the per-strategy webhook token for LuxAlgo."""
+    result = await db.execute(
+        select(Strategy).where(Strategy.strategy_id == strategy_id)
+    )
+    strategy = result.scalar_one_or_none()
+    if strategy is None:
+        return redirect("/ui/strategies", flash="Estrategia no encontrada",
+                        category="error")
+    strategy.webhook_token = secrets.token_urlsafe(24)
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="Strategy",
+        object_id=strategy_id, reason="webhook token regenerated via UI",
+    )
+    await db.commit()
+    return redirect(
+        f"/ui/strategies/{strategy_id}",
+        flash="Token de webhook regenerado — actualiza la URL en LuxAlgo",
     )
 
 
