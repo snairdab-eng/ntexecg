@@ -1,6 +1,8 @@
 """Strategy management UI routes."""
 from __future__ import annotations
 
+import json
+
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -299,6 +301,68 @@ async def update_guardrails(
     return redirect(
         f"/ui/strategies/{strategy_id}",
         flash="Guardarraíles actualizados",
+    )
+
+
+@router.post("/ui/strategies/{strategy_id}/windows")
+async def update_windows(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+    windows_json: str = Form(""),
+) -> RedirectResponse:
+    """Anexo 08 #5 — save repeatable operation windows (days per window)."""
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    try:
+        raw = json.loads(windows_json or "[]")
+    except (ValueError, TypeError):
+        raw = []
+
+    clean: list = []
+    if isinstance(raw, list):
+        for w in raw:
+            if not isinstance(w, dict):
+                continue
+            start, end = w.get("start"), w.get("end")
+            days = w.get("days")
+            if not isinstance(days, list) or not start or not end:
+                continue
+            days_i = sorted({
+                int(d) for d in days
+                if (isinstance(d, (int, float))
+                    or (isinstance(d, str) and d.isdigit()))
+                and 0 <= int(d) <= 6
+            })
+            if not days_i:
+                continue
+            item: dict = {"days": days_i, "start": str(start), "end": str(end)}
+            if w.get("next_day_end"):
+                item["next_day_end"] = True
+            clean.append(item)
+
+    cfg = dict(profile.pipeline_config_json or {})
+    if clean:
+        cfg["windows"] = clean
+    else:
+        cfg.pop("windows", None)
+    profile.pipeline_config_json = cfg or None
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="StrategyProfile",
+        object_id=strategy_id, new_value={"windows": clean},
+        reason="windows updated via UI",
+    )
+    await db.commit()
+    return redirect(
+        f"/ui/strategies/{strategy_id}",
+        flash=f"{len(clean)} ventana(s) guardada(s)",
     )
 
 

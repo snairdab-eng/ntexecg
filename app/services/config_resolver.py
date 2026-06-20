@@ -147,6 +147,14 @@ class ConfigResolver:
                                "signal_max_age_exit_seconds"):
                         if guardrails.get(_k) is not None:
                             config[_k] = guardrails[_k]
+                # Anexo 08 #5 — per-strategy repeatable windows override the
+                # asset session config (SessionValidator reads "windows").
+                windows = (strategy_profile.pipeline_config_json or {}).get(
+                    "windows")
+                if windows:
+                    base = dict(config.get("session_config_json") or {})
+                    base["windows"] = windows
+                    config["session_config_json"] = base
                 updates = {
                     "mode": strategy_profile.mode,
                     "dry_run": strategy_profile.dry_run,

@@ -476,3 +476,67 @@ async def test_update_guardrails_on_detail(
         StrategyProfile.strategy_id == "ug_strat"))).scalar_one()
     await db.refresh(row2)
     assert (row2.pipeline_config_json or {}).get("guardrails") is None
+
+
+@pytest.mark.asyncio
+async def test_update_windows_persists_and_cleans(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Anexo 08 #5 — windows editor saves cleaned windows; invalid ones dropped."""
+    import json as _json
+    db.add(Strategy(strategy_id="win_strat", name="W", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="win_strat", mode="paper"))
+    await db.commit()
+
+    payload = _json.dumps([
+        {"days": [0, 1, 2, 3], "start": "09:00", "end": "15:45"},
+        {"days": [4], "start": "09:00", "end": "12:00", "next_day_end": False},
+        {"days": [], "start": "09:00", "end": "10:00"},      # no days → dropped
+        {"days": [1], "start": "", "end": "10:00"},          # no start → dropped
+    ])
+    resp = await client.post("/ui/strategies/win_strat/windows",
+                             data={"windows_json": payload})
+    assert resp.status_code == 303
+
+    row = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "win_strat"))).scalar_one()
+    await db.refresh(row)
+    wins = (row.pipeline_config_json or {}).get("windows")
+    assert wins is not None and len(wins) == 2
+    assert wins[0] == {"days": [0, 1, 2, 3], "start": "09:00", "end": "15:45"}
+    assert wins[1]["days"] == [4]
+
+    # Detail "Ventanas" tab renders the saved windows JSON
+    page = await client.get("/ui/strategies/win_strat")
+    assert page.status_code == 200
+    assert "Añadir ventana" in page.text
+
+    # Empty submission clears the windows key
+    resp = await client.post("/ui/strategies/win_strat/windows",
+                             data={"windows_json": "[]"})
+    assert resp.status_code == 303
+    row2 = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "win_strat"))).scalar_one()
+    await db.refresh(row2)
+    assert (row2.pipeline_config_json or {}).get("windows") is None
+
+
+@pytest.mark.asyncio
+async def test_config_resolver_injects_strategy_windows(
+    db: AsyncSession
+) -> None:
+    """ConfigResolver puts per-strategy windows into session_config_json."""
+    from app.services.config_resolver import ConfigResolver
+    db.add(Strategy(strategy_id="cr_win", name="CR", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    db.add(StrategyProfile(
+        strategy_id="cr_win", mode="paper",
+        pipeline_config_json={"windows": [
+            {"days": [0, 1, 2, 3, 4], "start": "09:30", "end": "15:45"}]}))
+    await db.commit()
+
+    config = await ConfigResolver().resolve(db, "cr_win", "MES")
+    sc = config.get("session_config_json") or {}
+    assert "windows" in sc
+    assert sc["windows"][0]["start"] == "09:30"

@@ -75,7 +75,7 @@
 
     <!-- Tabs -->
     <div class="border-b border-gray-800 flex gap-1 text-sm">
-        {% for key, label in [('overview','Overview'),('pipeline','Pipeline'),('performance','Performance'),('config','Config')] %}
+        {% for key, label in [('overview','Overview'),('pipeline','Pipeline'),('performance','Performance'),('config','Config'),('windows','Ventanas')] %}
         <button @click="tab = '{{ key }}'"
                 :class="tab === '{{ key }}' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'"
                 class="px-4 py-2 border-b-2 transition">{{ label }}</button>
@@ -187,6 +187,57 @@
         {% else %}
         <p class="text-gray-600">Sin perfil de configuración.</p>
         {% endif %}
+    </div>
+
+    <!-- Tab: Ventanas (Anexo 08 #5) -->
+    <div x-show="tab === 'windows'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-4 text-sm">
+        {% set wins = (profile.pipeline_config_json or {}).get('windows', []) if profile else [] %}
+        <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/windows"
+              x-data='{ windows: {{ wins | tojson }},
+                        days: [["L",0],["M",1],["X",2],["J",3],["V",4],["S",5],["D",6]],
+                        add() { this.windows.push({days:[0,1,2,3,4], start:"09:30", end:"15:45", next_day_end:false}) },
+                        remove(i) { this.windows.splice(i,1) },
+                        toggle(w,d) { const k = w.days.indexOf(d); k>=0 ? w.days.splice(k,1) : w.days.push(d) } }'>
+            <input type="hidden" name="windows_json" :value="JSON.stringify(windows)">
+            <p class="text-xs text-gray-500 mb-3">Cada ventana tiene sus propios días. La señal está en sesión si cae en <b>cualquiera</b>. Sin ventanas = se usa la configuración del activo.</p>
+
+            <template x-for="(w,i) in windows" :key="i">
+                <div class="border border-gray-800 rounded p-3 mb-2 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs text-gray-500" x-text="'Ventana ' + (i+1)"></span>
+                        <button type="button" @click="remove(i)" class="text-xs text-red-400 hover:text-red-300">Quitar</button>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                        <template x-for="d in days" :key="d[1]">
+                            <button type="button" @click="toggle(w, d[1])"
+                                    :class="w.days.includes(d[1]) ? 'bg-blue-700 text-white' : 'bg-gray-800 text-gray-400'"
+                                    class="px-2.5 py-1 rounded text-xs font-medium" x-text="d[0]"></button>
+                        </template>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Inicio</label>
+                            <input type="time" x-model="w.start" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Fin</label>
+                            <input type="time" x-model="w.end" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-sm">
+                        </div>
+                    </div>
+                    <label class="flex items-center gap-2 text-xs text-gray-400">
+                        <input type="checkbox" x-model="w.next_day_end" class="rounded bg-gray-800 border-gray-700">
+                        Cruza medianoche (fin al día siguiente)
+                    </label>
+                </div>
+            </template>
+
+            <div x-show="windows.length === 0" class="text-gray-600 text-xs py-3">Sin ventanas configuradas.</div>
+
+            <div class="flex gap-2 mt-3">
+                <button type="button" @click="add()" class="bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-1.5 rounded text-sm">+ Añadir ventana</button>
+                <button type="submit" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar ventanas</button>
+            </div>
+        </form>
     </div>
 
 </div>
