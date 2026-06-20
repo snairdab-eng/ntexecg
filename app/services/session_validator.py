@@ -43,6 +43,15 @@ class SessionValidator:
         current_time = now_dt.time()
         current_day = now_dt.weekday()  # 0=Mon, 6=Sun
 
+        # Anexo 08 #5 — repeatable windows: each window carries its own days.
+        # If present, the signal is within session if it falls in ANY window.
+        # Backward compatible: absent "windows" → single-window logic below.
+        windows = session_config.get("windows")
+        if windows:
+            return any(
+                self._window_matches(w, current_day, current_time) for w in windows
+            )
+
         # Check day of week
         allowed_days: list = session_config.get("days_enabled", [0, 1, 2, 3, 4])
         if current_day not in allowed_days:
@@ -64,6 +73,22 @@ class SessionValidator:
 
         # Regular session: within if start <= time <= end
         return start_time <= current_time <= end_time
+
+    def _window_matches(self, window: dict, current_day: int, current_time: time) -> bool:
+        """A single window (Anexo 08 #5): own days + own start/end.
+
+        Accepts "days"/"start"/"end" (preferred) and falls back to the
+        single-window keys ("days_enabled"/"entry_start"/"entry_end") so the
+        same parser serves both shapes. Honors per-window next_day_end.
+        """
+        days = window.get("days", window.get("days_enabled", [0, 1, 2, 3, 4]))
+        if current_day not in days:
+            return False
+        start = self._parse_time(window.get("start", window.get("entry_start", "09:30")))
+        end = self._parse_time(window.get("end", window.get("entry_end", "15:45")))
+        if window.get("next_day_end", False):
+            return current_time >= start or current_time < end
+        return start <= current_time <= end
 
     @staticmethod
     def _parse_time(time_str: str) -> time:
