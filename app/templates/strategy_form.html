@@ -62,6 +62,54 @@
             </div>
         </fieldset>
 
+        <!-- Descripción -->
+        <fieldset class="space-y-3">
+            <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Descripción</legend>
+            <textarea name="descripcion" rows="4" placeholder="Resumen técnico, métricas en MES, factor de escalado, etc."
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></textarea>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Responsable</label>
+                <input name="responsable" placeholder="Sergio"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+            </div>
+        </fieldset>
+
+        <!-- Definición LuxAlgo + Backtest -->
+        <fieldset class="space-y-3">
+            <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Definición LuxAlgo + Backtest</legend>
+            <div class="grid grid-cols-2 gap-3">
+                <div><label class="block text-xs text-gray-400 mb-1">Toolkit / categoría</label>
+                    <input name="toolkit" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Gatillo (trigger)</label>
+                    <input name="trigger" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Filtro 1</label>
+                    <input name="filter_1" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Filtro 2</label>
+                    <input name="filter_2" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div class="col-span-2"><label class="block text-xs text-gray-400 mb-1">Condición de salida</label>
+                    <input name="exit_condition" placeholder="Confirmation Builtin-Exits"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Backtest inicio</label>
+                    <input name="bt_start" placeholder="2025-08-20" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Backtest fin</label>
+                    <input name="bt_end" placeholder="2026-06-09" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1"># operaciones</label>
+                    <input name="num_trades" type="number" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Winrate (%)</label>
+                    <input name="winrate" type="number" step="0.01" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Profit Factor</label>
+                    <input name="profit_factor" type="number" step="0.01" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Beneficio neto ($)</label>
+                    <input name="net_profit" type="number" step="0.01" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Max drawdown (%)</label>
+                    <input name="max_drawdown" type="number" step="0.01" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Frecuencia</label>
+                    <input name="frequency" placeholder="~1 señal cada 5 días" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div class="col-span-2"><label class="block text-xs text-gray-400 mb-1">Tamaño de orden usado</label>
+                    <input name="order_size" placeholder="unitario por defecto" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+            </div>
+        </fieldset>
+
         <!-- Sección 3 — TradersPost -->
         <fieldset class="space-y-3">
             <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Conexión TradersPost</legend>
@@ -70,6 +118,12 @@
                 <input name="traderspost_webhook_url" placeholder="https://webhooks.traderspost.io/trading/webhook/..."
                        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
                 <p class="text-xs text-gray-600 mt-1">Salida: a dónde NTEXECG reenvía. La URL de <b>entrada</b> para LuxAlgo se genera al crear y se muestra en el detalle.</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div><label class="block text-xs text-gray-400 mb-1">Cuenta / broker objetivo</label>
+                    <input name="target_account" placeholder="PAPER_FUTURES" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Notas de ruteo</label>
+                    <input name="routing_notes" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
             </div>
         </fieldset>
 
@@ -117,6 +171,49 @@
                     <input name="signal_max_age_exit_seconds" type="number" min="0" placeholder="sin límite"
                            class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
                 </div>
+            </div>
+        </fieldset>
+
+        <!-- Filtros de calidad (extra) -->
+        <fieldset class="space-y-3">
+            <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Filtros de calidad</legend>
+            <div class="grid grid-cols-2 gap-3">
+                <div><label class="block text-xs text-gray-400 mb-1">Dedup — ignorar repetida (seg)</label>
+                    <input name="dedup_seconds" type="number" min="0" placeholder="por defecto 60" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Confirmaciones adicionales</label>
+                    <input name="confirmaciones" placeholder="(futuro)" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+            </div>
+        </fieldset>
+
+        <!-- Ventana / cierre EOD -->
+        <fieldset class="space-y-3">
+            <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Ventana / cierre EOD</legend>
+            <p class="text-xs text-gray-600">Las ventanas de operación (días/horas) se editan en el detalle, pestaña Ventanas.</p>
+            <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" name="allow_exits_outside_window" value="1" checked class="rounded bg-gray-800 border-gray-700">
+                Salidas siempre permitidas (recomendado)
+            </label>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Cierre forzado EOD</label>
+                <input name="force_flat_time" type="time" placeholder="16:00" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+            </div>
+        </fieldset>
+
+        <!-- Riesgo (solo referencia) -->
+        <fieldset class="space-y-3">
+            <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Riesgo (referencia)</legend>
+            <p class="text-xs text-gray-600">Documental. NTEXECG <b>no</b> enforza estos límites: su única protección de riesgo es el SL por ATR. La cantidad de contratos la define LuxAlgo.</p>
+            <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" name="stop_required" value="1" class="rounded bg-gray-800 border-gray-700">
+                Stop obligatorio (referencia)
+            </label>
+            <div class="grid grid-cols-3 gap-3">
+                <div><label class="block text-xs text-gray-400 mb-1">Stop esperado (ticks)</label>
+                    <input name="stop_ticks" type="number" min="0" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Riesgo $ máx / operación</label>
+                    <input name="risk_usd_max_operation" type="number" step="0.01" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Cantidad máx contratos</label>
+                    <input name="max_contracts" type="number" min="0" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm"></div>
             </div>
         </fieldset>
 

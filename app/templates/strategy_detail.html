@@ -75,7 +75,7 @@
 
     <!-- Tabs -->
     <div class="border-b border-gray-800 flex gap-1 text-sm">
-        {% for key, label in [('overview','Overview'),('pipeline','Pipeline'),('performance','Performance'),('config','Config'),('windows','Ventanas')] %}
+        {% for key, label in [('overview','Overview'),('pipeline','Pipeline'),('performance','Performance'),('config','Config'),('windows','Ventanas'),('ficha','Ficha')] %}
         <button @click="tab = '{{ key }}'"
                 :class="tab === '{{ key }}' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'"
                 class="px-4 py-2 border-b-2 transition">{{ label }}</button>
@@ -258,6 +258,61 @@
                 <button type="submit" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar ventanas</button>
             </div>
         </form>
+    </div>
+
+    <!-- Tab: Ficha (machote completo, lectura) -->
+    <div x-show="tab === 'ficha'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-4 text-sm space-y-3">
+        {% set m = strategy.luxalgo_metrics_json or {} %}
+        {% set bt = m.get('backtest', {}) %}
+        {% set pc = (profile.pipeline_config_json or {}) if profile else {} %}
+        {% set rr = pc.get('risk_reference', {}) %}
+        {% set rt = pc.get('routing', {}) %}
+        <div>
+            <div class="text-xs uppercase text-gray-500 mb-1">Descripción</div>
+            <p class="text-gray-300 whitespace-pre-line">{{ strategy.notes or '—' }}</p>
+            <div class="text-gray-500 mt-1">Responsable: <span class="text-gray-300">{{ m.get('responsable', '—') }}</span></div>
+        </div>
+        <div class="border-t border-gray-800 pt-2">
+            <div class="text-xs uppercase text-gray-500 mb-1">Definición LuxAlgo</div>
+            <div class="grid grid-cols-2 gap-2 text-xs text-gray-300">
+                <div><span class="text-gray-500">Toolkit:</span> {{ m.get('toolkit', '—') }}</div>
+                <div><span class="text-gray-500">Gatillo:</span> {{ m.get('trigger', '—') }}</div>
+                <div><span class="text-gray-500">Filtro 1:</span> {{ m.get('filter_1', '—') }}</div>
+                <div><span class="text-gray-500">Filtro 2:</span> {{ m.get('filter_2', '—') }}</div>
+                <div class="col-span-2"><span class="text-gray-500">Salida:</span> {{ m.get('exit_condition', '—') }}</div>
+            </div>
+        </div>
+        <div class="border-t border-gray-800 pt-2">
+            <div class="text-xs uppercase text-gray-500 mb-1">Backtest</div>
+            <div class="grid grid-cols-3 gap-2 text-xs text-gray-300">
+                <div><span class="text-gray-500">Periodo:</span> {{ bt.get('bt_start', '—') }} → {{ bt.get('bt_end', '—') }}</div>
+                <div><span class="text-gray-500"># ops:</span> {{ bt.get('num_trades', '—') }}</div>
+                <div><span class="text-gray-500">Winrate:</span> {{ bt.get('winrate', '—') }}%</div>
+                <div><span class="text-gray-500">PF:</span> {{ bt.get('profit_factor', '—') }}</div>
+                <div><span class="text-gray-500">Neto:</span> ${{ bt.get('net_profit', '—') }}</div>
+                <div><span class="text-gray-500">Max DD:</span> {{ bt.get('max_drawdown', '—') }}%</div>
+                <div><span class="text-gray-500">Frecuencia:</span> {{ m.get('frequency', '—') }}</div>
+                <div><span class="text-gray-500">Tamaño:</span> {{ m.get('order_size', '—') }}</div>
+            </div>
+        </div>
+        <div class="border-t border-gray-800 pt-2">
+            <div class="text-xs uppercase text-gray-500 mb-1">Riesgo (referencia — no enforzado)</div>
+            <div class="grid grid-cols-3 gap-2 text-xs text-gray-300">
+                <div><span class="text-gray-500">Stop oblig.:</span> {{ 'sí' if rr.get('stop_required') else '—' }}</div>
+                <div><span class="text-gray-500">Stop ticks:</span> {{ rr.get('stop_ticks', '—') }}</div>
+                <div><span class="text-gray-500">Riesgo $/op:</span> {{ rr.get('risk_usd_max_operation', '—') }}</div>
+                <div><span class="text-gray-500">Máx contratos:</span> {{ rr.get('max_contracts', '—') }}</div>
+                <div><span class="text-gray-500">Dedup (seg):</span> {{ pc.get('dedup_seconds', '—') }}</div>
+            </div>
+        </div>
+        <div class="border-t border-gray-800 pt-2">
+            <div class="text-xs uppercase text-gray-500 mb-1">Ruteo / EOD</div>
+            <div class="grid grid-cols-2 gap-2 text-xs text-gray-300">
+                <div><span class="text-gray-500">Cuenta objetivo:</span> {{ rt.get('target_account', '—') }}</div>
+                <div><span class="text-gray-500">Cierre EOD:</span> {{ profile.force_flat_time.strftime('%H:%M') if profile and profile.force_flat_time else '—' }}</div>
+                <div><span class="text-gray-500">Salidas siempre:</span> {{ 'sí' if profile and profile.allow_exits_outside_window else 'no/heredar' }}</div>
+            </div>
+        </div>
     </div>
 
 </div>

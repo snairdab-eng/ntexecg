@@ -186,8 +186,89 @@ async def create_strategy_ui(
                 guardrails[_key] = int(_field)
             except ValueError:
                 pass
+
+    # Full registration ficha (machote). Extra fields read from the raw form to
+    # avoid an enormous handler signature.
+    form = await request.form()
+
+    def _s(key: str) -> str | None:
+        v = (form.get(key) or "").strip()
+        return v or None
+
+    def _num(key, cast):
+        v = (form.get(key) or "").strip()
+        if not v:
+            return None
+        try:
+            return cast(v)
+        except (ValueError, TypeError):
+            return None
+
+    # Identity extras + definition/backtest → Strategy.notes / luxalgo_metrics_json
+    strategy.notes = _s("descripcion")
+    metrics: dict = {}
+    for _k in ("responsable", "toolkit", "trigger", "filter_1", "filter_2",
+               "exit_condition", "frequency", "order_size"):
+        _v = _s(_k)
+        if _v:
+            metrics[_k] = _v
+    bt: dict = {}
+    for _k in ("bt_start", "bt_end"):
+        _v = _s(_k)
+        if _v:
+            bt[_k] = _v
+    for _k, _cast in (("num_trades", int), ("winrate", float),
+                      ("profit_factor", float), ("net_profit", float),
+                      ("max_drawdown", float)):
+        _v = _num(_k, _cast)
+        if _v is not None:
+            bt[_k] = _v
+    if bt:
+        metrics["backtest"] = bt
+    if metrics:
+        strategy.luxalgo_metrics_json = metrics
+
+    # Profile pipeline_config_json: guardrails + reference-only sections.
+    cfg: dict = {}
     if guardrails:
-        profile.pipeline_config_json = {"guardrails": guardrails}
+        cfg["guardrails"] = guardrails
+    risk_ref: dict = {}
+    if form.get("stop_required"):
+        risk_ref["stop_required"] = True
+    for _k, _cast in (("stop_ticks", int), ("risk_usd_max_operation", float),
+                      ("max_contracts", int)):
+        _v = _num(_k, _cast)
+        if _v is not None:
+            risk_ref[_k] = _v
+    if risk_ref:
+        cfg["risk_reference"] = risk_ref  # documentation only; NOT enforced
+    _dedup = _num("dedup_seconds", int)
+    if _dedup is not None:
+        cfg["dedup_seconds"] = _dedup
+    _conf = _s("confirmaciones")
+    if _conf:
+        cfg["confirmaciones"] = _conf
+    routing: dict = {}
+    if _s("target_account"):
+        routing["target_account"] = _s("target_account")
+    if _s("routing_notes"):
+        routing["notes"] = _s("routing_notes")
+    if routing:
+        cfg["routing"] = routing
+    if cfg:
+        profile.pipeline_config_json = cfg
+
+    # Section 4 scalars: exits-always + forced EOD close.
+    if form.get("allow_exits_outside_window"):
+        profile.allow_exits_outside_window = True
+    _eod = _s("force_flat_time")
+    if _eod:
+        from datetime import time as _time
+        try:
+            _hh, _mm = _eod.split(":")[:2]
+            profile.force_flat_time = _time(int(_hh), int(_mm))
+        except (ValueError, IndexError):
+            pass
 
     db.add(profile)
 

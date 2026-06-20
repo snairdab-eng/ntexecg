@@ -569,3 +569,53 @@ async def test_create_generates_webhook_url_and_regenerate(
         Strategy.strategy_id == "wh_strat"))).scalar_one()
     await db.refresh(row2)
     assert row2.webhook_token and row2.webhook_token != old
+
+
+@pytest.mark.asyncio
+async def test_create_full_ficha(client: AsyncClient, db: AsyncSession) -> None:
+    """Machote completo: definición+BT, riesgo-ref, ruteo, EOD se persisten."""
+    resp = await client.post("/ui/strategies/new", data={
+        "strategy_id": "ficha_strat", "name": "Ficha",
+        "asset_symbol": "MES", "timeframe": "15m", "initial_mode": "paper",
+        "descripcion": "Estrategia de prueba MES", "responsable": "Sergio",
+        "toolkit": "Signals & Overlays", "trigger": "Confirmation Any",
+        "filter_1": "Contrarian", "filter_2": "Overflow",
+        "exit_condition": "Builtin-Exits",
+        "bt_start": "2025-08-20", "bt_end": "2026-06-09",
+        "num_trades": "56", "winrate": "96.43", "profit_factor": "10.6",
+        "net_profit": "5928", "max_drawdown": "11.78",
+        "frequency": "~1/5d", "order_size": "unitario",
+        "dedup_seconds": "5", "stop_required": "1", "stop_ticks": "40",
+        "risk_usd_max_operation": "50", "max_contracts": "2",
+        "target_account": "PAPER_FUTURES", "routing_notes": "nota",
+        "allow_exits_outside_window": "1", "force_flat_time": "16:00",
+    })
+    assert resp.status_code == 303
+
+    strat = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == "ficha_strat"))).scalar_one()
+    await db.refresh(strat)
+    assert strat.notes == "Estrategia de prueba MES"
+    m = strat.luxalgo_metrics_json
+    assert m["responsable"] == "Sergio"
+    assert m["toolkit"] == "Signals & Overlays"
+    assert m["backtest"]["num_trades"] == 56
+    assert m["backtest"]["winrate"] == 96.43
+
+    prof = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "ficha_strat"))).scalar_one()
+    await db.refresh(prof)
+    pc = prof.pipeline_config_json
+    assert pc["risk_reference"]["stop_required"] is True
+    assert pc["risk_reference"]["stop_ticks"] == 40
+    assert pc["risk_reference"]["max_contracts"] == 2
+    assert pc["dedup_seconds"] == 5
+    assert pc["routing"]["target_account"] == "PAPER_FUTURES"
+    assert prof.allow_exits_outside_window is True
+    assert prof.force_flat_time is not None
+    assert prof.force_flat_time.strftime("%H:%M") == "16:00"
+
+    page = await client.get("/ui/strategies/ficha_strat")
+    assert page.status_code == 200
+    assert "PAPER_FUTURES" in page.text
+    assert "Sergio" in page.text
