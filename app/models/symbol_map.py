@@ -39,8 +39,8 @@ class SymbolMap(Base):
     underlying_name: Mapped[Optional[str]] = mapped_column(String(100))
 
     # Instrument catalog (Anexo 08 #4): fixed contract properties. tick_value =
-    # USD per tick; tick_size = minimum price increment. Used by the Level-3
-    # dollar-risk gate (qty * stop_ticks * tick_value). Nullable for back-compat.
+    # USD per tick; tick_size = minimum price increment. Reference data shown in
+    # the strategy ficha (NTEXECG does not gate on monetary risk). Nullable.
     tick_value: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
     tick_size: Mapped[Optional[float]] = mapped_column(Numeric(14, 8))
 

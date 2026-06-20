@@ -411,3 +411,29 @@ async def test_create_strategy_without_guardrails_leaves_none(
         StrategyProfile.strategy_id == "plain_strat"))).scalar_one()
     # No guardrail fields → pipeline_config_json stays None (no enforcement).
     assert row.pipeline_config_json is None
+
+
+@pytest.mark.asyncio
+async def test_ticker_hint_shows_tick_value(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Anexo 08 #4 — ticker hint shows the catalog tick value as reference."""
+    db.add(SymbolMap(
+        tv_symbol="MES", mapped_symbol="MESU2026", exchange="CME",
+        contract_type="futures_micro", pine_script_config='"ticker": "MES"',
+        tick_value=1.25, tick_size=0.25,
+    ))
+    await db.commit()
+    resp = await client.get("/ui/strategies/ticker-hint?asset_symbol=MES")
+    assert resp.status_code == 200
+    assert "1.25" in resp.text
+    assert "futures_micro" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_ticker_hint_without_catalog_no_tick(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    resp = await client.get("/ui/strategies/ticker-hint?asset_symbol=ZZZ")
+    assert resp.status_code == 200
+    assert "valor de tick" not in resp.text

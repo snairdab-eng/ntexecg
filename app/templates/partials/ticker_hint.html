@@ -16,3 +16,13 @@
     No hay AssetProfile configurado para "{{ asset_symbol }}".
 </div>
 {% endif %}
+
+{% if sm_info %}
+<div class="bg-gray-800/60 border border-gray-700 rounded p-3 mt-2 text-xs text-gray-300">
+    <span class="text-gray-500">Catálogo:</span>
+    valor de tick <span class="text-gray-100 font-mono">${{ '%.4g' % sm_info.tick_value }}</span>
+    {% if sm_info.tick_size %}· tick mín <span class="text-gray-100 font-mono">{{ '%.8g' % sm_info.tick_size }}</span>{% endif %}
+    · <span class="text-gray-400">{{ sm_info.contract_type }}</span>
+    <p class="text-gray-600 mt-1">Solo referencia — verifica el contrato en el broker antes de operar.</p>
+</div>
+{% endif %}

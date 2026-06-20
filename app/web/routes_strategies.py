@@ -16,6 +16,7 @@ from app.models.strategy import Strategy
 from app.models.strategy_performance import StrategyPerformance
 from app.models.strategy_profile import StrategyProfile
 from app.models.strategy_template import StrategyTemplate
+from app.models.symbol_map import SymbolMap
 from app.services.audit_service import AuditService
 from app.web.common import render, redirect, flash_messages, templates
 
@@ -79,15 +80,27 @@ async def ticker_hint(
 ) -> HTMLResponse:
     """HTMX partial: show the exact pine_script_config for the chosen asset."""
     pine = None
+    sm_info = None
     if asset_symbol:
         res = await db.execute(
             select(AssetProfile).where(AssetProfile.symbol == asset_symbol)
         )
         ap = res.scalar_one_or_none()
         pine = ap.pine_script_config if ap else None
+        # Instrument catalog (Anexo 08 #4) — reference data for the operator.
+        smres = await db.execute(
+            select(SymbolMap).where(SymbolMap.tv_symbol == asset_symbol)
+        )
+        sm = smres.scalar_one_or_none()
+        if sm is not None and sm.tick_value is not None:
+            sm_info = {
+                "tick_value": float(sm.tick_value),
+                "tick_size": float(sm.tick_size) if sm.tick_size is not None else None,
+                "contract_type": sm.contract_type,
+            }
     return templates.TemplateResponse(
         request, "partials/ticker_hint.html",
-        {"pine": pine, "asset_symbol": asset_symbol},
+        {"pine": pine, "asset_symbol": asset_symbol, "sm_info": sm_info},
     )
 
 
