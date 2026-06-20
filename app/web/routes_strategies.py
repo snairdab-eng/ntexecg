@@ -248,6 +248,60 @@ async def strategy_detail(
     )
 
 
+@router.post("/ui/strategies/{strategy_id}/guardrails")
+async def update_guardrails(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+    enforce_symbol_match: str = Form(""),
+    enforce_timeframe_match: str = Form(""),
+    signal_max_age_entry_seconds: str = Form(""),
+    signal_max_age_exit_seconds: str = Form(""),
+) -> RedirectResponse:
+    """Anexo 08 #2 — edit the per-strategy guardrails on the detail page."""
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    guardrails: dict = {}
+    if enforce_symbol_match:
+        guardrails["enforce_symbol_match"] = True
+    if enforce_timeframe_match:
+        guardrails["enforce_timeframe_match"] = True
+    for _field, _key in (
+        (signal_max_age_entry_seconds, "signal_max_age_entry_seconds"),
+        (signal_max_age_exit_seconds, "signal_max_age_exit_seconds"),
+    ):
+        if _field.strip():
+            try:
+                guardrails[_key] = int(_field)
+            except ValueError:
+                pass
+
+    # Preserve any other pipeline_config_json keys; replace only "guardrails".
+    cfg = dict(profile.pipeline_config_json or {})
+    if guardrails:
+        cfg["guardrails"] = guardrails
+    else:
+        cfg.pop("guardrails", None)
+    profile.pipeline_config_json = cfg or None
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="StrategyProfile",
+        object_id=strategy_id, new_value={"guardrails": guardrails},
+        reason="guardrails updated via UI",
+    )
+    await db.commit()
+    return redirect(
+        f"/ui/strategies/{strategy_id}",
+        flash="Guardarraíles actualizados",
+    )
+
+
 @router.post("/ui/strategies/{strategy_id}/status")
 async def change_status(
     request: Request,

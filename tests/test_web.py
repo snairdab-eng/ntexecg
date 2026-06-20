@@ -437,3 +437,42 @@ async def test_ticker_hint_without_catalog_no_tick(
     resp = await client.get("/ui/strategies/ticker-hint?asset_symbol=ZZZ")
     assert resp.status_code == 200
     assert "valor de tick" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_update_guardrails_on_detail(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Anexo 08 #2 — edit guardrails from the strategy detail (Config tab)."""
+    db.add(Strategy(strategy_id="ug_strat", name="UG", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="ug_strat", mode="paper"))
+    await db.commit()
+
+    # Set guardrails
+    resp = await client.post("/ui/strategies/ug_strat/guardrails", data={
+        "enforce_symbol_match": "1",
+        "signal_max_age_entry_seconds": "90",
+    })
+    assert resp.status_code == 303
+    row = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "ug_strat"))).scalar_one()
+    await db.refresh(row)
+    g = (row.pipeline_config_json or {}).get("guardrails", {})
+    assert g.get("enforce_symbol_match") is True
+    assert g.get("enforce_timeframe_match") is None
+    assert g.get("signal_max_age_entry_seconds") == 90
+
+    # Detail page reflects the saved value (checkbox checked + number value)
+    page = await client.get("/ui/strategies/ug_strat")
+    assert page.status_code == 200
+    assert 'name="enforce_symbol_match" value="1"' in page.text
+    assert 'checked' in page.text
+
+    # Clearing all removes the guardrails key
+    resp = await client.post("/ui/strategies/ug_strat/guardrails", data={})
+    assert resp.status_code == 303
+    row2 = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "ug_strat"))).scalar_one()
+    await db.refresh(row2)
+    assert (row2.pipeline_config_json or {}).get("guardrails") is None

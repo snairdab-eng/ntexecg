@@ -152,6 +152,38 @@
         <div><span class="text-gray-500">SL ATR mult:</span> <span class="text-gray-200">{{ profile.sl_atr_multiplier or 'heredar' }}</span></div>
         <div><span class="text-gray-500">dry_run:</span> <span class="text-gray-200">{{ profile.dry_run }}</span></div>
         <div><span class="text-gray-500">TradersPost URL:</span> <span class="text-gray-200 break-all">{{ profile.traderspost_webhook_url or '—' }}</span></div>
+
+        {% set g = (profile.pipeline_config_json or {}).get('guardrails', {}) %}
+        <div class="border-t border-gray-800 mt-3 pt-3">
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Guardarraíles (Anexo 08)</div>
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/guardrails" class="space-y-3">
+                <label class="flex items-center gap-2 text-gray-300">
+                    <input type="checkbox" name="enforce_symbol_match" value="1"
+                           class="rounded bg-gray-800 border-gray-700" {% if g.get('enforce_symbol_match') %}checked{% endif %}>
+                    Rechazar si el ticker ≠ activo base (symbol_mismatch)
+                </label>
+                <label class="flex items-center gap-2 text-gray-300">
+                    <input type="checkbox" name="enforce_timeframe_match" value="1"
+                           class="rounded bg-gray-800 border-gray-700" {% if g.get('enforce_timeframe_match') %}checked{% endif %}>
+                    Rechazar si el interval ≠ timeframe (interval_mismatch)
+                </label>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Antigüedad máx. entrada (seg)</label>
+                        <input name="signal_max_age_entry_seconds" type="number" min="0" placeholder="sin límite"
+                               value="{{ g.get('signal_max_age_entry_seconds', '') }}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Antigüedad máx. salida (seg)</label>
+                        <input name="signal_max_age_exit_seconds" type="number" min="0" placeholder="sin límite"
+                               value="{{ g.get('signal_max_age_exit_seconds', '') }}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                </div>
+                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar guardarraíles</button>
+            </form>
+        </div>
         {% else %}
         <p class="text-gray-600">Sin perfil de configuración.</p>
         {% endif %}
