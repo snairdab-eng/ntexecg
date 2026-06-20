@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.models.asset_profile import AssetProfile
 from app.models.audit_log import AuditLog
 from app.models.strategy import Strategy
+from app.models.strategy_profile import StrategyProfile
 from app.models.symbol_map import SymbolMap
 
 
@@ -365,3 +366,48 @@ async def test_signal_detail_renders(client: AsyncClient, db: AsyncSession) -> N
     assert resp.status_code == 200
     assert "MESU2025" in resp.text
     assert "APPROVE" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_create_strategy_with_guardrails(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Anexo 08 #2 — guardrail toggles + staleness persist in pipeline_config_json."""
+    resp = await client.post("/ui/strategies/new", data={
+        "strategy_id": "guard_strat",
+        "name": "Guard Strategy",
+        "asset_symbol": "MES",
+        "timeframe": "5m",
+        "initial_mode": "paper",
+        "enforce_symbol_match": "1",
+        "enforce_timeframe_match": "1",
+        "signal_max_age_entry_seconds": "120",
+        "signal_max_age_exit_seconds": "300",
+    })
+    assert resp.status_code == 303
+
+    row = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "guard_strat"))).scalar_one()
+    g = (row.pipeline_config_json or {}).get("guardrails", {})
+    assert g.get("enforce_symbol_match") is True
+    assert g.get("enforce_timeframe_match") is True
+    assert g.get("signal_max_age_entry_seconds") == 120
+    assert g.get("signal_max_age_exit_seconds") == 300
+
+
+@pytest.mark.asyncio
+async def test_create_strategy_without_guardrails_leaves_none(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    resp = await client.post("/ui/strategies/new", data={
+        "strategy_id": "plain_strat",
+        "name": "Plain",
+        "asset_symbol": "MES",
+        "timeframe": "5m",
+        "initial_mode": "paper",
+    })
+    assert resp.status_code == 303
+    row = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "plain_strat"))).scalar_one()
+    # No guardrail fields → pipeline_config_json stays None (no enforcement).
+    assert row.pipeline_config_json is None

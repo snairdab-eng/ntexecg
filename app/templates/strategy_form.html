@@ -89,6 +89,36 @@
             </div>
         </fieldset>
 
+        <!-- Sección 6 — Guardarraíles (Anexo 08) -->
+        <fieldset class="space-y-3">
+            <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Guardarraíles (Anexo 08)</legend>
+            <p class="text-xs text-gray-600">Validaciones de integridad por estrategia. Apagadas = no se aplican.</p>
+
+            <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" name="enforce_symbol_match" value="1"
+                       class="rounded bg-gray-800 border-gray-700">
+                Rechazar si el ticker recibido ≠ activo base (symbol_mismatch)
+            </label>
+            <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" name="enforce_timeframe_match" value="1"
+                       class="rounded bg-gray-800 border-gray-700">
+                Rechazar si el interval ≠ timeframe (interval_mismatch)
+            </label>
+
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Antigüedad máx. entrada (seg)</label>
+                    <input name="signal_max_age_entry_seconds" type="number" min="0" placeholder="sin límite"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Antigüedad máx. salida (seg)</label>
+                    <input name="signal_max_age_exit_seconds" type="number" min="0" placeholder="sin límite"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                </div>
+            </div>
+        </fieldset>
+
         <div class="flex gap-2 pt-2">
             <button type="submit" class="bg-green-700 hover:bg-green-600 text-white px-5 py-2 rounded text-sm font-medium">Crear Estrategia</button>
             <a href="/ui/strategies" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-5 py-2 rounded text-sm">Cancelar</a>

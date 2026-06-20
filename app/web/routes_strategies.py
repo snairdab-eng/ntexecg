@@ -115,6 +115,10 @@ async def create_strategy_ui(
     score_minimum: str = Form(""),
     traderspost_webhook_url: str = Form(""),
     initial_mode: str = Form("paper"),
+    enforce_symbol_match: str = Form(""),
+    enforce_timeframe_match: str = Form(""),
+    signal_max_age_entry_seconds: str = Form(""),
+    signal_max_age_exit_seconds: str = Form(""),
 ) -> RedirectResponse:
     # Reject duplicate strategy_id
     existing = await db.execute(
@@ -148,6 +152,25 @@ async def create_strategy_ui(
             profile.sl_atr_multiplier = float(sl_atr_multiplier)
         except ValueError:
             pass
+
+    # Anexo 08 #2 — per-strategy guardrails stored in pipeline_config_json.
+    guardrails: dict = {}
+    if enforce_symbol_match:
+        guardrails["enforce_symbol_match"] = True
+    if enforce_timeframe_match:
+        guardrails["enforce_timeframe_match"] = True
+    for _field, _key in (
+        (signal_max_age_entry_seconds, "signal_max_age_entry_seconds"),
+        (signal_max_age_exit_seconds, "signal_max_age_exit_seconds"),
+    ):
+        if _field.strip():
+            try:
+                guardrails[_key] = int(_field)
+            except ValueError:
+                pass
+    if guardrails:
+        profile.pipeline_config_json = {"guardrails": guardrails}
+
     db.add(profile)
 
     await AuditService().log(
