@@ -371,29 +371,6 @@ class FilterPipeline:
         """
         from app.services.repositories import get_position_state
 
-        # Anexo 08 #2 — per-operation risk gates (opt-in, entries only).
-        qty = signal.quantity or 0
-        # 8. Max contracts
-        max_contracts = config.get("max_contracts")
-        if max_contracts is not None and qty > max_contracts:
-            return {"failed": True, "reason": "qty_exceeds_max",
-                    "check": "3.4_max_contracts",
-                    "quantity": qty, "max_contracts": max_contracts}
-        # 9. Mandatory stop (when required, a stop in ticks must be available)
-        stop_ticks = config.get("stop_ticks")
-        if config.get("stop_required") and not stop_ticks:
-            return {"failed": True, "reason": "stop_required",
-                    "check": "3.5_stop_required"}
-        # 9. Dollar risk per operation: qty * stop_ticks * tick_value <= max
-        risk_max = config.get("risk_usd_max_operation")
-        tick_value = config.get("tick_value")
-        if risk_max is not None and stop_ticks and tick_value is not None:
-            risk_usd = qty * float(stop_ticks) * float(tick_value)
-            if risk_usd > float(risk_max):
-                return {"failed": True, "reason": "risk_exceeds_max",
-                        "check": "3.6_risk_usd",
-                        "risk_usd": risk_usd, "risk_usd_max": float(risk_max)}
-
         account_id = config.get("account_id", "paper_default")
         position = await get_position_state(
             db, signal.strategy_id, account_id, signal.mapped_symbol

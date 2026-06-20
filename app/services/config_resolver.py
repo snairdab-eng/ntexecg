@@ -62,14 +62,12 @@ class ConfigResolver:
             "enforce_timeframe_match": False,
             "signal_max_age_entry_seconds": None,
             "signal_max_age_exit_seconds": None,
-            # Instrument catalog + per-operation risk (Anexo 08 #2/#4) - opt-in.
+            # Instrument catalog (Anexo 08 #4) - reference data for the UI ficha
+            # (e.g. show tick value when registering a strategy). NOT a risk gate:
+            # NTEXECG's only monetary-risk responsibility is the ATR SL (Level 5).
             "tick_value": None,
             "tick_size": None,
             "contract_type": None,
-            "max_contracts": None,
-            "risk_usd_max_operation": None,
-            "stop_ticks": None,
-            "stop_required": False,
         }
 
         # Merge GlobalProfile (base)
@@ -149,13 +147,6 @@ class ConfigResolver:
                                "signal_max_age_exit_seconds"):
                         if guardrails.get(_k) is not None:
                             config[_k] = guardrails[_k]
-                risk = (strategy_profile.pipeline_config_json or {}).get(
-                    "risk", {})
-                if isinstance(risk, dict):
-                    for _k in ("max_contracts", "risk_usd_max_operation",
-                               "stop_ticks", "stop_required"):
-                        if risk.get(_k) is not None:
-                            config[_k] = risk[_k]
                 updates = {
                     "mode": strategy_profile.mode,
                     "dry_run": strategy_profile.dry_run,

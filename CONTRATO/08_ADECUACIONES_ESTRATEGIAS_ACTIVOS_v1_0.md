@@ -1,4 +1,4 @@
-# NTEXECG — Adecuaciones: Estrategias, Activos y Riesgo v1.0
+# NTEXECG — Adecuaciones: Estrategias, Activos y Riesgo v1.1
 ### Anexo al Contrato Técnico (complementa los documentos 00–07)
 
 **Fecha:** 2026-06-19 · **Estado:** para incorporación al contrato
@@ -16,6 +16,38 @@ cuenta, catálogo de instrumentos, ventanas repetibles y la ficha de registro.
 Regla de lectura: si algo aquí choca con una **regla no negociable** del doc 00 §14, **manda el
 doc 00** (ver §7 de este anexo, "No adoptado"). Todo lo demás se integra a los 5 niveles y al
 modelo de datos existentes; **no** se renumera el pipeline ni se cambia el endpoint en producción.
+
+---
+
+## 0-bis. Revisión v1.1 (2026-06-19) — corrección de alcance de riesgo
+
+> Esta revisión **supersede** lo que v1.0 decía sobre riesgo monetario. Decisión del
+> operador, actuando como autoridad del contrato.
+
+**Principio:** la **única** responsabilidad de riesgo de NTEXECG es **agregar el Stop Loss
+obligatorio por ATR** (doc 00 §8 Nivel 5). NTEXECG **no**:
+
+- controla la **cantidad de contratos** — viene de LuxAlgo en el payload; NTEXECG no la fija
+  ni la limita;
+- impone **límites monetarios por operación** (no hay gate de `quantity × stop × tick`);
+- administra el **riesgo de la cuenta** por pérdidas/ganancias — **no recibe fills ni P&L de
+  ningún broker** (Position State es estimado), así que no puede ni debe hacerlo.
+
+**Quedan FUERA del sistema** (eliminados del código y de este anexo): los checks
+`qty_exceeds_max`, `risk_exceeds_max`, `stop_required` y `account_daily_risk_reached`, y la
+capa de **riesgo diario por cuenta**.
+
+**Lo que SÍ permanece** de este anexo: los **guardarraíles de integridad**
+(`symbol_mismatch`, `interval_mismatch`, `signal_stale`), el **catálogo de instrumentos** (§4)
+—ahora como **dato de referencia** para la ficha de UI, no para ningún gate de riesgo— y el
+**SL por ATR** del contrato.
+
+**Decisiones actualizadas (supersede §8):**
+- **D1** → el SL por ATR es el único mecanismo de riesgo monetario. *(Sin gate de riesgo $.)*
+- **D3** → el riesgo diario por cuenta se **delega al broker/prop**. NTEXECG no lo administra.
+
+> Las secciones §2 (filas de cantidad/riesgo $/stop/cuenta), §3 (perfil de cuenta como dueño
+> del riesgo), §7 (gate de riesgo $) y §8 (D1/D3) se leen a la luz de esta revisión.
 
 ---
 
