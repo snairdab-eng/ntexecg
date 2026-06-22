@@ -1,0 +1,15 @@
+{% if count and count > 0 %}
+<div class="bg-red-900/40 border border-red-700 text-red-200 px-4 py-3 rounded">
+    <div class="flex items-center gap-2 mb-1">
+        <span class="text-lg">⛔</span>
+        <strong>{{ count }} envío(s) a TradersPost FALLIDO(s)</strong>
+        <span class="text-red-300/80">en las últimas 24h</span>
+    </div>
+    <div class="text-xs text-red-300/80 space-y-0.5">
+        {% for r in rows %}
+        <div class="font-mono">{{ r.time.strftime('%m-%d %H:%M') }} · {{ r.strategy_id }} · {{ r.detail }}</div>
+        {% endfor %}
+    </div>
+    <a href="/ui/audit" class="text-xs underline text-red-200 mt-1 inline-block">Ver auditoría</a>
+</div>
+{% endif %}

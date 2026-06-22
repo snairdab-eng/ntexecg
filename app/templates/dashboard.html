@@ -12,6 +12,9 @@
     </div>
     {% endif %}
 
+    <!-- Alerta de deliveries FAILED (HTMX polling 30s) -->
+    <div hx-get="/ui/partials/delivery-alerts" hx-trigger="load, every 30s" hx-swap="innerHTML"></div>
+
     <!-- Métricas de hoy -->
     <section>
         <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-2">Métricas de hoy</h2>

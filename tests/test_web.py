@@ -691,3 +691,38 @@ async def test_dry_run_badge_present(client: AsyncClient) -> None:
     page = await client.get("/ui/strategies")
     assert page.status_code == 200
     assert "DRY RUN" in page.text
+
+
+@pytest.mark.asyncio
+async def test_delivery_alerts_partial(client: AsyncClient, db: AsyncSession) -> None:
+    """Fase 2 — dashboard banner appears when a delivery is FAILED (24h)."""
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+    from app.models.normalized_signal import NormalizedSignal
+    from app.models.decision import StrategyDecision
+    from app.models.webhook_delivery import WebhookDelivery
+
+    # No failures → no banner
+    r = await client.get("/ui/partials/delivery-alerts")
+    assert r.status_code == 200
+    assert "FALLIDO" not in r.text
+
+    norm = NormalizedSignal(
+        raw_signal_id=_uuid.uuid4(), strategy_id="del1", ticker_received="MES",
+        mapped_symbol="MESU2026", action="buy", sentiment="long", price=5500.0,
+        signal_ts=_dt.now(_tz.utc), dedupe_key=_uuid.uuid4().hex)
+    db.add(norm)
+    await db.flush()
+    dec = StrategyDecision(normalized_signal_id=norm.id, strategy_id="del1",
+                           outcome="APPROVE")
+    db.add(dec)
+    await db.flush()
+    db.add(WebhookDelivery(
+        decision_id=dec.id, strategy_id="del1", destination="traderspost",
+        payload_json={}, status="FAILED", error_message="http_500", attempts=3))
+    await db.commit()
+
+    r2 = await client.get("/ui/partials/delivery-alerts")
+    assert r2.status_code == 200
+    assert "FALLIDO" in r2.text
+    assert "del1" in r2.text

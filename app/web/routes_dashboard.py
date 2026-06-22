@@ -183,3 +183,35 @@ async def recent_signals_partial(
     return templates.TemplateResponse(
         request, "partials/recent_signals.html", {"signals": signals}
     )
+
+
+@router.get("/ui/partials/delivery-alerts", response_class=HTMLResponse)
+async def delivery_alerts_partial(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> HTMLResponse:
+    """Fase 2 — red banner for FAILED TradersPost deliveries (last 24h)."""
+    from app.web.common import templates
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    count = await _count(
+        db,
+        select(func.count(WebhookDelivery.id)).where(
+            WebhookDelivery.status == "FAILED",
+            WebhookDelivery.created_at >= since,
+        ),
+    )
+    result = await db.execute(
+        select(WebhookDelivery)
+        .where(WebhookDelivery.status == "FAILED",
+               WebhookDelivery.created_at >= since)
+        .order_by(WebhookDelivery.created_at.desc())
+        .limit(5)
+    )
+    rows = []
+    for d in result.scalars().all():
+        detail = d.error_message or (
+            f"HTTP {d.response_status_code}" if d.response_status_code else "error")
+        rows.append({"time": d.created_at, "strategy_id": d.strategy_id,
+                     "detail": detail})
+    return templates.TemplateResponse(
+        request, "partials/delivery_alerts.html", {"count": count, "rows": rows}
+    )
