@@ -16,6 +16,7 @@ from app.models.asset_profile import AssetProfile
 from app.models.audit_log import AuditLog
 from app.models.strategy import Strategy
 from app.models.strategy_profile import StrategyProfile
+from app.models.global_profile import GlobalProfile
 from app.models.symbol_map import SymbolMap
 
 
@@ -619,3 +620,74 @@ async def test_create_full_ficha(client: AsyncClient, db: AsyncSession) -> None:
     assert page.status_code == 200
     assert "PAPER_FUTURES" in page.text
     assert "Sergio" in page.text
+
+
+@pytest.mark.asyncio
+async def test_strategy_dispatch_arm_requires_confirmar(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Fase 2 — arming real dispatch needs CONFIRMAR; disarm is free."""
+    db.add(Strategy(strategy_id="arm1", name="A", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="arm1", mode="paper",
+                           dry_run=True, traderspost_enabled=False))
+    await db.commit()
+
+    async def _prof():
+        row = (await db.execute(select(StrategyProfile).where(
+            StrategyProfile.strategy_id == "arm1"))).scalar_one()
+        await db.refresh(row)
+        return row
+
+    # arm WITHOUT CONFIRMAR → unchanged (still safe)
+    r = await client.post("/ui/strategies/arm1/dispatch",
+                          data={"action": "arm", "confirm": "x"})
+    assert r.status_code == 303
+    p1 = await _prof()
+    assert p1.traderspost_enabled is False and p1.dry_run is True
+
+    # arm WITH CONFIRMAR → armed
+    r = await client.post("/ui/strategies/arm1/dispatch",
+                          data={"action": "arm", "confirm": "CONFIRMAR"})
+    assert r.status_code == 303
+    p2 = await _prof()
+    assert p2.traderspost_enabled is True and p2.dry_run is False
+
+    # disarm → back to dry_run (no confirm needed)
+    r = await client.post("/ui/strategies/arm1/dispatch", data={"action": "disarm"})
+    assert r.status_code == 303
+    p3 = await _prof()
+    assert p3.dry_run is True
+
+
+@pytest.mark.asyncio
+async def test_global_dispatch_arm_and_confirm(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    async def _gp():
+        row = (await db.execute(select(GlobalProfile))).scalars().first()
+        if row is not None:
+            await db.refresh(row)
+        return row
+
+    # arm with CONFIRMAR
+    r = await client.post("/ui/settings/dispatch",
+                          data={"action": "arm", "confirm": "CONFIRMAR"})
+    assert r.status_code == 303
+    gp = await _gp()
+    assert gp.traderspost_enabled is True and gp.dry_run is False
+
+    # disarm
+    await client.post("/ui/settings/dispatch", data={"action": "disarm"})
+    # arm without CONFIRMAR → stays disarmed
+    await client.post("/ui/settings/dispatch", data={"action": "arm", "confirm": "no"})
+    gp2 = await _gp()
+    assert gp2.dry_run is True
+
+
+@pytest.mark.asyncio
+async def test_dry_run_badge_present(client: AsyncClient) -> None:
+    """Test env has TRADERSPOST_ENABLED=false → DRY RUN badge visible."""
+    page = await client.get("/ui/strategies")
+    assert page.status_code == 200
+    assert "DRY RUN" in page.text

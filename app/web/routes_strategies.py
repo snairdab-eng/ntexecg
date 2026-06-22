@@ -21,6 +21,7 @@ from app.models.strategy_profile import StrategyProfile
 from app.models.strategy_template import StrategyTemplate
 from app.models.symbol_map import SymbolMap
 from app.services.audit_service import AuditService
+from app.core.config import settings as app_settings
 from app.web.common import render, redirect, flash_messages, templates
 
 router = APIRouter()
@@ -336,9 +337,57 @@ async def strategy_detail(
         {
             "strategy": strategy, "profile": profile, "perf": perf,
             "decisions": decisions, "webhook_url": webhook_url,
+            "tp_env_enabled": app_settings.TRADERSPOST_ENABLED,
             "messages": flash_messages(request),
         }, db=db,
     )
+
+
+@router.post("/ui/strategies/{strategy_id}/dispatch")
+async def update_dispatch(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+    action: str = Form(...),
+    confirm: str = Form(""),
+) -> RedirectResponse:
+    """Fase 2 — arm/disarm real dispatch for ONE strategy (CONFIRMAR to arm).
+
+    arm    → traderspost_enabled=True, dry_run=False (requires confirm==CONFIRMAR)
+    disarm → dry_run=True (safe direction, no confirmation)
+    Real send still also requires the global profile and the env kill-switch.
+    """
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    if action == "arm":
+        if confirm != "CONFIRMAR":
+            return redirect(
+                f"/ui/strategies/{strategy_id}",
+                flash="Escribe CONFIRMAR para armar el envío real", category="error")
+        profile.traderspost_enabled = True
+        profile.dry_run = False
+        msg = "Envío real ARMADO (sujeto al global y al kill-switch del servidor)"
+    elif action == "disarm":
+        profile.dry_run = True
+        msg = "Estrategia de vuelta en DRY_RUN"
+    else:
+        return redirect(f"/ui/strategies/{strategy_id}",
+                        flash="Acción inválida", category="error")
+
+    await AuditService().log(
+        db, actor="admin", action="DISPATCH_CHANGE", object_type="StrategyProfile",
+        object_id=strategy_id,
+        new_value={"action": action, "traderspost_enabled": profile.traderspost_enabled,
+                   "dry_run": profile.dry_run},
+        reason="dispatch toggled via UI")
+    await db.commit()
+    return redirect(f"/ui/strategies/{strategy_id}", flash=msg)
 
 
 @router.post("/ui/strategies/{strategy_id}/regenerate-token")

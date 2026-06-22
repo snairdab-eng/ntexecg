@@ -40,6 +40,7 @@ async def settings_page(
             "market_provider": app_settings.MARKET_DATA_PROVIDER,
             "bridge_path": app_settings.NTBRIDGE_PATH,
             "heartbeat_max_age": app_settings.NTBRIDGE_HEARTBEAT_MAX_AGE,
+            "tp_env_enabled": app_settings.TRADERSPOST_ENABLED,
             "messages": flash_messages(request),
         }, db=db,
     )
@@ -89,3 +90,36 @@ async def update_settings(
     )
     await db.commit()
     return redirect("/ui/settings", flash="Configuración global actualizada")
+
+
+@router.post("/ui/settings/dispatch")
+async def update_global_dispatch(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    action: str = Form(...),
+    confirm: str = Form(""),
+) -> RedirectResponse:
+    """Fase 2 — arm/disarm real dispatch at the GLOBAL level (CONFIRMAR to arm)."""
+    gp = await _get_or_create_global(db)
+    if action == "arm":
+        if confirm != "CONFIRMAR":
+            return redirect("/ui/settings",
+                            flash="Escribe CONFIRMAR para armar el despacho global",
+                            category="error")
+        gp.traderspost_enabled = True
+        gp.dry_run = False
+        msg = "Despacho global ARMADO (cada estrategia y el kill-switch del servidor siguen mandando)"
+    elif action == "disarm":
+        gp.dry_run = True
+        msg = "Despacho global de vuelta en DRY_RUN"
+    else:
+        return redirect("/ui/settings", flash="Acción inválida", category="error")
+
+    await AuditService().log(
+        db, actor="admin", action="DISPATCH_CHANGE", object_type="GlobalProfile",
+        object_id="default",
+        new_value={"action": action, "traderspost_enabled": gp.traderspost_enabled,
+                   "dry_run": gp.dry_run},
+        reason="global dispatch toggled via UI")
+    await db.commit()
+    return redirect("/ui/settings", flash=msg)

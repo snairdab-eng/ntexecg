@@ -75,5 +75,41 @@
 
         <button type="submit" class="bg-green-700 hover:bg-green-600 text-white px-5 py-2 rounded">Guardar configuración</button>
     </form>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-5 text-sm" x-data="{ confirmArm: false, armText: '' }">
+        <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Despacho global (TradersPost)</div>
+        {% set g_armed = gp.traderspost_enabled and not gp.dry_run %}
+        <div class="mb-2">Estado:
+            {% if g_armed %}<span class="text-green-400 font-medium">ARMADO</span>
+            {% else %}<span class="text-gray-300 font-medium">DRY_RUN</span>{% endif %}
+        </div>
+        {% if not tp_env_enabled %}
+        <p class="text-xs text-yellow-400 mb-2">⚠ Kill-switch del servidor cerrado (TRADERSPOST_ENABLED=false): aunque armes aquí, no se enviará real.</p>
+        {% endif %}
+        {% if not g_armed %}
+        <button @click="confirmArm = true" class="bg-green-700 hover:bg-green-600 text-white px-3 py-1.5 rounded text-sm">Armar despacho global…</button>
+        {% else %}
+        <form method="post" action="/ui/settings/dispatch">
+            <input type="hidden" name="action" value="disarm">
+            <button class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-sm">Volver a DRY_RUN</button>
+        </form>
+        {% endif %}
+
+        <div x-show="confirmArm" x-cloak class="fixed inset-0 bg-black/70 flex items-center justify-center z-50" @click.self="confirmArm = false">
+            <div class="bg-gray-900 border border-green-700 rounded-lg p-6 max-w-md w-full space-y-4">
+                <h3 class="text-lg font-bold text-white">Armar despacho global</h3>
+                <p class="text-sm text-gray-400">Pondrá el global en <code class="text-green-400">traderspost_enabled=true</code> y <code class="text-green-400">dry_run=false</code>. Cada estrategia y el kill-switch del servidor siguen mandando. Escribe <code class="text-green-400 font-bold">CONFIRMAR</code>.</p>
+                <input x-model="armText" type="text" placeholder="CONFIRMAR" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+                <div class="flex gap-2 justify-end">
+                    <button @click="confirmArm = false" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded text-sm">Cancelar</button>
+                    <form method="post" action="/ui/settings/dispatch">
+                        <input type="hidden" name="action" value="arm">
+                        <input type="hidden" name="confirm" :value="armText">
+                        <button type="submit" :disabled="armText !== 'CONFIRMAR'" class="bg-green-700 text-white px-4 py-2 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed">Armar</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}

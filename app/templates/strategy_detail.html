@@ -3,7 +3,7 @@
 {% block title %}{{ strategy.strategy_id }} — NTEXECG{% endblock %}
 
 {% block content %}
-<div class="space-y-4" x-data="{ tab: 'overview', confirmLive: false, liveText: '' }">
+<div class="space-y-4" x-data="{ tab: 'overview', confirmLive: false, liveText: '', confirmArm: false, armText: '' }">
 
     <!-- Header -->
     <div class="flex items-start justify-between">
@@ -68,6 +68,24 @@
                             class="bg-green-700 text-white px-4 py-2 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed">
                         Activar Live
                     </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm-arm modal (Fase 2) -->
+    <div x-show="confirmArm" x-cloak class="fixed inset-0 bg-black/70 flex items-center justify-center z-50" @click.self="confirmArm = false">
+        <div class="bg-gray-900 border border-green-700 rounded-lg p-6 max-w-md w-full space-y-4">
+            <h3 class="text-lg font-bold text-white">Armar envío real a TradersPost</h3>
+            <p class="text-sm text-gray-400">Pondrá la estrategia en <code class="text-green-400">traderspost_enabled=true</code> y <code class="text-green-400">dry_run=false</code>. El envío real solo ocurre si el global y el kill-switch del servidor también están abiertos. Escribe <code class="text-green-400 font-bold">CONFIRMAR</code>.</p>
+            <input x-model="armText" type="text" placeholder="CONFIRMAR" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100">
+            <div class="flex gap-2 justify-end">
+                <button @click="confirmArm = false" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded text-sm">Cancelar</button>
+                <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/dispatch">
+                    <input type="hidden" name="action" value="arm">
+                    <input type="hidden" name="confirm" :value="armText">
+                    <button type="submit" :disabled="armText !== 'CONFIRMAR'"
+                            class="bg-green-700 text-white px-4 py-2 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed">Armar</button>
                 </form>
             </div>
         </div>
@@ -168,6 +186,29 @@
     <!-- Tab: Config -->
     <div x-show="tab === 'config'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-4 text-sm space-y-2">
         {% if profile %}
+        {% set armed = profile.traderspost_enabled and not profile.dry_run %}
+        <div class="border border-gray-800 rounded p-3 mb-3">
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Despacho (TradersPost)</div>
+            <div class="text-sm mb-2">Estado:
+                {% if armed %}<span class="text-green-400 font-medium">ARMADO (envío real)</span>
+                {% else %}<span class="text-gray-300 font-medium">DRY_RUN (no envía)</span>{% endif %}
+            </div>
+            <div class="grid grid-cols-2 gap-2 text-xs text-gray-400 mb-2">
+                <div>traderspost_enabled: <span class="text-gray-200">{{ profile.traderspost_enabled }}</span></div>
+                <div>dry_run: <span class="text-gray-200">{{ profile.dry_run }}</span></div>
+            </div>
+            {% if not tp_env_enabled %}
+            <p class="text-xs text-yellow-400 mb-2">⚠ Kill-switch del servidor cerrado (TRADERSPOST_ENABLED=false): aunque armes, NO se enviará real hasta abrirlo en el servidor.</p>
+            {% endif %}
+            {% if not armed %}
+            <button @click="confirmArm = true" class="bg-green-700 hover:bg-green-600 text-white px-3 py-1.5 rounded text-sm">Armar envío real…</button>
+            {% else %}
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/dispatch">
+                <input type="hidden" name="action" value="disarm">
+                <button class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-sm">Volver a DRY_RUN</button>
+            </form>
+            {% endif %}
+        </div>
         <div><span class="text-gray-500">Modo:</span> <span class="text-gray-200">{{ profile.mode }}</span></div>
         <div><span class="text-gray-500">SL ATR mult:</span> <span class="text-gray-200">{{ profile.sl_atr_multiplier or 'heredar' }}</span></div>
         <div><span class="text-gray-500">dry_run:</span> <span class="text-gray-200">{{ profile.dry_run }}</span></div>

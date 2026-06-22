@@ -38,7 +38,10 @@ async def base_context(request: Request, db: AsyncSession | None = None) -> dict
         "app_name": settings.APP_NAME,
         "app_version": settings.APP_VERSION,
         "app_env": settings.APP_ENV,
-        "dry_run": settings.DRY_RUN,
+        # "DRY RUN" badge = real dispatch is globally impossible. The master
+        # kill-switch is the env TRADERSPOST_ENABLED (Fase 2 gate); if it's off,
+        # no strategy can send real regardless of its own flags.
+        "dry_run": settings.DRY_RUN or not settings.TRADERSPOST_ENABLED,
         "global_mode": global_mode,
     }
 
