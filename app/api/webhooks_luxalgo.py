@@ -163,6 +163,22 @@ async def process_signal(
     return decision
 
 
+def resolve_effective_dry_run(settings_obj: object, config: dict) -> bool:
+    """Fase 2 — layered dispatch gate. Returns the EFFECTIVE dry_run flag.
+
+    A real HTTP send to TradersPost happens ONLY when ALL locks are open:
+      1. env ``TRADERSPOST_ENABLED`` (server-level master kill-switch),
+      2. ``traderspost_enabled`` (merged global AND strategy, from ConfigResolver),
+      3. ``dry_run`` is False (merged: any level on -> dry_run).
+    In every other case returns True (dry-run, no HTTP) -- safe by default.
+    """
+    env_enabled = bool(getattr(settings_obj, "TRADERSPOST_ENABLED", False))
+    tp_enabled = bool(config.get("traderspost_enabled", False))
+    cfg_dry_run = bool(config.get("dry_run", True))
+    real_send = env_enabled and tp_enabled and not cfg_dry_run
+    return not real_send
+
+
 async def _dispatch_approved(
     db: AsyncSession,
     norm: NormalizedSignal,
@@ -179,7 +195,8 @@ async def _dispatch_approved(
 
     payload = PayloadBuilder().build(norm, strategy, config, pipeline_result)
     webhook_url = config.get("traderspost_webhook_url")
-    dry_run = config.get("dry_run", True)
+    # Layered gate: env kill-switch AND traderspost_enabled AND not dry_run.
+    dry_run = resolve_effective_dry_run(settings, config)
 
     client = TradersPostClient(settings)
     result = await client.send(

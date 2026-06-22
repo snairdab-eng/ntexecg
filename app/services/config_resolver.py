@@ -157,8 +157,15 @@ class ConfigResolver:
                     config["session_config_json"] = base
                 updates = {
                     "mode": strategy_profile.mode,
-                    "dry_run": strategy_profile.dry_run,
-                    "traderspost_enabled": strategy_profile.traderspost_enabled,
+                    # Kill-switch semantics (Fase 2): any level that says dry_run
+                    # wins; traderspost must be enabled at BOTH global and
+                    # strategy level. A strategy can only restrict further, never
+                    # escalate above the global setting.
+                    "dry_run": config["dry_run"] or strategy_profile.dry_run,
+                    "traderspost_enabled": (
+                        config["traderspost_enabled"]
+                        and strategy_profile.traderspost_enabled
+                    ),
                     "traderspost_webhook_url": strategy_profile.traderspost_webhook_url,
                 }
                 if strategy_profile.sl_atr_multiplier:
