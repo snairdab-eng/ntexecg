@@ -29,6 +29,26 @@ from loguru import logger
 # ATR helper (shared by providers)
 # ---------------------------------------------------------------------------
 
+# The .NET bridge writes compact OHLCV keys (t/o/h/l/c/v). The
+# MarketDataProvider contract — and every consumer (_calc_atr, QualityScorer) —
+# expects canonical names {time, open, high, low, close, volume}.
+_BRIDGE_BAR_KEYS = {
+    "t": "time", "o": "open", "h": "high",
+    "l": "low", "c": "close", "v": "volume",
+}
+
+
+def _normalize_bridge_bar(bar: dict) -> dict:
+    """Map compact bridge keys (t/o/h/l/c/v) to canonical OHLCV names.
+
+    Already-canonical keys pass through unchanged, so a future bridge that
+    emits full names keeps working.
+    """
+    if not isinstance(bar, dict):
+        return bar
+    return {_BRIDGE_BAR_KEYS.get(k, k): v for k, v in bar.items()}
+
+
 def _calc_atr(bars: list[dict], period: int = 14) -> float | None:
     """Calculate ATR from a list of OHLCV dicts using pandas-ta.
 
@@ -244,7 +264,9 @@ class NinjaTraderBridgeProvider(MarketDataProvider):
             data = json.loads(bars_file.read_text(encoding="utf-8-sig"))
             if not isinstance(data, list):
                 return []
-            return data[-limit:]
+            # Normalize compact bridge keys → canonical OHLCV names so ATR and
+            # the QualityScorer (which expect high/low/close/volume) work.
+            return [_normalize_bridge_bar(b) for b in data[-limit:]]
         except (OSError, json.JSONDecodeError) as exc:
             logger.debug("bridge_read_failed file={} error={}", bars_file, exc)
             return []

@@ -249,6 +249,49 @@ async def test_bridge_get_bars_tolerates_utf8_bom(tmp_path) -> None:
     assert atr > 0
 
 
+def test_normalize_bridge_bar_maps_compact_keys() -> None:
+    """Compact bridge keys (t/o/h/l/c/v) → canonical names; canonical passes."""
+    from app.services.market_data_service import _normalize_bridge_bar
+
+    out = _normalize_bridge_bar({"t": "x", "o": 1, "h": 2, "l": 3, "c": 4, "v": 5})
+    assert out == {
+        "time": "x", "open": 1, "high": 2, "low": 3, "close": 4, "volume": 5,
+    }
+    # Already-canonical keys pass through unchanged.
+    assert _normalize_bridge_bar({"high": 2, "close": 4}) == {"high": 2, "close": 4}
+
+
+@pytest.mark.asyncio
+async def test_bridge_get_bars_normalizes_compact_ohlcv_keys(tmp_path) -> None:
+    """The real .NET bridge writes compact keys t/o/h/l/c/v. get_bars must
+    normalize them so _calc_atr / QualityScorer work.
+
+    Regression: ATR failed in production with KeyError 'high' because the bars
+    used compact keys and df["high"] did not exist.
+    """
+    import json
+
+    bars_data = [
+        {"t": f"2026-06-22T09:{i:02d}:00",
+         "o": 7550 + i, "h": 7560 + i, "l": 7545 + i, "c": 7555 + i, "v": 1000 + i}
+        for i in range(20)
+    ]
+    bars_file = tmp_path / "bars_ES_5m.json"
+    bars_file.write_text(json.dumps(bars_data))
+
+    provider = NinjaTraderBridgeProvider(bridge_path=str(tmp_path), heartbeat_max_age=60)
+
+    bars = await provider.get_bars("ES", "5m")
+    assert len(bars) == 20
+    assert set(bars[0]) == {"time", "open", "high", "low", "close", "volume"}
+    assert bars[0]["high"] == 7560
+    assert bars[0]["close"] == 7555
+
+    atr = await provider.get_atr("ES", "5m")
+    assert isinstance(atr, float)
+    assert atr > 0
+
+
 # ---------------------------------------------------------------------------
 # Phase 5 stubs
 # ---------------------------------------------------------------------------
