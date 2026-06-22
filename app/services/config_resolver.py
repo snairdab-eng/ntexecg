@@ -70,6 +70,8 @@ class ConfigResolver:
             "tick_value": None,
             "tick_size": None,
             "contract_type": None,
+            # Quality filters (Fase 5) - opt-in; empty → score 100.
+            "filters": {},
         }
 
         # Merge GlobalProfile (base)
@@ -159,6 +161,11 @@ class ConfigResolver:
                     base = dict(config.get("session_config_json") or {})
                     base["windows"] = windows
                     config["session_config_json"] = base
+                # Quality filters (Fase 5) — Level-4 scorer config (opt-in).
+                _filters = (strategy_profile.pipeline_config_json or {}).get(
+                    "filters")
+                if isinstance(_filters, dict):
+                    config["filters"] = _filters
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run
