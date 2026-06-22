@@ -49,6 +49,8 @@ class ConfigResolver:
             "atr_timeframe": "5m",
             "allow_exits_outside_window": True,
             "allow_overnight": False,
+            "force_flat_time": None,
+            "max_holding_minutes": None,
             "allow_reversal": False,
             "traderspost_webhook_url": None,
             "session_config_json": None,
@@ -83,6 +85,8 @@ class ConfigResolver:
                     if global_profile.daily_loss_stop else None,
                 "allow_exits_outside_window": global_profile.allow_exits_outside_window,
                 "allow_overnight": global_profile.allow_overnight,
+                "force_flat_time": global_profile.force_flat_time,
+                "max_holding_minutes": global_profile.max_holding_minutes,
                 "news_filter_enabled": global_profile.news_filter_enabled,
                 "news_window_minutes": global_profile.news_window_minutes,
                 "timezone": global_profile.timezone,
@@ -198,6 +202,10 @@ class ConfigResolver:
                     )
                 if strategy_profile.allow_overnight is not None:
                     updates["allow_overnight"] = strategy_profile.allow_overnight
+                if strategy_profile.force_flat_time is not None:
+                    updates["force_flat_time"] = strategy_profile.force_flat_time
+                if strategy_profile.max_holding_minutes is not None:
+                    updates["max_holding_minutes"] = strategy_profile.max_holding_minutes
                 if strategy_profile.allow_reversal is not None:
                     updates["allow_reversal"] = strategy_profile.allow_reversal
 

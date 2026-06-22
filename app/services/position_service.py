@@ -63,6 +63,11 @@ class PositionService:
         position.quantity = qty
         position.entry_price = price
         position.entry_signal_id = signal_id
+        # Fase 4 — record opened_at for the Exit Manager's max_holding check.
+        from datetime import datetime, timezone
+        plan = dict(position.risk_plan_json or {})
+        plan["opened_at"] = datetime.now(timezone.utc).isoformat()
+        position.risk_plan_json = plan
         await db.flush()
         return position
 
