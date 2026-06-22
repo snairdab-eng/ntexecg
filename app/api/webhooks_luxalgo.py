@@ -125,6 +125,13 @@ async def process_signal(
     # (session hours, sl_atr_multiplier, daily_loss_stop).
     config = await ConfigResolver().resolve(db, strategy_id, norm.ticker_received)
 
+    # Fase 3 — classify role from the (estimated) position and handle reversals.
+    reversal_decision = await _classify_and_handle_reversal(
+        db, norm, strategy, config
+    )
+    if reversal_decision is not None:
+        return reversal_decision
+
     pipeline_result = await pipeline.evaluate(db, norm, strategy, config)
 
     norm.status = "processed"
@@ -160,6 +167,88 @@ async def process_signal(
     if pipeline_result.outcome == "APPROVE":
         await _dispatch_approved(db, norm, strategy, config, pipeline_result, decision)
 
+    return decision
+
+
+_LONG_STATES = {"LONG", "PENDING_LONG"}
+_SHORT_STATES = {"SHORT", "PENDING_SHORT"}
+
+
+def _effective_direction(state: str | None) -> str | None:
+    """Estimated current direction for reversal detection."""
+    if state in _LONG_STATES:
+        return "long"
+    if state in _SHORT_STATES:
+        return "short"
+    return None
+
+
+def _classify_role(action: str, cur_dir: str | None) -> str:
+    """Position-aware signal role (Fase 3)."""
+    if action == "exit":
+        return "exit_short" if cur_dir == "short" else "exit_long"
+    if action == "buy":
+        return "reversal_to_long" if cur_dir == "short" else "entry_long"
+    if action == "sell":
+        return "reversal_to_short" if cur_dir == "long" else "entry_short"
+    return "unknown"
+
+
+async def _classify_and_handle_reversal(
+    db: "AsyncSession", norm, strategy, config: dict
+):
+    """Set norm.signal_role from the current position and handle reversals.
+
+    On a reversal (opposite signal to an open position): ALWAYS close the
+    current position first (exits are priority). Then, only if allow_reversal,
+    fall through to evaluate the opposite entry normally (returns None). If
+    allow_reversal is False, record a BLOCK (reversal_not_allowed) and stop.
+    Returns a StrategyDecision to short-circuit, or None to continue.
+    """
+    if not norm.mapped_symbol:
+        return None  # symbol_not_mapped is handled by the pipeline (Level 1.4)
+
+    from sqlalchemy import select
+    from app.models.position_state import PositionState
+
+    account_id = config.get("account_id", "paper_default")
+    res = await db.execute(
+        select(PositionState).where(
+            PositionState.account_id == account_id,
+            PositionState.symbol == norm.mapped_symbol,
+        )
+    )
+    cur = res.scalar_one_or_none()
+    cur_dir = _effective_direction(cur.state if cur else None)
+    norm.signal_role = _classify_role(norm.action, cur_dir)
+
+    if norm.signal_role not in ("reversal_to_long", "reversal_to_short"):
+        return None  # normal entry/exit flow
+
+    # Reversal: close the current position first (always).
+    from app.services.forced_exit import dispatch_forced_exit
+    await dispatch_forced_exit(db, cur, strategy, config, "reversal", settings)
+
+    if config.get("allow_reversal", False):
+        return None  # fall through: evaluate the opposite entry normally
+
+    # allow_reversal=False → close only; do NOT open the opposite entry.
+    norm.status = "processed"
+    decision = StrategyDecision(
+        normalized_signal_id=norm.id, strategy_id=norm.strategy_id,
+        outcome="BLOCK", block_reason="reversal_not_allowed", block_level=3,
+        pipeline_execution_json={"reversal": "closed_only"},
+    )
+    db.add(decision)
+    await db.flush()
+    try:
+        from app.services.performance_tracker import PerformanceTracker
+        await PerformanceTracker().update(db, norm.strategy_id, decision)
+    except Exception as exc:
+        logger.error("performance_update_failed strategy={} error={}",
+                     norm.strategy_id, exc)
+    logger.info("reversal_closed_only strategy={} symbol={}",
+                norm.strategy_id, norm.mapped_symbol)
     return decision
 
 

@@ -421,3 +421,94 @@ async def test_per_strategy_token(
     glob = await client.post(
         "/webhooks/luxalgo/tok_strat?token=dev_global_token", json=_PAYLOAD)
     assert glob.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Fase 3 — reversals + position-aware role classifier
+# ---------------------------------------------------------------------------
+
+from app.api.webhooks_luxalgo import _classify_role, _effective_direction
+
+_SHORT_PAYLOAD = {
+    "ticker": "MES", "action": "sell", "sentiment": "short",
+    "quantity": "1", "price": "5500.00", "interval": "5",
+}
+
+
+def test_classify_role_table():
+    assert _effective_direction("LONG") == "long"
+    assert _effective_direction("PENDING_SHORT") == "short"
+    assert _effective_direction("FLAT") is None
+    # exit role follows current direction
+    assert _classify_role("exit", "short") == "exit_short"
+    assert _classify_role("exit", "long") == "exit_long"
+    # opposite signal while in position → reversal
+    assert _classify_role("sell", "long") == "reversal_to_short"
+    assert _classify_role("buy", "short") == "reversal_to_long"
+    # same/flat → plain entry
+    assert _classify_role("buy", None) == "entry_long"
+    assert _classify_role("sell", None) == "entry_short"
+
+
+async def _setup_long(db, strategy_id, *, allow_reversal):
+    from app.models.strategy import Strategy
+    from app.models.symbol_map import SymbolMap
+    from app.models.strategy_profile import StrategyProfile
+    from app.models.position_state import PositionState
+    db.add(SymbolMap(tv_symbol="MES", mapped_symbol="MESU2025", exchange="CME",
+                     contract_type="futures_micro",
+                     pine_script_config='"ticker": "MES"', active=True))
+    db.add(Strategy(strategy_id=strategy_id, name="Rev", asset_symbol="MES",
+                    status="live", enabled=True))
+    db.add(StrategyProfile(strategy_id=strategy_id, mode="paper",
+                           allow_reversal=allow_reversal))
+    db.add(PositionState(strategy_id=strategy_id, account_id="paper_default",
+                         symbol="MESU2025", state="LONG", direction="long",
+                         quantity=1, state_source="estimated"))
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_reversal_allowed_closes_then_opens(db: AsyncSession) -> None:
+    from app.models.decision import StrategyDecision
+    from app.models.position_state import PositionState
+    await _setup_long(db, "rev_on", allow_reversal=True)
+    raw = RawSignal(strategy_id="rev_on", payload_json=_SHORT_PAYLOAD, token_valid=True)
+    db.add(raw)
+    await db.flush()
+
+    decision = await process_signal(db, "rev_on", raw.id, _SHORT_PAYLOAD, _MD)
+    # The returned decision is the OPPOSITE entry, approved
+    assert decision.outcome == "APPROVE"
+    # A close (EXIT_ONLY) decision was created too
+    exits = (await db.execute(select(StrategyDecision).where(
+        StrategyDecision.strategy_id == "rev_on",
+        StrategyDecision.outcome == "EXIT_ONLY"))).scalars().all()
+    assert len(exits) == 1
+    # Position flipped to PENDING_SHORT
+    pos = (await db.execute(select(PositionState).where(
+        PositionState.symbol == "MESU2025"))).scalar_one()
+    assert pos.state == "PENDING_SHORT"
+
+
+@pytest.mark.asyncio
+async def test_reversal_not_allowed_closes_only(db: AsyncSession) -> None:
+    from app.models.decision import StrategyDecision
+    from app.models.position_state import PositionState
+    await _setup_long(db, "rev_off", allow_reversal=False)
+    raw = RawSignal(strategy_id="rev_off", payload_json=_SHORT_PAYLOAD, token_valid=True)
+    db.add(raw)
+    await db.flush()
+
+    decision = await process_signal(db, "rev_off", raw.id, _SHORT_PAYLOAD, _MD)
+    # Entry blocked: only the close happened
+    assert decision.outcome == "BLOCK"
+    assert decision.block_reason == "reversal_not_allowed"
+    exits = (await db.execute(select(StrategyDecision).where(
+        StrategyDecision.strategy_id == "rev_off",
+        StrategyDecision.outcome == "EXIT_ONLY"))).scalars().all()
+    assert len(exits) == 1
+    # Position is EXITING (closed, not reopened)
+    pos = (await db.execute(select(PositionState).where(
+        PositionState.symbol == "MESU2025"))).scalar_one()
+    assert pos.state == "EXITING"
