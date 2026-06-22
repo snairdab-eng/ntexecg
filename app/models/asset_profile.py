@@ -30,6 +30,9 @@ class AssetProfile(Base):
     # futures_micro, futures_large, stocks
 
     session_config_json: Mapped[Optional[dict]] = mapped_column(JSON)
+    # days_enabled CONVENTION: Sunday=0 (cron/%w). 0=Sun,1=Mon,...,6=Sat.
+    # So [1,2,3,4,5]=Mon-Fri and [0,1,2,3,4,5]=Sun-Fri. SessionValidator
+    # reads the current day with strftime("%w") to match this.
     # MES pit session:
     # {"timezone": "America/New_York", "days_enabled": [1,2,3,4,5],
     #  "entry_start": "09:30", "entry_end": "15:45",

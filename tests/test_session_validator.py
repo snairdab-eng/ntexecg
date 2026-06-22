@@ -27,7 +27,7 @@ def _pit_session() -> dict:
     """Mon-Fri 09:30-15:45 ET pit session."""
     return {
         "timezone": "America/New_York",
-        "days_enabled": [0, 1, 2, 3, 4],  # Mon-Fri
+        "days_enabled": [1, 2, 3, 4, 5],  # Mon-Fri (Sunday=0)
         "entry_start": "09:30",
         "entry_end": "15:45",
         "next_day_end": False,
@@ -188,8 +188,7 @@ def test_mjy_outside_24h_session_gap() -> None:
 def test_mjy_saturday_not_allowed() -> None:
     """MJY at 14:00 ET Saturday → outside session (only Sun-Fri).
 
-    Note: June 20, 2026 is Friday (not Saturday due to weekday math).
-    Using June 21 (actual Saturday).
+    June 20, 2026 is the actual Saturday (Sunday=0 convention: %w=6).
     """
     asset = _make_asset("MJY", _fx_24h_session())
     validator = SessionValidator()
@@ -202,8 +201,8 @@ def test_mjy_saturday_not_allowed() -> None:
 
         et = ZoneInfo("America/New_York")
         mock_dt.now.return_value = real_dt(
-            2026, 6, 21, 14, 0, 0, tzinfo=et
-        )  # Saturday 14:00 ET (June 21 is Saturday)
+            2026, 6, 20, 14, 0, 0, tzinfo=et
+        )  # Saturday 14:00 ET (June 20 is Saturday)
         mock_dt.side_effect = lambda *args, **kwargs: real_dt(*args, **kwargs)
 
         assert validator.is_within_session(asset) is False
@@ -213,7 +212,7 @@ def test_mgc_within_pit_session() -> None:
     """MGC at 10:00 ET Monday (08:20-13:30 ET pit) → within session."""
     mgc_session = {
         "timezone": "America/New_York",
-        "days_enabled": [0, 1, 2, 3, 4],
+        "days_enabled": [1, 2, 3, 4, 5],
         "entry_start": "08:20",
         "entry_end": "13:30",
         "next_day_end": False,
@@ -240,7 +239,7 @@ def test_mgc_outside_pit_session() -> None:
     """MGC at 14:00 ET Monday (pit closes 13:30) → outside session."""
     mgc_session = {
         "timezone": "America/New_York",
-        "days_enabled": [0, 1, 2, 3, 4],
+        "days_enabled": [1, 2, 3, 4, 5],
         "entry_start": "08:20",
         "entry_end": "13:30",
         "next_day_end": False,

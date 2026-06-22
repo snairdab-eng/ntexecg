@@ -41,7 +41,10 @@ class SessionValidator:
         tz = ZoneInfo(session_config.get("timezone", "America/New_York"))
         now_dt = datetime.now(tz)
         current_time = now_dt.time()
-        current_day = now_dt.weekday()  # 0=Mon, 6=Sun
+        # CONVENTION: days_enabled uses Sunday=0 (cron/%w), matching the
+        # contract (doc 04), seed data, the global default and the asset UI.
+        # NOT Python's weekday() (Mon=0). strftime("%w") -> "0"=Sun..."6"=Sat.
+        current_day = int(now_dt.strftime("%w"))  # 0=Sun .. 6=Sat
 
         # Anexo 08 #5 — repeatable windows: each window carries its own days.
         # If present, the signal is within session if it falls in ANY window.
@@ -52,8 +55,8 @@ class SessionValidator:
                 self._window_matches(w, current_day, current_time) for w in windows
             )
 
-        # Check day of week
-        allowed_days: list = session_config.get("days_enabled", [0, 1, 2, 3, 4])
+        # Check day of week (Sunday=0 convention; [1..5] = Mon-Fri)
+        allowed_days: list = session_config.get("days_enabled", [1, 2, 3, 4, 5])
         if current_day not in allowed_days:
             return False
 
@@ -81,7 +84,7 @@ class SessionValidator:
         single-window keys ("days_enabled"/"entry_start"/"entry_end") so the
         same parser serves both shapes. Honors per-window next_day_end.
         """
-        days = window.get("days", window.get("days_enabled", [0, 1, 2, 3, 4]))
+        days = window.get("days", window.get("days_enabled", [1, 2, 3, 4, 5]))
         if current_day not in days:
             return False
         start = self._parse_time(window.get("start", window.get("entry_start", "09:30")))

@@ -17,8 +17,8 @@ def _multi_window() -> dict:
     return {
         "timezone": ET,
         "windows": [
-            {"days": [0, 1, 2, 3], "start": "09:00", "end": "15:45"},  # Mon-Thu
-            {"days": [4], "start": "09:00", "end": "12:00"},            # Fri short
+            {"days": [1, 2, 3, 4], "start": "09:00", "end": "15:45"},  # Mon-Thu (Sun=0)
+            {"days": [5], "start": "09:00", "end": "12:00"},            # Fri short
         ],
     }
 
@@ -33,7 +33,8 @@ def _at(year, month, day, hour, minute):
         yield
 
 
-# 2026-06-15 is a Monday; 18 = Thursday; 19 = Friday; 20 = Saturday.
+# 2026-06-15 is a Monday; 18 = Thursday; 19 = Friday; 20 = Saturday; 21 = Sunday.
+# Day numbers below use the Sunday=0 convention (%w): Mon=1 .. Fri=5, Sat=6, Sun=0.
 
 def test_thursday_within_long_window():
     with _at(2026, 6, 18, 10, 0):
@@ -62,15 +63,15 @@ def test_saturday_no_window():
 
 def test_window_with_next_day_end():
     cfg = {"timezone": ET,
-           "windows": [{"days": [6, 0, 1, 2, 3, 4], "start": "18:00",
-                        "end": "17:00", "next_day_end": True}]}
-    # Sunday (weekday 6) 20:00 → within the overnight window
+           "windows": [{"days": [0, 1, 2, 3, 4, 5], "start": "18:00",
+                        "end": "17:00", "next_day_end": True}]}  # Sun-Fri
+    # Sunday (%w=0) 20:00 → within the overnight window
     with _at(2026, 6, 21, 20, 0):  # 2026-06-21 is a Sunday
         assert SessionValidator().is_within_session_config(cfg) is True
 
 
 def test_legacy_single_window_still_works():
-    cfg = {"timezone": ET, "days_enabled": [0, 1, 2, 3, 4],
+    cfg = {"timezone": ET, "days_enabled": [1, 2, 3, 4, 5],
            "entry_start": "09:30", "entry_end": "15:45"}
     with _at(2026, 6, 18, 10, 0):  # Thursday 10:00
         assert SessionValidator().is_within_session_config(cfg) is True

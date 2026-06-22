@@ -147,7 +147,7 @@ async def test_level_2_outside_session_for_entry(
         "mode": "normal",
         "session_config_json": {
             "timezone": "America/New_York",
-            "days_enabled": [0, 1, 2, 3, 4],
+            "days_enabled": [1, 2, 3, 4, 5],
             "entry_start": "09:30",
             "entry_end": "15:45",
         },
@@ -300,7 +300,7 @@ async def test_happy_path_entry_approve_with_sl(
         "sl_atr_multiplier": 1.5,
         "session_config_json": {
             "timezone": "America/New_York",
-            "days_enabled": [0, 1, 2, 3, 4],
+            "days_enabled": [1, 2, 3, 4, 5],
             "entry_start": "09:30",
             "entry_end": "15:45",
         },
