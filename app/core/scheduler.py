@@ -109,3 +109,42 @@ class HeartbeatMonitor:
             except Exception as exc:
                 logger.error("heartbeat_check_failed error={}", exc)
                 await db.rollback()
+
+
+class ExitManagerJob:
+    """Fase 4 — runs the Exit Manager sweep every 60s.
+
+    Scans confirmed-open positions and dispatches forced exits (EOD /
+    max-holding / overnight) through the Fase-2 gate. Own DB session per cycle.
+    """
+
+    def __init__(self, settings_obj: object) -> None:
+        self._settings = settings_obj
+        self._scheduler = AsyncIOScheduler(timezone="UTC")
+
+    def start(self) -> None:
+        self._scheduler.add_job(
+            self._run, trigger="interval", seconds=60,
+            id="exit_manager", replace_existing=True,
+        )
+        self._scheduler.start()
+        logger.info("exit_manager_started interval=60s")
+
+    def stop(self) -> None:
+        if self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
+            logger.info("exit_manager_stopped")
+
+    async def _run(self) -> None:
+        from app.db.session import AsyncSessionLocal
+        from app.services.forced_exit import exit_manager_sweep
+
+        async with AsyncSessionLocal() as db:
+            try:
+                n = await exit_manager_sweep(db, self._settings)
+                if n:
+                    logger.info("exit_manager_sweep dispatched={}", n)
+                await db.commit()
+            except Exception as exc:
+                logger.error("exit_manager_sweep_failed error={}", exc)
+                await db.rollback()
