@@ -125,6 +125,36 @@ async def count_bars(
     return int(res.scalar_one())
 
 
+async def get_training_bars(
+    db: AsyncSession,
+    symbol: str,
+    timeframe: str,
+    provider: str = PROVIDER,
+    limit: int | None = None,
+) -> tuple[list[float], list[float]]:
+    """Return (closes, volumes) ordered oldest→newest for HMM training/inference.
+
+    `limit` caps to the most recent N bars (None = full history).
+    """
+    stmt = (
+        select(OhlcvBar.close, OhlcvBar.volume)
+        .where(
+            OhlcvBar.symbol == symbol,
+            OhlcvBar.timeframe == timeframe,
+            OhlcvBar.provider == provider,
+        )
+        .order_by(OhlcvBar.bar_time.desc())
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    res = await db.execute(stmt)
+    rows = list(res.all())
+    rows.reverse()  # back to oldest→newest
+    closes = [float(r[0]) for r in rows if r[0] is not None]
+    volumes = [float(r[1]) if r[1] is not None else 0.0 for r in rows]
+    return closes, volumes
+
+
 async def latest_bar_time(
     db: AsyncSession, symbol: str, timeframe: str, provider: str = PROVIDER
 ) -> datetime | None:

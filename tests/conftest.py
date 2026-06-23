@@ -121,3 +121,17 @@ def _clear_symbol_mapper_cache() -> None:
     """
     import app.services.symbol_mapper as _sm
     _sm.clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_models_dir(tmp_path, monkeypatch) -> None:
+    """Point MODELS_DIR at a fresh empty temp dir per test.
+
+    Prevents any on-disk trained HMM model from leaking into tests (baseline
+    get_regime tests must stay deterministic). Also clears the trainer cache.
+    """
+    from app.core.config import settings as _settings
+    import app.services.hmm_trainer as _hmm
+
+    monkeypatch.setattr(_settings, "MODELS_DIR", str(tmp_path / "models"))
+    _hmm._CACHE.clear()

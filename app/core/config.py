@@ -51,5 +51,13 @@ class Settings(BaseSettings):
     # How often the MarketBarsUpdater persists fresh bridge bars into ohlcv_bars.
     MARKET_BARS_UPDATE_MINUTES: int = 15
 
+    # HMM market-regime (Fase 6).
+    MODELS_DIR: str = "models"            # where trained HMM models are stored
+    HMM_REGIME_TIMEFRAME: str = "1h"      # timeframe the regime is detected on
+    HMM_N_STATES: int = 3                 # trending_bull / trending_bear / ranging
+    HMM_TRAIN_ENABLED: bool = True        # weekly training job on/off
+    HMM_TRAIN_DAY_OF_WEEK: str = "sun"    # APScheduler cron day_of_week
+    HMM_TRAIN_HOUR: int = 2               # local-UTC hour for the weekly retrain
+
 
 settings = Settings()

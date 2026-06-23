@@ -26,7 +26,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     setup_logging(settings.LOG_LEVEL)
 
     from app.services.market_data_service import get_market_data_service
-    from app.core.scheduler import HeartbeatMonitor, ExitManagerJob, MarketBarsUpdater
+    from app.core.scheduler import (
+        HeartbeatMonitor, ExitManagerJob, MarketBarsUpdater, HMMTrainerJob,
+    )
 
     market_data = get_market_data_service(settings)
     app.state.market_data = market_data
@@ -42,11 +44,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     bars_updater.start()
 
+    hmm_trainer_job = HMMTrainerJob(settings)
+    hmm_trainer_job.start()
+
     yield
 
     monitor.stop()
     exit_manager.stop()
     bars_updater.stop()
+    hmm_trainer_job.stop()
 
 
 async def _redirect_to_login(request: Request, exc: NotAuthenticated) -> RedirectResponse:

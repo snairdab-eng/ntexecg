@@ -70,22 +70,39 @@ class HMMService:
     ) -> str:
         """Return the current regime for ``symbol`` on ``timeframe``.
 
-        Reads bars from the injected MarketDataService (same provider the rest
-        of the pipeline uses). With no market data wired, returns "unknown"
-        (fail-open). Never raises — regime is an advisory, opt-in filter.
+        Order: (1) trained HMM model from MODELS_DIR if present, else
+        (2) the deterministic baseline classifier. Reads bars from the injected
+        MarketDataService (same provider the pipeline uses). With no market data
+        wired, returns "unknown" (fail-open). Never raises — regime is advisory.
         """
         if self._market_data is None:
             return "unknown"
         try:
-            bars = await self._market_data.get_bars(
-                symbol, timeframe, limit=lookback + 10
-            )
+            bars = await self._market_data.get_bars(symbol, timeframe, limit=250)
         except Exception:
             return "unknown"
         closes: list[float] = []
+        volumes: list[float] = []
         for b in bars or []:
             try:
-                closes.append(float(b.get("close", 0) or 0))
+                c = float(b.get("close", 0) or 0)
+                v = float(b.get("volume", 0) or 0)
             except (ValueError, TypeError):
                 continue
+            closes.append(c)
+            volumes.append(v)
+
+        # 1) trained HMM model (if one exists for this symbol/timeframe)
+        try:
+            from app.services import hmm_trainer
+
+            model_obj = hmm_trainer.load_model(symbol, timeframe)
+            if model_obj is not None:
+                label = hmm_trainer.predict_regime(model_obj, closes, volumes)
+                if label and label != "unknown":
+                    return label
+        except Exception:
+            pass  # fall through to the baseline
+
+        # 2) deterministic baseline (always available, no ML dependency)
         return classify_regime(closes, lookback, trend_threshold)

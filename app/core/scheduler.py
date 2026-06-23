@@ -218,3 +218,48 @@ class MarketBarsUpdater:
             except Exception as exc:
                 logger.error("market_bars_update_failed error={}", exc)
                 await db.rollback()
+
+
+class HMMTrainerJob:
+    """Fase 6 — weekly HMM regime training per symbol from ohlcv_bars.
+
+    Trains a GaussianHMM for each active data symbol on the configured regime
+    timeframe and saves it to MODELS_DIR. get_regime() picks up the new model
+    automatically (mtime-cached). Disabled via HMM_TRAIN_ENABLED.
+    """
+
+    def __init__(self, settings_obj: object) -> None:
+        self._settings = settings_obj
+        self._scheduler = AsyncIOScheduler(timezone="UTC")
+
+    def start(self) -> None:
+        if not getattr(self._settings, "HMM_TRAIN_ENABLED", True):
+            logger.info("hmm_trainer_disabled")
+            return
+        self._scheduler.add_job(
+            self._run, trigger="cron",
+            day_of_week=self._settings.HMM_TRAIN_DAY_OF_WEEK,
+            hour=self._settings.HMM_TRAIN_HOUR,
+            id="hmm_trainer", replace_existing=True,
+        )
+        self._scheduler.start()
+        logger.info(
+            "hmm_trainer_started day={} hour={}",
+            self._settings.HMM_TRAIN_DAY_OF_WEEK, self._settings.HMM_TRAIN_HOUR,
+        )
+
+    def stop(self) -> None:
+        if self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
+            logger.info("hmm_trainer_stopped")
+
+    async def _run(self) -> None:
+        from app.db.session import AsyncSessionLocal
+        from app.services.hmm_trainer import train_active_symbols
+
+        async with AsyncSessionLocal() as db:
+            try:
+                results = await train_active_symbols(db)
+                logger.info("hmm_training_done results={}", results)
+            except Exception as exc:
+                logger.error("hmm_training_failed error={}", exc)
