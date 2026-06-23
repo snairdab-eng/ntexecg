@@ -1,5 +1,5 @@
 """bar_store — idempotent OHLCV persistence into ohlcv_bars (Fase 6 groundwork)."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +83,29 @@ async def test_persist_bars_skips_bad_and_empty(db: AsyncSession) -> None:
     assert await persist_bars(db, "ES", "5m", bad) == 0
     await db.commit()
     assert await count_bars(db, "ES", "5m") == 0
+
+
+def _many_bars(n: int, start: datetime = datetime(2021, 1, 4, 9, 0, 0)) -> list[dict]:
+    """n valid 5-min bars (uses timedelta so hours never overflow)."""
+    out = []
+    for i in range(n):
+        t = start + timedelta(minutes=5 * i)
+        out.append({
+            "time": t.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1000,
+        })
+    return out
+
+
+@pytest.mark.asyncio
+async def test_persist_bars_chunks_large_batches(db: AsyncSession) -> None:
+    # 2500 rows crosses the internal 2000-row insert limit (asyncpg param cap).
+    n = await persist_bars(db, "NQ", "5m", _many_bars(2500))
+    await db.commit()
+    assert n == 2500
+    assert await count_bars(db, "NQ", "5m") == 2500
+    # Re-running stays idempotent across the chunk boundary.
+    assert await persist_bars(db, "NQ", "5m", _many_bars(2500)) == 0
 
 
 @pytest.mark.asyncio

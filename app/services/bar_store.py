@@ -23,6 +23,9 @@ from app.models.ohlcv_bar import OhlcvBar
 
 PROVIDER = "ninjatrader"
 _CONFLICT_COLS = ["symbol", "timeframe", "bar_time", "provider"]
+# asyncpg caps a single statement at 32767 bind parameters. Each row binds 11
+# columns (id + 9 fields + created_at), so keep inserts well under that limit.
+_MAX_ROWS_PER_INSERT = 2000
 
 
 def parse_bar_time(raw: object) -> datetime | None:
@@ -96,12 +99,16 @@ async def persist_bars(
     else:
         from sqlalchemy.dialects.sqlite import insert as _insert
 
-    stmt = _insert(OhlcvBar).values(rows).on_conflict_do_nothing(
-        index_elements=_CONFLICT_COLS
-    )
-    result = await db.execute(stmt)
-    rc = result.rowcount
-    return rc if rc and rc > 0 else 0
+    inserted = 0
+    for i in range(0, len(rows), _MAX_ROWS_PER_INSERT):
+        batch = rows[i:i + _MAX_ROWS_PER_INSERT]
+        stmt = _insert(OhlcvBar).values(batch).on_conflict_do_nothing(
+            index_elements=_CONFLICT_COLS
+        )
+        result = await db.execute(stmt)
+        rc = result.rowcount
+        inserted += rc if rc and rc > 0 else 0
+    return inserted
 
 
 async def count_bars(
