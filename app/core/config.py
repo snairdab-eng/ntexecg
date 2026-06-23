@@ -48,5 +48,8 @@ class Settings(BaseSettings):
     MARKET_DATA_FALLBACK_ENABLED: bool = False
     NEWS_CACHE_TTL_MINUTES: int = 60
 
+    # How often the MarketBarsUpdater persists fresh bridge bars into ohlcv_bars.
+    MARKET_BARS_UPDATE_MINUTES: int = 15
+
 
 settings = Settings()

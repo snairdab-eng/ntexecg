@@ -148,3 +148,73 @@ class ExitManagerJob:
             except Exception as exc:
                 logger.error("exit_manager_sweep_failed error={}", exc)
                 await db.rollback()
+
+
+class MarketBarsUpdater:
+    """Keeps the ohlcv_bars history current from the live bridge feed.
+
+    Every `interval_minutes`, reads the latest bridge bars for each active data
+    symbol and timeframe and upserts them into ohlcv_bars (idempotent). The HOLC
+    CSV backfill seeds the long history; this job appends new bars going forward
+    so the store is always up to date for HMM training / backtests.
+    """
+
+    _TIMEFRAMES = ("5m", "15m", "1h", "4h")
+
+    def __init__(self, market_data_service: object, interval_minutes: int = 15) -> None:
+        self._svc = market_data_service
+        self._interval = interval_minutes
+        self._scheduler = AsyncIOScheduler(timezone="UTC")
+
+    def start(self) -> None:
+        self._scheduler.add_job(
+            self._run, trigger="interval", minutes=self._interval,
+            id="market_bars_updater", replace_existing=True,
+        )
+        self._scheduler.start()
+        logger.info("market_bars_updater_started interval={}m", self._interval)
+
+    def stop(self) -> None:
+        if self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
+            logger.info("market_bars_updater_stopped")
+
+    async def _run(self) -> None:
+        from sqlalchemy import select
+        from app.db.session import AsyncSessionLocal
+        from app.models.symbol_map import SymbolMap
+        from app.services.bar_store import persist_bars
+        from app.services.symbol_mapper import SymbolMapper
+
+        mapper = SymbolMapper()
+        async with AsyncSessionLocal() as db:
+            try:
+                result = await db.execute(
+                    select(SymbolMap).where(SymbolMap.active.is_(True))
+                )
+                # Distinct DATA symbols (micro + parent share bridge files).
+                data_symbols: set[str] = set()
+                for sm in result.scalars().all():
+                    ds = await mapper.resolve_market_data_symbol(db, sm.tv_symbol)
+                    if ds:
+                        data_symbols.add(ds)
+
+                total = 0
+                for ds in sorted(data_symbols):
+                    for tf in self._TIMEFRAMES:
+                        try:
+                            bars = await self._svc.get_bars(ds, tf, limit=500)
+                        except Exception as exc:
+                            logger.error(
+                                "market_bars_fetch_failed symbol={} tf={} error={}",
+                                ds, tf, exc,
+                            )
+                            continue
+                        total += await persist_bars(db, ds, tf, bars)
+
+                await db.commit()
+                if total:
+                    logger.info("market_bars_updated inserted={}", total)
+            except Exception as exc:
+                logger.error("market_bars_update_failed error={}", exc)
+                await db.rollback()
