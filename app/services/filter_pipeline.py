@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.normalized_signal import NormalizedSignal
 from app.models.strategy import Strategy
+from app.services.hmm_service import HMMService
 from app.services.market_data_service import MarketDataService
 from app.services.quality_scorer import QualityScorer
 from app.services.session_validator import SessionValidator
@@ -82,6 +83,7 @@ class FilterPipeline:
         self._quality_scorer = QualityScorer()
         self._sl_tp_calc = SLTPCalculator()
         self._symbol_mapper = SymbolMapper()
+        self._regime = HMMService(market_data)
 
     async def evaluate(
         self,
@@ -179,6 +181,26 @@ class FilterPipeline:
         if is_exit:
             execution["level_4"] = {"skipped": True, "reason": "exit_signal"}
         else:
+            # Fase 6 — market-regime gate (opt-in). Regime is a higher-level
+            # state read on a slower timeframe (default 1h), independent of the
+            # entry timeframe. Blocks only when the regime is KNOWN and not in
+            # allowed_regimes; "unknown" (insufficient data) fails open.
+            regime_cfg = config.get("regime") or {}
+            if regime_cfg.get("enabled"):
+                rtf = regime_cfg.get("timeframe") or "1h"
+                regime = await self._regime.get_regime(data_symbol, rtf)
+                allowed = regime_cfg.get("allowed_regimes") or []
+                execution["regime"] = {
+                    "regime": regime, "timeframe": rtf, "allowed": allowed,
+                }
+                if allowed and regime != "unknown" and regime not in allowed:
+                    return PipelineResult(
+                        outcome="BLOCK",
+                        block_reason="regime_not_allowed",
+                        block_level=4,
+                        pipeline_execution_json=execution,
+                    )
+
             # Quality bars come from the resolved data symbol too — a micro reuses
             # its parent's bridge bars (MES → ES), consistent with get_atr (L5).
             bars = await self.market_data.get_bars(

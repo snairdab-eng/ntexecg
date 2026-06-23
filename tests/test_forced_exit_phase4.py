@@ -18,8 +18,8 @@ from app.services.forced_exit import dispatch_forced_exit, exit_manager_sweep
 UTC = timezone.utc
 
 
-def _long_position(strategy_id="fx", opened_minutes_ago=120, symbol="MESU2026"):
-    now = datetime.now(UTC)
+def _long_position(strategy_id="fx", opened_minutes_ago=120, symbol="MESU2026", now=None):
+    now = now or datetime.now(UTC)
     return PositionState(
         strategy_id=strategy_id, account_id="paper_default", symbol=symbol,
         state="LONG", state_source="estimated", direction="long", quantity=1,
@@ -77,16 +77,23 @@ async def test_sweep_dispatches_due_position(db: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_sweep_skips_not_due(db: AsyncSession):
+    # NOTE: GlobalProfile.force_flat_time defaults to 15:55 at the column level,
+    # so passing None does NOT disable EOD flat — SQLAlchemy applies the default
+    # and stores 15:55. The sweep is therefore time-sensitive, so we pin `now`
+    # to a deterministic in-session time well before 15:55 ET; otherwise this
+    # test is flaky and fails whenever it runs after 15:55 ET.
+    now = datetime(2026, 6, 17, 14, 0, tzinfo=UTC)  # Wed 10:00 ET (in session)
     db.add(GlobalProfile(mode="normal", score_minimum=70, active=True,
                          max_holding_minutes=600, force_flat_time=None))
     db.add(Strategy(strategy_id="nd", name="ND", asset_symbol="MES",
                     timeframe="5m", status="paper", enabled=True))
-    # opened 10 min ago, max_holding 600 → not due; no force_flat; overnight allowed
-    pos = _long_position(strategy_id="nd", opened_minutes_ago=10)
+    # opened 10 min ago → max_holding 600 not due; 10:00 ET < 15:55 EOD; no
+    # asset session_config → overnight check skipped. Nothing is due.
+    pos = _long_position(strategy_id="nd", opened_minutes_ago=10, now=now)
     db.add(pos)
     await db.commit()
 
-    n = await exit_manager_sweep(db, settings, now=datetime.now(UTC))
+    n = await exit_manager_sweep(db, settings, now=now)
     assert n == 0
     p = (await db.execute(select(PositionState).where(
         PositionState.symbol == "MESU2026"))).scalar_one()

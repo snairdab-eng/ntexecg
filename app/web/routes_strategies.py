@@ -532,6 +532,116 @@ async def update_windows(
     )
 
 
+@router.post("/ui/strategies/{strategy_id}/filters")
+async def update_filters(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Fase 5 — edit the Level-4 QualityScorer filters (enabled + weight).
+
+    Stored in pipeline_config_json["filters"] as {name: {enabled, weight}}.
+    If no filter is enabled (with weight > 0) the key is removed, so the scorer
+    returns 100 (pass-through). Weights are preserved while any filter is active.
+    """
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    form = await request.form()
+    filters: dict = {}
+    any_enabled = False
+    for name in ("volume_relative", "atr_normalized", "vwap_position", "time_of_day"):
+        enabled = bool(form.get(f"f_{name}_enabled"))
+        raw_w = (form.get(f"f_{name}_weight") or "").strip()
+        try:
+            weight = float(raw_w) if raw_w else 1.0
+        except (ValueError, TypeError):
+            weight = 1.0
+        if weight < 0:
+            weight = 0.0
+        filters[name] = {"enabled": enabled, "weight": weight}
+        if enabled and weight > 0:
+            any_enabled = True
+
+    # Merge: replace only the "filters" key, preserving guardrails/windows/etc.
+    cfg = dict(profile.pipeline_config_json or {})
+    if any_enabled:
+        cfg["filters"] = filters
+    else:
+        cfg.pop("filters", None)
+    profile.pipeline_config_json = cfg or None
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="StrategyProfile",
+        object_id=strategy_id,
+        new_value={"filters": filters if any_enabled else {}},
+        reason="quality filters updated via UI",
+    )
+    await db.commit()
+    return redirect(
+        f"/ui/strategies/{strategy_id}",
+        flash="Filtros de calidad actualizados" if any_enabled
+        else "Filtros de calidad desactivados (score 100, pasa-directo)",
+    )
+
+
+@router.post("/ui/strategies/{strategy_id}/regime")
+async def update_regime(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Fase 6 — edit the Level-4 market-regime gate (opt-in).
+
+    Stored in pipeline_config_json["regime"] as
+    {enabled, timeframe, allowed_regimes}. Stored only when enabled AND at
+    least one regime is allowed; otherwise the key is removed (gate disabled).
+    """
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    form = await request.form()
+    enabled = bool(form.get("regime_enabled"))
+    timeframe = (form.get("regime_timeframe") or "1h").strip()
+    if timeframe not in ("1h", "4h"):
+        timeframe = "1h"
+    allowed = [
+        r for r in ("trending_bull", "trending_bear", "ranging")
+        if form.get(f"regime_allow_{r}")
+    ]
+
+    cfg = dict(profile.pipeline_config_json or {})
+    if enabled and allowed:
+        cfg["regime"] = {
+            "enabled": True, "timeframe": timeframe, "allowed_regimes": allowed,
+        }
+    else:
+        cfg.pop("regime", None)
+    profile.pipeline_config_json = cfg or None
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="StrategyProfile",
+        object_id=strategy_id, new_value={"regime": cfg.get("regime", {})},
+        reason="regime gate updated via UI",
+    )
+    await db.commit()
+    return redirect(
+        f"/ui/strategies/{strategy_id}",
+        flash="Filtro de régimen actualizado" if (enabled and allowed)
+        else "Filtro de régimen desactivado",
+    )
+
+
 @router.post("/ui/strategies/{strategy_id}/status")
 async def change_status(
     request: Request,

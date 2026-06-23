@@ -524,6 +524,101 @@ async def test_update_windows_persists_and_cleans(
 
 
 @pytest.mark.asyncio
+async def test_update_filters_persists_and_cleans(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Fase 5 — quality-filters editor saves enabled+weight, MERGES with other
+    pipeline_config_json keys, and clears the key when none is enabled."""
+    db.add(Strategy(strategy_id="flt_strat", name="F", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    # Pre-existing guardrails must survive the filters update (merge, not replace).
+    db.add(StrategyProfile(
+        strategy_id="flt_strat", mode="paper",
+        pipeline_config_json={"guardrails": {"enforce_symbol_match": True}}))
+    await db.commit()
+
+    # Enable two filters with weights; the other two only send a weight (disabled)
+    resp = await client.post("/ui/strategies/flt_strat/filters", data={
+        "f_volume_relative_enabled": "1", "f_volume_relative_weight": "2",
+        "f_vwap_position_enabled": "1", "f_vwap_position_weight": "1.5",
+        "f_atr_normalized_weight": "1",
+        "f_time_of_day_weight": "1",
+    })
+    assert resp.status_code == 303
+    row = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "flt_strat"))).scalar_one()
+    await db.refresh(row)
+    flt = (row.pipeline_config_json or {}).get("filters", {})
+    assert flt["volume_relative"] == {"enabled": True, "weight": 2.0}
+    assert flt["vwap_position"] == {"enabled": True, "weight": 1.5}
+    assert flt["atr_normalized"]["enabled"] is False
+    assert flt["time_of_day"]["enabled"] is False
+    # guardrails preserved through the merge
+    assert (row.pipeline_config_json or {}).get(
+        "guardrails", {}).get("enforce_symbol_match") is True
+
+    # Detail Config tab renders the filter checkboxes
+    page = await client.get("/ui/strategies/flt_strat")
+    assert page.status_code == 200
+    assert 'name="f_volume_relative_enabled"' in page.text
+
+    # No filter enabled → "filters" key removed (scorer → 100), guardrails kept
+    resp = await client.post("/ui/strategies/flt_strat/filters", data={
+        "f_volume_relative_weight": "2",
+    })
+    assert resp.status_code == 303
+    row2 = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "flt_strat"))).scalar_one()
+    await db.refresh(row2)
+    assert (row2.pipeline_config_json or {}).get("filters") is None
+    assert (row2.pipeline_config_json or {}).get(
+        "guardrails", {}).get("enforce_symbol_match") is True
+
+
+@pytest.mark.asyncio
+async def test_update_regime_persists_and_cleans(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Fase 6 — regime gate editor saves enabled+timeframe+allowed, merges with
+    other pipeline_config_json keys, and clears when not usable."""
+    db.add(Strategy(strategy_id="rg_strat", name="R", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="rg_strat", mode="paper",
+                           pipeline_config_json={"filters": {"x": 1}}))
+    await db.commit()
+
+    resp = await client.post("/ui/strategies/rg_strat/regime", data={
+        "regime_enabled": "1", "regime_timeframe": "4h",
+        "regime_allow_trending_bull": "1", "regime_allow_ranging": "1",
+    })
+    assert resp.status_code == 303
+    row = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "rg_strat"))).scalar_one()
+    await db.refresh(row)
+    rg = (row.pipeline_config_json or {}).get("regime", {})
+    assert rg.get("enabled") is True
+    assert rg.get("timeframe") == "4h"
+    assert sorted(rg.get("allowed_regimes", [])) == ["ranging", "trending_bull"]
+    # unrelated keys survive the merge
+    assert (row.pipeline_config_json or {}).get("filters") == {"x": 1}
+
+    page = await client.get("/ui/strategies/rg_strat")
+    assert page.status_code == 200
+    assert 'name="regime_enabled"' in page.text
+
+    # Enabled but no regime allowed → gate removed (would block nothing)
+    resp = await client.post("/ui/strategies/rg_strat/regime", data={
+        "regime_enabled": "1", "regime_timeframe": "1h",
+    })
+    assert resp.status_code == 303
+    row2 = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "rg_strat"))).scalar_one()
+    await db.refresh(row2)
+    assert (row2.pipeline_config_json or {}).get("regime") is None
+    assert (row2.pipeline_config_json or {}).get("filters") == {"x": 1}
+
+
+@pytest.mark.asyncio
 async def test_config_resolver_injects_strategy_windows(
     db: AsyncSession
 ) -> None:

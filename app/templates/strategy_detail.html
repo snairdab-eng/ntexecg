@@ -245,6 +245,70 @@
                 <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar guardarraíles</button>
             </form>
         </div>
+
+        {% set flt = (profile.pipeline_config_json or {}).get('filters', {}) %}
+        <div class="border-t border-gray-800 mt-3 pt-3">
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Filtros de calidad — Nivel 4 (Fase 5)</div>
+            <p class="text-xs text-gray-500 mb-3">Opt-in. Sin filtros activos, el score es <b>100</b> (pasa). Con uno o más activos, el score es el promedio ponderado (0–100) y se compara contra el <b>score mínimo</b>. El peso es relativo (cualquier escala).</p>
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/filters" class="space-y-2">
+                {% for name, label, desc in [
+                    ('volume_relative', 'Volumen relativo', 'volumen de la barra vs promedio de 20'),
+                    ('atr_normalized', 'ATR normalizado', 'volatilidad reciente vs su baseline'),
+                    ('vwap_position', 'Posición vs VWAP', 'precio vs VWAP, con signo por dirección'),
+                    ('time_of_day', 'Hora de sesión', 'penaliza apertura/lunch/cierre') ] %}
+                {% set f = flt.get(name, {}) %}
+                <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-2 text-gray-300 flex-1">
+                        <input type="checkbox" name="f_{{ name }}_enabled" value="1"
+                               class="rounded bg-gray-800 border-gray-700" {% if f.get('enabled') %}checked{% endif %}>
+                        <span>{{ label }} <span class="text-gray-600 text-xs">— {{ desc }}</span></span>
+                    </label>
+                    <div class="w-24">
+                        <input name="f_{{ name }}_weight" type="number" step="0.1" min="0" placeholder="peso"
+                               value="{{ f.get('weight', 1.0) }}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-sm">
+                    </div>
+                </div>
+                {% endfor %}
+                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm mt-1">Guardar filtros</button>
+            </form>
+        </div>
+
+        {% set rg = (profile.pipeline_config_json or {}).get('regime', {}) %}
+        <div class="border-t border-gray-800 mt-3 pt-3">
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Régimen de mercado — Nivel 4 (Fase 6)</div>
+            <p class="text-xs text-gray-500 mb-3">Opt-in. Bloquea la entrada si el régimen actual (detectado en un TF superior) no está en los permitidos. Régimen <b>unknown</b> (datos insuficientes) nunca bloquea.</p>
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/regime" class="space-y-3">
+                <label class="flex items-center gap-2 text-gray-300">
+                    <input type="checkbox" name="regime_enabled" value="1"
+                           class="rounded bg-gray-800 border-gray-700" {% if rg.get('enabled') %}checked{% endif %}>
+                    Activar filtro de régimen
+                </label>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Timeframe del régimen</label>
+                    {% set rtf = rg.get('timeframe', '1h') %}
+                    <select name="regime_timeframe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                        {% for tf in ['1h','4h'] %}
+                        <option value="{{ tf }}" {% if rtf == tf %}selected{% endif %}>{{ tf }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <div class="text-xs text-gray-400 mb-1">Regímenes permitidos</div>
+                    {% set allowed = rg.get('allowed_regimes', []) %}
+                    <div class="flex flex-wrap gap-4">
+                        {% for r, lbl in [('trending_bull','Tendencia alcista'),('trending_bear','Tendencia bajista'),('ranging','Rango / lateral')] %}
+                        <label class="flex items-center gap-2 text-gray-300 text-sm">
+                            <input type="checkbox" name="regime_allow_{{ r }}" value="1"
+                                   class="rounded bg-gray-800 border-gray-700" {% if r in allowed %}checked{% endif %}>
+                            {{ lbl }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar régimen</button>
+            </form>
+        </div>
         {% else %}
         <p class="text-gray-600">Sin perfil de configuración.</p>
         {% endif %}

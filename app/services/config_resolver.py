@@ -72,6 +72,8 @@ class ConfigResolver:
             "contract_type": None,
             # Quality filters (Fase 5) - opt-in; empty → score 100.
             "filters": {},
+            # Market regime (Fase 6) - opt-in; empty → gate disabled.
+            "regime": {},
         }
 
         # Merge GlobalProfile (base)
@@ -166,6 +168,11 @@ class ConfigResolver:
                     "filters")
                 if isinstance(_filters, dict):
                     config["filters"] = _filters
+                # Market regime (Fase 6) — Level-4 opt-in gate config.
+                _regime = (strategy_profile.pipeline_config_json or {}).get(
+                    "regime")
+                if isinstance(_regime, dict):
+                    config["regime"] = _regime
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run

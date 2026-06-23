@@ -431,3 +431,93 @@ async def test_level_3_unknown_position_permits_exit(
     assert result.outcome == "APPROVE"
     # Exits skip level 5 → no SL calculated
     assert result.sl_price is None
+
+
+# ---------------------------------------------------------------------------
+# Level 4 — Market regime gate (Fase 6, opt-in)
+# ---------------------------------------------------------------------------
+
+_REGIME_CFG = {
+    "mode": "normal", "score_minimum": 70, "sl_atr_multiplier": 1.5,
+    "regime": {"enabled": True, "timeframe": "1h",
+               "allowed_regimes": ["trending_bull"]},
+}
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_blocks_when_not_allowed(
+    db: AsyncSession, market_data_service
+) -> None:
+    """Regime enabled + current regime not in allowed_regimes → BLOCK (level 4)."""
+    signal = _make_signal(action="buy")
+    strategy = _make_strategy(status="live")
+    pipeline = FilterPipeline(market_data_service)
+    with patch(
+        "app.services.session_validator.SessionValidator.is_within_session_config",
+        return_value=True,
+    ), patch(
+        "app.services.hmm_service.HMMService.get_regime",
+        new=AsyncMock(return_value="trending_bear"),
+    ):
+        result = await pipeline.evaluate(db, signal, strategy, dict(_REGIME_CFG))
+    assert result.outcome == "BLOCK"
+    assert result.block_reason == "regime_not_allowed"
+    assert result.block_level == 4
+    assert result.pipeline_execution_json["regime"]["regime"] == "trending_bear"
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_passes_when_allowed(
+    db: AsyncSession, market_data_service
+) -> None:
+    """Regime enabled + current regime allowed → not blocked by the gate."""
+    signal = _make_signal(action="buy")
+    strategy = _make_strategy(status="live")
+    pipeline = FilterPipeline(market_data_service)
+    with patch(
+        "app.services.session_validator.SessionValidator.is_within_session_config",
+        return_value=True,
+    ), patch(
+        "app.services.hmm_service.HMMService.get_regime",
+        new=AsyncMock(return_value="trending_bull"),
+    ):
+        result = await pipeline.evaluate(db, signal, strategy, dict(_REGIME_CFG))
+    assert result.outcome == "APPROVE"
+    assert result.pipeline_execution_json["regime"]["regime"] == "trending_bull"
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_fails_open_on_unknown(
+    db: AsyncSession, market_data_service
+) -> None:
+    """Regime 'unknown' (insufficient data) never blocks — fail-open."""
+    signal = _make_signal(action="buy")
+    strategy = _make_strategy(status="live")
+    pipeline = FilterPipeline(market_data_service)
+    with patch(
+        "app.services.session_validator.SessionValidator.is_within_session_config",
+        return_value=True,
+    ), patch(
+        "app.services.hmm_service.HMMService.get_regime",
+        new=AsyncMock(return_value="unknown"),
+    ):
+        result = await pipeline.evaluate(db, signal, strategy, dict(_REGIME_CFG))
+    assert result.outcome == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_disabled_skips(
+    db: AsyncSession, market_data_service
+) -> None:
+    """No regime config → gate skipped, no 'regime' key in the execution trace."""
+    signal = _make_signal(action="buy")
+    strategy = _make_strategy(status="live")
+    config = {"mode": "normal", "score_minimum": 70, "sl_atr_multiplier": 1.5}
+    pipeline = FilterPipeline(market_data_service)
+    with patch(
+        "app.services.session_validator.SessionValidator.is_within_session_config",
+        return_value=True,
+    ):
+        result = await pipeline.evaluate(db, signal, strategy, config)
+    assert result.outcome == "APPROVE"
+    assert "regime" not in result.pipeline_execution_json
