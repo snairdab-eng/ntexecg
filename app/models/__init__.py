@@ -19,6 +19,7 @@ from app.models.audit_log import AuditLog
 from app.models.market_data_status import MarketDataStatus
 from app.models.economic_event import EconomicEvent
 from app.models.ohlcv_bar import OhlcvBar
+from app.models.execution_result import ExecutionResult
 
 __all__ = [
     "RawSignal",
@@ -38,4 +39,5 @@ __all__ = [
     "MarketDataStatus",
     "EconomicEvent",
     "OhlcvBar",
+    "ExecutionResult",
 ]
