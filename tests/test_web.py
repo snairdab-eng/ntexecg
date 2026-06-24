@@ -652,6 +652,42 @@ async def test_update_sltp_sets_and_clears(
 
 
 @pytest.mark.asyncio
+async def test_edit_strategy_core_fields(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Edit name/asset/timeframe/mode/TradersPost URL after creation; URL syncs
+    to the profile (where ConfigResolver reads it)."""
+    db.add(Strategy(strategy_id="edit_s", name="Old", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True,
+                    traderspost_webhook_url="https://old"))
+    db.add(StrategyProfile(strategy_id="edit_s", mode="paper",
+                           traderspost_webhook_url="https://old"))
+    await db.commit()
+
+    resp = await client.post("/ui/strategies/edit_s/edit", data={
+        "name": "Nueva", "asset_symbol": "MNQ", "timeframe": "15m",
+        "traderspost_webhook_url": "https://new", "mode": "micro",
+    })
+    assert resp.status_code == 303
+    s = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == "edit_s"))).scalar_one()
+    p = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "edit_s"))).scalar_one()
+    await db.refresh(s)
+    await db.refresh(p)
+    assert s.name == "Nueva"
+    assert s.asset_symbol == "MNQ"
+    assert s.timeframe == "15m"
+    assert s.traderspost_webhook_url == "https://new"
+    assert p.traderspost_webhook_url == "https://new"  # synced to profile
+    assert p.mode == "micro"
+
+    page = await client.get("/ui/strategies/edit_s")
+    assert page.status_code == 200
+    assert 'action="/ui/strategies/edit_s/edit"' in page.text
+
+
+@pytest.mark.asyncio
 async def test_config_resolver_injects_strategy_windows(
     db: AsyncSession
 ) -> None:

@@ -642,6 +642,55 @@ async def update_regime(
     )
 
 
+@router.post("/ui/strategies/{strategy_id}/edit")
+async def update_strategy(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+    name: str = Form(...),
+    asset_symbol: str = Form(""),
+    timeframe: str = Form(""),
+    traderspost_webhook_url: str = Form(""),
+    mode: str = Form(""),
+) -> RedirectResponse:
+    """Edit a strategy's core fields after creation. strategy_id is immutable
+    (it is the webhook path + LuxAlgo alert key) — delete/recreate to change it.
+    """
+    result = await db.execute(
+        select(Strategy).where(Strategy.strategy_id == strategy_id)
+    )
+    strategy = result.scalar_one_or_none()
+    if strategy is None:
+        return redirect("/ui/strategies", flash="Estrategia no encontrada", category="error")
+
+    strategy.name = name.strip() or strategy.name
+    strategy.asset_symbol = (asset_symbol.strip() or None)
+    strategy.timeframe = (timeframe.strip() or None)
+    strategy.traderspost_webhook_url = (traderspost_webhook_url.strip() or None)
+
+    # Keep the dispatch URL in sync on the profile (ConfigResolver reads it there).
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+    profile.traderspost_webhook_url = (traderspost_webhook_url.strip() or None)
+    if mode in ("paper", "micro", "limited_live", "live"):
+        profile.mode = mode
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="Strategy",
+        object_id=strategy_id,
+        new_value={"name": strategy.name, "asset_symbol": strategy.asset_symbol,
+                   "timeframe": strategy.timeframe, "mode": profile.mode},
+        reason="strategy core fields edited via UI",
+    )
+    await db.commit()
+    return redirect(f"/ui/strategies/{strategy_id}", flash="Estrategia actualizada")
+
+
 @router.post("/ui/strategies/{strategy_id}/sltp")
 async def update_sltp(
     request: Request,

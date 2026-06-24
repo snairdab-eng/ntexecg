@@ -185,6 +185,44 @@
 
     <!-- Tab: Config -->
     <div x-show="tab === 'config'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-4 text-sm space-y-2">
+        <div class="border border-gray-800 rounded p-3 mb-3">
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Editar estrategia</div>
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/edit" class="space-y-2">
+                <div class="text-xs text-gray-500 mb-1">strategy_id: <span class="text-gray-300 font-mono">{{ strategy.strategy_id }}</span> — no editable (es la URL del webhook y la alerta de LuxAlgo)</div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Nombre</label>
+                        <input name="name" value="{{ strategy.name }}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Modo</label>
+                        {% set pm = profile.mode if profile else 'paper' %}
+                        <select name="mode" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                            {% for m in ['paper','micro','limited_live','live'] %}
+                            <option value="{{ m }}" {% if pm == m %}selected{% endif %}>{{ m }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Activo (asset)</label>
+                        <input name="asset_symbol" value="{{ strategy.asset_symbol or '' }}" placeholder="MES"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Timeframe</label>
+                        <input name="timeframe" value="{{ strategy.timeframe or '' }}" placeholder="5m"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">TradersPost webhook URL</label>
+                    <input name="traderspost_webhook_url" value="{{ strategy.traderspost_webhook_url or '' }}"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                </div>
+                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar cambios</button>
+            </form>
+        </div>
         {% if profile %}
         {% set armed = profile.traderspost_enabled and not profile.dry_run %}
         <div class="border border-gray-800 rounded p-3 mb-3">
