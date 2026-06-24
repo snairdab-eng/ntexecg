@@ -81,6 +81,7 @@ def test_exit_has_no_stop_loss() -> None:
     assert "stopLoss" not in payload
     assert "takeProfit" not in payload
     assert payload["action"] == "exit"
+    assert "sentiment" not in payload  # TradersPost: sentiment invalid on exits
 
 
 def test_exit_does_not_raise_without_sl() -> None:

@@ -43,10 +43,13 @@ class PayloadBuilder:
         payload: dict = {
             "ticker": signal.mapped_symbol,      # mapped contract, not ticker_received
             "action": signal.action,
-            "sentiment": signal.sentiment,
             "signalPrice": float(signal.price) if signal.price is not None else None,
             "quantity": signal.quantity,
         }
+        # "sentiment" is only valid for entries (buy/sell). TradersPost rejects it
+        # with action == "exit" (invalid-sentiment-action), so omit it on exits.
+        if not is_exit:
+            payload["sentiment"] = signal.sentiment
 
         if not is_exit:
             # ENTRY — stopLoss is MANDATORY
