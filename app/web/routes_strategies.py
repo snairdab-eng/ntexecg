@@ -642,6 +642,125 @@ async def update_regime(
     )
 
 
+@router.post("/ui/strategies/{strategy_id}/ficha")
+async def update_ficha(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Edit the full registration card (machote) after creation. Mirrors the
+    create-form parsing, but MERGES into pipeline_config_json so guardrails /
+    windows / filters / regime are preserved.
+    """
+    result = await db.execute(
+        select(Strategy).where(Strategy.strategy_id == strategy_id)
+    )
+    strategy = result.scalar_one_or_none()
+    if strategy is None:
+        return redirect("/ui/strategies", flash="Estrategia no encontrada", category="error")
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id, mode="paper")
+        db.add(profile)
+
+    form = await request.form()
+
+    def _s(key: str) -> str | None:
+        v = (form.get(key) or "").strip()
+        return v or None
+
+    def _num(key, cast):
+        v = (form.get(key) or "").strip()
+        if not v:
+            return None
+        try:
+            return cast(v)
+        except (ValueError, TypeError):
+            return None
+
+    # Identity / definition / backtest → Strategy.notes + luxalgo_metrics_json
+    strategy.notes = _s("descripcion")
+    metrics: dict = {}
+    for _k in ("responsable", "toolkit", "trigger", "filter_1", "filter_2",
+               "exit_condition", "frequency", "order_size"):
+        _v = _s(_k)
+        if _v:
+            metrics[_k] = _v
+    bt: dict = {}
+    for _k in ("bt_start", "bt_end"):
+        _v = _s(_k)
+        if _v:
+            bt[_k] = _v
+    for _k, _cast in (("num_trades", int), ("winrate", float),
+                      ("profit_factor", float), ("net_profit", float),
+                      ("max_drawdown", float)):
+        _v = _num(_k, _cast)
+        if _v is not None:
+            bt[_k] = _v
+    if bt:
+        metrics["backtest"] = bt
+    strategy.luxalgo_metrics_json = metrics or None
+
+    # Reference/dedup/confirm/routing → MERGE into pipeline_config_json
+    cfg = dict(profile.pipeline_config_json or {})
+    risk_ref: dict = {}
+    if form.get("stop_required"):
+        risk_ref["stop_required"] = True
+    for _k, _cast in (("stop_ticks", int), ("risk_usd_max_operation", float),
+                      ("max_contracts", int)):
+        _v = _num(_k, _cast)
+        if _v is not None:
+            risk_ref[_k] = _v
+    if risk_ref:
+        cfg["risk_reference"] = risk_ref
+    else:
+        cfg.pop("risk_reference", None)
+    _d = _num("dedup_seconds", int)
+    if _d is not None:
+        cfg["dedup_seconds"] = _d
+    else:
+        cfg.pop("dedup_seconds", None)
+    _conf = _s("confirmaciones")
+    if _conf:
+        cfg["confirmaciones"] = _conf
+    else:
+        cfg.pop("confirmaciones", None)
+    routing: dict = {}
+    if _s("target_account"):
+        routing["target_account"] = _s("target_account")
+    if _s("routing_notes"):
+        routing["notes"] = _s("routing_notes")
+    if routing:
+        cfg["routing"] = routing
+    else:
+        cfg.pop("routing", None)
+    profile.pipeline_config_json = cfg or None
+
+    # EOD / exits-always scalars
+    profile.allow_exits_outside_window = True if form.get("allow_exits_outside_window") else None
+    _eod = _s("force_flat_time")
+    if _eod:
+        from datetime import time as _time
+        try:
+            _hh, _mm = _eod.split(":")[:2]
+            profile.force_flat_time = _time(int(_hh), int(_mm))
+        except (ValueError, IndexError):
+            pass
+    else:
+        profile.force_flat_time = None
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="Strategy",
+        object_id=strategy_id, new_value={"ficha": "updated"},
+        reason="registration card edited via UI",
+    )
+    await db.commit()
+    return redirect(f"/ui/strategies/{strategy_id}", flash="Ficha actualizada")
+
+
 @router.post("/ui/strategies/{strategy_id}/edit")
 async def update_strategy(
     request: Request,

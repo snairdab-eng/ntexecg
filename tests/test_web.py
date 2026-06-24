@@ -688,6 +688,46 @@ async def test_edit_strategy_core_fields(
 
 
 @pytest.mark.asyncio
+async def test_update_ficha_persists_and_merges(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """The Ficha tab is editable; it merges into pipeline_config_json (keeps
+    guardrails) and fills metrics/backtest/risk-reference/routing."""
+    db.add(Strategy(strategy_id="ficha_s", name="F", asset_symbol="MES",
+                    timeframe="5m", status="candidate", enabled=False))
+    db.add(StrategyProfile(
+        strategy_id="ficha_s", mode="paper",
+        pipeline_config_json={"guardrails": {"enforce_symbol_match": True}}))
+    await db.commit()
+
+    resp = await client.post("/ui/strategies/ficha_s/ficha", data={
+        "descripcion": "mi desc", "responsable": "Juan", "toolkit": "LuxAlgo",
+        "trigger": "cross", "num_trades": "120", "winrate": "55.5",
+        "stop_required": "1", "stop_ticks": "40", "dedup_seconds": "30",
+        "target_account": "paper1", "force_flat_time": "15:55",
+        "allow_exits_outside_window": "1",
+    })
+    assert resp.status_code == 303
+    s = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == "ficha_s"))).scalar_one()
+    p = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "ficha_s"))).scalar_one()
+    await db.refresh(s)
+    await db.refresh(p)
+    assert s.notes == "mi desc"
+    assert s.luxalgo_metrics_json["responsable"] == "Juan"
+    assert s.luxalgo_metrics_json["backtest"]["num_trades"] == 120
+    assert s.luxalgo_metrics_json["backtest"]["winrate"] == 55.5
+    cfg = p.pipeline_config_json
+    assert cfg["risk_reference"] == {"stop_required": True, "stop_ticks": 40}
+    assert cfg["dedup_seconds"] == 30
+    assert cfg["routing"]["target_account"] == "paper1"
+    assert cfg["guardrails"]["enforce_symbol_match"] is True  # preserved (merge)
+    assert p.allow_exits_outside_window is True
+    assert p.force_flat_time is not None
+
+
+@pytest.mark.asyncio
 async def test_config_resolver_injects_strategy_windows(
     db: AsyncSession
 ) -> None:
