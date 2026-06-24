@@ -55,15 +55,18 @@ class PayloadBuilder:
                     "Entry signal without sl_price is forbidden "
                     f"(strategy={signal.strategy_id}, role={signal.signal_role})"
                 )
+            # TradersPost expects the ABSOLUTE stop under "stopPrice" (NOT "price").
+            # Wrong key → 400 invalid-stop-loss-value-required.
             payload["stopLoss"] = {
                 "type": "stop",
-                "price": float(pipeline_result.sl_price),
+                "stopPrice": float(pipeline_result.sl_price),
             }
-            # takeProfit is optional — only when tp_price was calculated
+            # takeProfit is optional — only when tp_price was calculated.
+            # Absolute limit target goes under "limitPrice".
             if pipeline_result.tp_price is not None:
                 payload["takeProfit"] = {
                     "type": "limit",
-                    "price": float(pipeline_result.tp_price),
+                    "limitPrice": float(pipeline_result.tp_price),
                 }
 
         # extras — always included, useful for cross-referencing in TradersPost

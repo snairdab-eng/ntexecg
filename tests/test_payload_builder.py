@@ -48,7 +48,7 @@ def test_entry_uses_mapped_symbol_not_ticker_received() -> None:
 
 def test_entry_includes_stop_loss() -> None:
     payload = PayloadBuilder().build(_signal(), None, {}, _result(sl=5484.0))
-    assert payload["stopLoss"] == {"type": "stop", "price": 5484.0}
+    assert payload["stopLoss"] == {"type": "stop", "stopPrice": 5484.0}
 
 
 def test_entry_short_includes_stop_loss() -> None:
@@ -58,7 +58,7 @@ def test_entry_short_includes_stop_loss() -> None:
     )
     assert payload["action"] == "sell"
     assert payload["sentiment"] == "short"
-    assert payload["stopLoss"]["price"] == 5512.0
+    assert payload["stopLoss"]["stopPrice"] == 5512.0
 
 
 def test_entry_without_sl_price_raises() -> None:
@@ -93,7 +93,7 @@ def test_exit_does_not_raise_without_sl() -> None:
 
 def test_take_profit_included_when_tp_price_set() -> None:
     payload = PayloadBuilder().build(_signal(), None, {}, _result(sl=5484.0, tp=5520.0))
-    assert payload["takeProfit"] == {"type": "limit", "price": 5520.0}
+    assert payload["takeProfit"] == {"type": "limit", "limitPrice": 5520.0}
 
 
 def test_take_profit_omitted_when_none() -> None:
