@@ -619,6 +619,39 @@ async def test_update_regime_persists_and_cleans(
 
 
 @pytest.mark.asyncio
+async def test_update_sltp_sets_and_clears(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """SL/TP ATR multipliers editable from the detail; TP enables the bracket."""
+    db.add(Strategy(strategy_id="sltp_s", name="X", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="sltp_s", mode="paper"))
+    await db.commit()
+
+    resp = await client.post("/ui/strategies/sltp_s/sltp",
+                             data={"sl_atr_multiplier": "1.5", "tp_atr_multiplier": "6"})
+    assert resp.status_code == 303
+    row = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "sltp_s"))).scalar_one()
+    await db.refresh(row)
+    assert float(row.sl_atr_multiplier) == 1.5
+    assert float(row.tp_atr_multiplier) == 6.0
+
+    page = await client.get("/ui/strategies/sltp_s")
+    assert page.status_code == 200
+    assert 'name="tp_atr_multiplier"' in page.text
+
+    # Empty TP clears it (no bracket).
+    resp = await client.post("/ui/strategies/sltp_s/sltp",
+                             data={"sl_atr_multiplier": "1.5", "tp_atr_multiplier": ""})
+    assert resp.status_code == 303
+    row2 = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == "sltp_s"))).scalar_one()
+    await db.refresh(row2)
+    assert row2.tp_atr_multiplier is None
+
+
+@pytest.mark.asyncio
 async def test_config_resolver_injects_strategy_windows(
     db: AsyncSession
 ) -> None:

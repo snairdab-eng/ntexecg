@@ -642,6 +642,52 @@ async def update_regime(
     )
 
 
+@router.post("/ui/strategies/{strategy_id}/sltp")
+async def update_sltp(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+    sl_atr_multiplier: str = Form(""),
+    tp_atr_multiplier: str = Form(""),
+) -> RedirectResponse:
+    """Edit the SL/TP ATR multipliers. A TP enables the complete bracket (TP+SL)
+    that some brokers require (else the entry fails with oto-orders-not-supported).
+    Empty = None: SL falls back to the inherited default, TP off (no take profit).
+    """
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    def _pos(value: str) -> float | None:
+        v = (value or "").strip()
+        if not v:
+            return None
+        try:
+            f = float(v)
+            return f if f > 0 else None
+        except ValueError:
+            return None
+
+    profile.sl_atr_multiplier = _pos(sl_atr_multiplier)
+    profile.tp_atr_multiplier = _pos(tp_atr_multiplier)
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="StrategyProfile",
+        object_id=strategy_id,
+        new_value={"sl_atr_multiplier": str(profile.sl_atr_multiplier),
+                   "tp_atr_multiplier": str(profile.tp_atr_multiplier)},
+        reason="SL/TP ATR multipliers updated via UI",
+    )
+    await db.commit()
+    return redirect(
+        f"/ui/strategies/{strategy_id}", flash="SL/TP por ATR actualizados",
+    )
+
+
 @router.post("/ui/strategies/{strategy_id}/status")
 async def change_status(
     request: Request,
