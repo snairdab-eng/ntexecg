@@ -378,8 +378,8 @@
         {% set wins = (profile.pipeline_config_json or {}).get('windows', []) if profile else [] %}
         <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/windows"
               x-data='{ windows: {{ wins | tojson }},
-                        days: [["L",0],["M",1],["X",2],["J",3],["V",4],["S",5],["D",6]],
-                        add() { this.windows.push({days:[0,1,2,3,4], start:"09:30", end:"15:45", next_day_end:false}) },
+                        days: [["L",1],["M",2],["X",3],["J",4],["V",5],["S",6],["D",0]],
+                        add() { this.windows.push({days:[1,2,3,4,5], start:"09:30", end:"15:45", next_day_end:false}) },
                         remove(i) { this.windows.splice(i,1) },
                         toggle(w,d) { const k = w.days.indexOf(d); k>=0 ? w.days.splice(k,1) : w.days.push(d) } }'>
             <input type="hidden" name="windows_json" :value="JSON.stringify(windows)">
