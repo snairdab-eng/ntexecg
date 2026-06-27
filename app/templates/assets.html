@@ -1,37 +1,57 @@
 {% extends "base.html" %}
-{% block title %}Activos — NTEXECG{% endblock %}
+{% block title %}Calibración por Activo — NTEXECG{% endblock %}
 
 {% block content %}
 <div class="space-y-4">
-    <h1 class="text-xl font-bold text-white">Asset Profiles</h1>
+    <div class="flex items-center justify-between">
+        <h1 class="text-xl font-bold text-white">Calibración por Activo</h1>
+        <span class="text-xs text-gray-500">Esquema real: <code>asset_profiles</code> · estado operativo en <code>Strategy.status</code></span>
+    </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
         <table class="w-full text-sm">
             <thead>
                 <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
-                    <th class="px-3 py-2">Symbol</th>
-                    <th class="px-3 py-2">Pine Script</th>
-                    <th class="px-3 py-2">Sesión</th>
-                    <th class="px-3 py-2">SL Mult</th>
-                    <th class="px-3 py-2">Score</th>
+                    <th class="px-3 py-2">Símbolo</th>
+                    <th class="px-3 py-2">Tipo contrato</th>
+                    <th class="px-3 py-2">Activo</th>
+                    <th class="px-3 py-2">Ventana</th>
+                    <th class="px-3 py-2">SL ATR</th>
+                    <th class="px-3 py-2">ATR TF</th>
+                    <th class="px-3 py-2">TP ATR</th>
+                    <th class="px-3 py-2">Estrategias (status)</th>
                     <th class="px-3 py-2"></th>
                 </tr>
             </thead>
             <tbody>
                 {% for a in assets %}
                 <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
-                    <td class="px-3 py-2 text-gray-300 font-mono">{{ a.symbol }}</td>
-                    <td class="px-3 py-2"><code class="text-sky-300 font-mono">{{ a.pine_script_config }}</code></td>
+                    <td class="px-3 py-2 text-gray-200 font-mono">{{ a.symbol }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ a.contract_type or '—' }}</td>
+                    <td class="px-3 py-2">
+                        {% if a.active %}<span class="text-green-400">● activo</span>
+                        {% else %}<span class="text-gray-500">○ inactivo</span>{% endif %}
+                    </td>
                     <td class="px-3 py-2 text-gray-400">{{ a.session }}</td>
-                    <td class="px-3 py-2 text-gray-400">{{ a.sl_atr_multiplier }}x</td>
-                    <td class="px-3 py-2 text-gray-400">{{ a.score_minimum or '—' }}</td>
+                    <td class="px-3 py-2 text-gray-300">{{ a.sl_atr_multiplier if a.sl_atr_multiplier is not none else '—' }}{% if a.sl_atr_multiplier is not none %}x{% endif %}
+                        {% if a.sl_atr_multiplier == 2.0 and a.symbol != 'M6E' %}<span title="2.0 genérico — revisar" class="text-amber-400">⚠</span>{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-gray-400">{{ a.atr_timeframe or '—' }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ a.tp_atr_multiplier if a.tp_atr_multiplier is not none else '—' }}</td>
+                    <td class="px-3 py-2">
+                        {% if a.strategies %}
+                            {% for s in a.strategies %}<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-gray-800 text-gray-300 mr-1">{{ s.status }}</span>{% endfor %}
+                            {% if a.multi_strategy %}<span class="text-amber-400 text-xs">⚠ {{ a.strategies|length }} estrategias</span>{% endif %}
+                        {% else %}<span class="text-gray-600 text-xs">sin estrategias</span>{% endif %}
+                    </td>
                     <td class="px-3 py-2"><a href="/ui/assets/{{ a.symbol }}" class="text-blue-400 hover:text-blue-300">Editar</a></td>
                 </tr>
                 {% else %}
-                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="6">Sin activos configurados.</td></tr>
+                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="9">Sin activos configurados.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+    <p class="text-xs text-gray-600">production/shadow se controla en cada estrategia (<code>Strategy.status</code>), no en el perfil del activo.</p>
 </div>
 {% endblock %}

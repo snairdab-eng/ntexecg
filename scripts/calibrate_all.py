@@ -152,13 +152,4 @@ def main():
 
     print(f"\n\n{'#'*84}\nTABLA MAESTRA (ATR real en TF de cada estrategia)\n{'#'*84}")
     h = (f"{'Instr':<9}{'TF':>4}{'n':>4}{'PF24h':>7}{'PF_RTH':>7}{'PF_AM':>7}"
-         f"{'PF_OVN':>7}{'netOVN$':>12}{'bK24':>5}{'bPF':>6}")
-    print(h + "\n" + "-" * len(h))
-    for r in master:
-        print(f"{r['instr']:<9}{r['tf']:>4}{r['n']:>4}{pfs(r['pf24']):>7}{pfs(r['pfrth']):>7}"
-              f"{pfs(r.get('pfam', 0)):>7}{pfs(r['pfovn']):>7}{r['netovn']:>12,.0f}"
-              f"{str(r['bk']):>5}{pfs(r['bpf']):>6}")
-
-
-if __name__ == "__main__":
-    main()
+         f"{'PF_OVN'

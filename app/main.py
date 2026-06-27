@@ -16,6 +16,7 @@ from app.web.routes_signals import router as signals_router
 from app.web.routes_positions import router as positions_router
 from app.web.routes_symbol_map import router as symbol_map_router
 from app.web.routes_assets import router as assets_router
+from app.web.routes_api import router as api_router
 from app.web.routes_strategy_templates import router as templates_router
 from app.web.routes_settings import router as settings_router
 from app.web.routes_audit import router as audit_router
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(positions_router, dependencies=protected)
     app.include_router(symbol_map_router, dependencies=protected)
     app.include_router(assets_router, dependencies=protected)
+    app.include_router(api_router, dependencies=protected)
     app.include_router(templates_router, dependencies=protected)
     app.include_router(settings_router, dependencies=protected)
     app.include_router(audit_router, dependencies=protected)
