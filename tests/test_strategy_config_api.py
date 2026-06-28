@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.models.asset_profile import AssetProfile
 from app.models.strategy import Strategy
 from app.models.strategy_profile import StrategyProfile
+from app.services.config_resolver import ConfigResolver
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +41,26 @@ async def test_get_config_layers(client: AsyncClient, db: AsyncSession) -> None:
     assert j["override"]["windows"] is None                     # aún sin override
     # efectivo: sin override de estrategia, hereda 2.0 del activo
     assert j["effective"]["sl_atr_multiplier"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_resolver_reads_score_filters_regime_from_profile(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Anexo 21 — pipeline_config_json de la estrategia debe alimentar el resolver:
+    score_minimum (override), filters (QualityScorer) y regime (gate HMM)."""
+    await _seed(db)
+    db.add(StrategyProfile(strategy_id="ES5m", sl_atr_multiplier=None, pipeline_config_json={
+        "score_minimum": 55,
+        "filters": {"volume_relative": {"enabled": True, "weight": 25},
+                    "time_of_day": {"enabled": True, "weight": 25}},
+        "regime": {"enabled": True, "timeframe": "1h", "allowed_regimes": ["ranging"]},
+    }))
+    await db.commit()
+    cfg = await ConfigResolver().resolve(db, "ES5m", "MES")
+    assert cfg["score_minimum"] == 55                                  # override per-estrategia
+    assert cfg["filters"]["volume_relative"]["enabled"] is True
+    assert cfg["regime"]["allowed_regimes"] == ["ranging"]
 
 
 @pytest.mark.asyncio

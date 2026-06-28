@@ -173,6 +173,14 @@ class ConfigResolver:
                     "regime")
                 if isinstance(_regime, dict):
                     config["regime"] = _regime
+                # Quality threshold (Fase 5) — per-strategy override of the
+                # score_minimum used at Level 4 (pipeline_config_json["score_minimum"]).
+                # Documented intent of StrategyProfile; lets a strategy require a
+                # stricter/looser quality bar than the global/asset default.
+                _score_min = (strategy_profile.pipeline_config_json or {}).get(
+                    "score_minimum")
+                if isinstance(_score_min, (int, float)) and _score_min > 0:
+                    config["score_minimum"] = int(_score_min)
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run
