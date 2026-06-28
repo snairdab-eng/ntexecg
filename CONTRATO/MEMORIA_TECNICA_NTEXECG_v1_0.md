@@ -1,6 +1,6 @@
 # MEMORIA TÉCNICA — Sistema de Estrategias NTEXECG
 
-**Versión:** 1.0 · **Fecha:** 2026-06-28 · **Estado:** especificación oficial
+**Versión:** 1.1 · **Fecha:** 2026-06-28 · **Estado:** especificación oficial
 **Ámbito:** gateway de señales de trading (LuxAlgo/TradingView → NTEXECG → TradersPost)
 **Repositorio:** `C:\NTEXECG` (NTDEV) · servidor `cadmin@ntexecg` (`ntexecg.lipatolicucho.com`)
 
@@ -27,6 +27,8 @@
 10. Regla de no limitación
 11. Notas de reproducibilidad y output
 12. Tabla comparativa final (decisión)
+13. Dispatch a TradersPost: payload y ejecución escalonada
+14. Registro de cambios (sesión 2026-06-28)
 - Apéndice A: inventario de scripts
 - Apéndice B: parámetros de calibración escritos
 - Apéndice C: conflictos de datos y reconciliación
@@ -467,6 +469,123 @@ resultados reales (§§4–6, §12, Apéndice C), decisiones tomadas (§5.D, §1
 
 ---
 
+## 13. DISPATCH A TRADERSPOST: PAYLOAD Y EJECUCIÓN ESCALONADA
+
+### 13.1 Constructor de payload (`PayloadBuilder`)
+Reglas (doc 00 §8, doc 10): `ticker` = `mapped_symbol` (contrato, no el alias micro); **toda
+entrada incluye `stopLoss`** (si falta `sl_price` → `ValueError`); las **salidas nunca** llevan
+`stopLoss`/`takeProfit`. Stop absoluto bajo `stopLoss.stopPrice` (no `price`); TP absoluto bajo
+`takeProfit.limitPrice`. `extras` viaja siempre para cross-check.
+
+**Ejemplo — entrada simple (GC, sin escalonado):**
+```json
+{
+  "ticker": "MGCQ2026", "action": "buy", "signalPrice": 5000.0, "quantity": 1,
+  "sentiment": "bullish",
+  "stopLoss":   { "type": "stop",  "stopPrice":  4985.0 },
+  "takeProfit": { "type": "limit", "limitPrice": 5036.0 },
+  "extras": { "strategy_id": "MicroGC5mContrarianNormal", "ntexecg_score": 78,
+              "atr_value": 6.0, "sl_multiplier": 2.5, "provider": "NinjaTraderBridge" }
+}
+```
+**Ejemplo — salida (sin SL/TP):**
+```json
+{ "ticker": "MGCQ2026", "action": "exit", "signalPrice": 5036.0, "quantity": 1,
+  "extras": { "ntexecg_score": 100, "atr_value": null, "sl_multiplier": null } }
+```
+
+### 13.2 Motor de ejecución escalonada (`PayloadBuilder.build_scaled`)
+Implementa el Anexo 14 §8. Ante una **entrada** con `scale_entry.mode ∈ {execute, live}`, expande
+la señal en **varias órdenes** (un POST por leg):
+
+- **C1** = entrada base a mercado (sin `orderType`), `quantity = quantities[0]`.
+- **C2..Cn** = órdenes **límite** (`orderType:"limit"`, `limitPrice = señal ∓ levels[i-1]×ATR`;
+  `−` para long, `+` para short), `quantity = quantities[i]`.
+- **Stop común**: el mismo `stopLoss.stopPrice` (= señal ∓ `sl_atr_multiplier`×ATR del Nivel 5) en
+  todos los legs; `takeProfit` común si está definido.
+- **Fallback a entrada única** (`[build(...)]`) cuando: es salida, `mode` no es de ejecución, no hay
+  `quantities`, `total ≤ 0`, `total > max_micro_contracts`, o falta precio/ATR para un add.
+- Legs con `quantity = 0` se omiten. Formato verificado contra la doc de TradersPost
+  (`orderType:"limit"` + `limitPrice`).
+
+### 13.3 Ejemplos reales del webhook escalonado
+
+**ES5m (MES) — LONG escalonada → 2 webhooks (órdenes límite):** señal @5000, ATR(5m)=5.0,
+SL 2.5× → 4987.5, TP 6.0× → 5030, `quantities=[0,1,4]`, `levels=[0.75,1.25]`.
+```json
+// leg 1/2
+{ "ticker": "MESU2026", "action": "buy", "quantity": 1, "sentiment": "bullish",
+  "signalPrice": 5000.0, "orderType": "limit", "limitPrice": 4996.25,
+  "stopLoss": { "type": "stop", "stopPrice": 4987.5 },
+  "takeProfit": { "type": "limit", "limitPrice": 5030.0 },
+  "extras": { "leg_index": 1, "leg_quantity": 1, "level_atr": 0.75, "atr_value": 5.0,
+              "sl_multiplier": 2.5, "strategy_id": "ES5m" } }
+// leg 2/2
+{ "ticker": "MESU2026", "action": "buy", "quantity": 4, "sentiment": "bullish",
+  "signalPrice": 5000.0, "orderType": "limit", "limitPrice": 4993.75,
+  "stopLoss": { "type": "stop", "stopPrice": 4987.5 },
+  "takeProfit": { "type": "limit", "limitPrice": 5030.0 },
+  "extras": { "leg_index": 2, "leg_quantity": 4, "level_atr": 1.25, "atr_value": 5.0,
+              "sl_multiplier": 2.5, "strategy_id": "ES5m" } }
+```
+
+**RTY (M2K) — LONG a mercado → 1 webhook:** señal @2300, ATR(15m)=4.0, SL 4.0× → 2284,
+TP → 2324, `quantities=[3,0,0]` (C1 a mercado, sin adds).
+```json
+{ "ticker": "M2KU2026", "action": "buy", "quantity": 3, "sentiment": "bullish",
+  "signalPrice": 2300.0,
+  "stopLoss": { "type": "stop", "stopPrice": 2284.0 },
+  "takeProfit": { "type": "limit", "limitPrice": 2324.0 },
+  "extras": { "leg_index": 1, "leg_quantity": 3, "level_atr": 0.0, "atr_value": 4.0,
+              "sl_multiplier": 4.0, "strategy_id": "M2K15mConfirmationNormal" } }
+```
+
+### 13.4 Dispatch multi-leg (`_dispatch_approved`)
+En un APPROVE de entrada se obtiene la lista de legs y se envía **cada uno** vía
+`TradersPostClient.send`, registrando **un `WebhookDelivery` por leg**; el estado de posición se
+actualiza **una vez** con la cantidad **total**. Con un solo payload (salidas / entradas no
+escalonadas) el comportamiento es idéntico al previo. Sigue rigiendo el gate de dispatch
+`dry_run = env AND traderspost_enabled AND not dry_run` (en dry-run cada leg se registra como
+`DRY_RUN` sin HTTP).
+
+### 13.5 Activación / reversión
+`scripts/set_scale_execution.py` cambia `scale_entry.mode` entre `execute` y `design_only`
+(`--strategy <id>` o `--all`; dry-run + backup + auditoría). Reversión: `--all --off --apply`.
+
+### 13.6 Caveats (ejecución escalonada)
+- Los diseños **solo-límite** (C1=0: ES, GC, YM, 6J, CL, NQ) **solo entran si hay pullback** al
+  nivel; si el precio no retrocede, no hay fill (se omite el trade). **NQ** usa niveles muy
+  profundos (−4/−5×ATR) → llenará pocas veces. RTY y 6E tienen C1 a mercado (entran al instante).
+- El stop se calcula desde el **precio de señal**, no desde el fill → el riesgo fill→stop de un add
+  es menor (p. ej. add a −0.75×ATR con SL 2.5× ⇒ ~1.75×ATR).
+- **Verificar en demo** que TradersPost deja las límite **reposando** y gestiona SL/TP como **una
+  sola posición** (no brackets independientes por leg).
+
+---
+
+## 14. REGISTRO DE CAMBIOS (sesión 2026-06-28)
+
+| Cambio | Detalle | Estado |
+|---|---|---|
+| `ConfigResolver`: score_minimum per-estrategia | lee `pipeline_config_json["score_minimum"]` | desplegado |
+| Anexo 21 — GC | QualityScorer `score_minimum=55` + 4 filtros (peso igual) | aplicado (DB) |
+| Anexo 21 — YM | gate de régimen `allowed_regimes=["ranging"]` (1h) | aplicado (DB) |
+| TradersPost **demo** | 8 estrategias `dry_run=False`, `traderspost_enabled=True` (cuenta demo) | aplicado (DB) |
+| **Motor escalonado** | `PayloadBuilder.build_scaled` + dispatch multi-leg | desplegado |
+| Escalonado **activado** | `scale_entry.mode=execute` en las 8 (números de backtest) | aplicado (DB) |
+| UI | Scale Entry dentro de **Config**; pestaña *Efectivo* eliminada; editor de Activos simplificado | desplegado |
+| Diagnóstico | `show_strategy_configs.py` marca `EJECUTA ⚠` cuando `mode=execute` | desplegado |
+
+**Backups generados:** `REPORTES/anexo21_backup_*.json`, `REPORTES/traderspost_enable_backup_*.json`,
+`REPORTES/scale_exec_backup_*.json`. Reversiones: `set_scale_execution --all --off --apply`,
+`enable_traderspost_demo` (flags), `apply_anexo21_demo` (vía backup).
+
+**Pendiente / observación:** dejar correr 1 semana en demo y revisar (a) actividad de filtros
+GC/YM (`compare_filter_decisions.py`), (b) fills escalonados y comportamiento del stop común en
+TradersPost. Ampliar el reporte para incluir legs enviados/llenados.
+
+---
+
 ## APÉNDICE A — INVENTARIO DE SCRIPTS (`scripts/`)
 
 **Calibración / aplicación (dry-run + backup + auditoría):**
@@ -477,6 +596,7 @@ resultados reales (§§4–6, §12, Apéndice C), decisiones tomadas (§5.D, §1
 - `revert_asset_profiles_v1.py` — revierte `asset_profiles` a neutral.
 - `apply_anexo21_demo.py` — aplica GC (QualityScorer 55) + YM (régimen ranging).
 - `enable_traderspost_demo.py` — habilita dispatch a TradersPost (demo) en estrategias con webhook.
+- `set_scale_execution.py` — activa/desactiva la ejecución escalonada (`scale_entry.mode`), por estrategia o `--all`.
 - `sync_strategy_windows_v1.py` — sincroniza ventanas repetibles.
 - `calibrate_all.py`, `calibrate_sl_from_trades.py` — cálculo de SL desde listas de trades.
 
