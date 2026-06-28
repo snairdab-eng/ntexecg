@@ -122,7 +122,7 @@ async def main() -> None:
             print("ℹ️  DRY-RUN: sin cambios. Usa --apply para aplicar.\n")
 
         print("================ RESUMEN ================")
-        print(f"A activar ({len(to_change)}): {[s.strategy_id for s, _, _ in to_change]}")
+        print(f"A activar ({len(to_change)}): {[b['strategy_id'] for _, _, b in to_change]}")
         print(f"Ya activas ({len(already)}): {already}")
         print(f"Saltadas ({len(skipped)}): {skipped}")
 
