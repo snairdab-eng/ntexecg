@@ -136,7 +136,9 @@ async def main() -> None:
             print(f"  Filtros calidad (Nivel 4): {fmt_filters(cfg.get('filters'))}")
             print(f"  Régimen (HMM): {fmt_regime(cfg.get('regime'))}")
             if scale:
-                print(f"  Scale entry (DISEÑO, no ejecuta): mode={scale.get('mode')} "
+                _m = scale.get('mode')
+                _lbl = "EJECUTA ⚠" if _m in ("execute", "live") else "diseño, no ejecuta"
+                print(f"  Scale entry ({_lbl}): mode={_m} "
                       f"levels={scale.get('levels')} qty={scale.get('quantities')} "
                       f"max={scale.get('max_micro_contracts')}")
             else:
