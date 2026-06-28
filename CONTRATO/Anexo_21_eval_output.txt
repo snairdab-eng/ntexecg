@@ -1,0 +1,96 @@
+INFORME - Evaluacion QualityScorer / HMM (NQ, YM, GC)
+Funciones reales del pipeline reaplicadas a los trades del backtest LuxAlgo.
+Precio corregido por back-adjustment (delta por roll). Filtros opt-in; score bloquea solo entries; regimen 'unknown' = fail-open.
+
+==============================================================================
+NQ  (5m)  -  regimen 1h
+==============================================================================
+Baseline: n= 65  win= 83.1%  net=$   28,660  PF= 1.44  avg=$    441
+Sanity tz/precio (adj_price dentro de barra): 91% de 65
+
+-- Lift por filtro (Q1 bajo vs Q4 alto) --
+  volume_relative  Q1 win= 82.4% avg=$  1,472  | Q4 win= 90.0% avg=$  1,087
+  atr_normalized   Q1 win= 88.2% avg=$  1,323  | Q4 win= 88.2% avg=$    809
+  vwap_position    Q1 win= 82.4% avg=$    484  | Q4 win= 76.5% avg=$    957
+  time_of_day      Q1 win= 87.7% avg=$    646  | Q4 win= 83.1% avg=$    853
+  comp             Q1 win= 76.5% avg=$    708  | Q4 win= 78.9% avg=$    583
+
+-- Sweep score_minimum (composite, 4 filtros peso igual) --
+   thr   kept   blk    win%          net     PF        dNet
+    50     60     5   81.7  $   14,210   1.22  $  -14,450
+    55     56     9   82.1  $   12,005   1.19  $  -16,655
+    60     49    16   85.7  $   18,540   1.37  $  -10,120
+    65     40    25   85.0  $   31,165   2.69  $   +2,505
+    70     27    38   81.5  $   19,895   2.27  $   -8,765
+    75     11    54   81.8  $    5,015   2.02  $  -23,645
+    80      4    61   75.0  $      950   1.57  $  -27,710
+    85      1    64  100.0  $      940    inf  $  -27,720
+
+-- Regimen 1h (Kaufman ER) en la entrada --
+  trend-aligned : n=  8  win= 62.5%  net=$    3,885  PF= 1.97  avg=$    486
+  counter-trend : n= 10  win= 90.0%  net=$   11,555  PF= 2.78  avg=$  1,156
+  ranging       : n= 47  win= 85.1%  net=$   13,220  PF= 1.24  avg=$    281
+  unknown       : n=  0  win=  0.0%  net=$        0  PF= 0.00  avg=$      0
+  -> bloquear counter-trend: n= 55  win= 81.8%  net=$   17,105  PF= 1.29  avg=$    311 (dNet $-11,555)
+
+==============================================================================
+YM  (15m)  -  regimen 1h
+==============================================================================
+Baseline: n= 48  win= 89.6%  net=$   22,690  PF= 1.92  avg=$    473
+Sanity tz/precio (adj_price dentro de barra): 88% de 48
+
+-- Lift por filtro (Q1 bajo vs Q4 alto) --
+  volume_relative  Q1 win= 84.6% avg=$    394  | Q4 win= 90.9% avg=$    480
+  atr_normalized   Q1 win=100.0% avg=$  1,078  | Q4 win= 83.3% avg=$    452
+  vwap_position    Q1 win= 83.3% avg=$    132  | Q4 win=100.0% avg=$  1,150
+  time_of_day      Q1 win= 89.1% avg=$    460  | Q4 win= 95.1% avg=$    782
+  comp             Q1 win= 84.6% avg=$   -324  | Q4 win= 92.3% avg=$    415
+
+-- Sweep score_minimum (composite, 4 filtros peso igual) --
+   thr   kept   blk    win%          net     PF        dNet
+    50     22    26   95.5  $   19,865   9.62  $   -2,825
+    55     15    33   93.3  $    7,260   4.15  $  -15,430
+    60      9    39  100.0  $    4,690    inf  $  -18,000
+    65      4    44  100.0  $    1,630    inf  $  -21,060
+    70      1    47  100.0  $      340    inf  $  -22,350
+    75      0    48    0.0  $        0   0.00  $  -22,690
+    80      0    48    0.0  $        0   0.00  $  -22,690
+    85      0    48    0.0  $        0   0.00  $  -22,690
+
+-- Regimen 1h (Kaufman ER) en la entrada --
+  trend-aligned : n=  0  win=  0.0%  net=$        0  PF= 0.00  avg=$      0
+  counter-trend : n= 20  win= 75.0%  net=$   -8,275  PF= 0.66  avg=$   -414
+  ranging       : n= 28  win=100.0%  net=$   30,965  PF=  inf  avg=$  1,106
+  unknown       : n=  0  win=  0.0%  net=$        0  PF= 0.00  avg=$      0
+  -> bloquear counter-trend: n= 28  win=100.0%  net=$   30,965  PF=  inf  avg=$  1,106 (dNet $+8,275)
+
+==============================================================================
+GC  (5m)  -  regimen 1h
+==============================================================================
+Baseline: n=107  win= 60.7%  net=$  135,390  PF= 1.95  avg=$  1,265
+Sanity tz/precio (adj_price dentro de barra): 91% de 107
+
+-- Lift por filtro (Q1 bajo vs Q4 alto) --
+  volume_relative  Q1 win= 51.9% avg=$   -273  | Q4 win= 63.5% avg=$  1,604
+  atr_normalized   Q1 win= 66.7% avg=$  2,134  | Q4 win= 55.6% avg=$  1,577
+  vwap_position    Q1 win= 51.9% avg=$    844  | Q4 win= 48.1% avg=$    594
+  time_of_day      Q1 win= 58.9% avg=$  1,017  | Q4 win= 63.4% avg=$  1,642
+  comp             Q1 win= 48.1% avg=$   -438  | Q4 win= 71.4% avg=$  2,016
+
+-- Sweep score_minimum (composite, 4 filtros peso igual) --
+   thr   kept   blk    win%          net     PF        dNet
+    50    101     6   60.4  $  132,470   2.06  $   -2,920
+    55     98     9   62.2  $  141,670   2.22  $   +6,280
+    60     90    17   64.4  $  158,040   2.94  $  +22,650
+    65     72    35   63.9  $  120,840   2.69  $  -14,550
+    70     54    53   61.1  $   94,520   2.72  $  -40,870
+    75     28    79   71.4  $   56,460   2.81  $  -78,930
+    80     12    95   50.0  $    5,190   1.26  $ -130,200
+    85      5   102   60.0  $   16,630   4.62  $ -118,760
+
+-- Regimen 1h (Kaufman ER) en la entrada --
+  trend-aligned : n= 12  win= 50.0%  net=$  -10,620  PF= 0.53  avg=$   -885
+  counter-trend : n= 13  win= 61.5%  net=$   30,050  PF= 3.72  avg=$  2,312
+  ranging       : n= 82  win= 62.2%  net=$  115,960  PF= 2.07  avg=$  1,414
+  unknown       : n=  0  win=  0.0%  net=$        0  PF= 0.00  avg=$      0
+  -> bloquear counter-trend: n= 94  win= 60.6%  net=$  105,340  PF= 1.80  avg=$  1,121 (dNet $-30,050)
