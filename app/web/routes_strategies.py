@@ -856,6 +856,92 @@ async def update_sltp(
     )
 
 
+@router.post("/ui/strategies/{strategy_id}/scale-entry")
+async def update_scale_entry(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+    scale_entry_mode: str = Form("design_only"),
+    levels: str = Form(""),
+    quantities: str = Form(""),
+    max_micro_contracts: str = Form(""),
+    scale_stop_mode: str = Form("common_position_stop"),
+) -> RedirectResponse:
+    """Diseño de compras escalonadas (NO ejecucion). Guarda en
+    pipeline_config_json['scale_entry']. mode=enabled se rechaza: el motor
+    escalonado no existe; NTEXECG opera 1 entrada + bracket."""
+    if scale_entry_mode == "enabled":
+        return redirect(
+            f"/ui/strategies/{strategy_id}",
+            flash="scale_entry_mode=enabled rechazado: el motor escalonado no existe (solo diseno).",
+            category="error",
+        )
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    def _floats(raw: str) -> list:
+        out = []
+        for tok in (raw or "").replace(";", ",").split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                f = float(tok)
+            except ValueError:
+                continue
+            if f > 0:
+                out.append(f)
+        return out
+
+    def _ints(raw: str) -> list:
+        out = []
+        for tok in (raw or "").replace(";", ",").split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                out.append(max(0, int(float(tok))))
+            except ValueError:
+                continue
+        return out
+
+    cfg = dict(profile.pipeline_config_json or {})
+    before = cfg.get("scale_entry")
+    if scale_entry_mode == "off":
+        cfg.pop("scale_entry", None)
+        se = None
+    else:
+        try:
+            maxm = int(max_micro_contracts) if str(max_micro_contracts).strip() else None
+        except ValueError:
+            maxm = None
+        se = {
+            "mode": "design_only",
+            "levels": _floats(levels),
+            "quantities": _ints(quantities),
+            "max_micro_contracts": maxm,
+            "stop_mode": "common_position_stop",
+        }
+        cfg["scale_entry"] = se
+    profile.pipeline_config_json = cfg or None
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="StrategyProfile",
+        object_id=strategy_id, old_value={"scale_entry": before},
+        new_value={"scale_entry": se}, reason="scale_entry design (no execution)",
+    )
+    await db.commit()
+    return redirect(
+        f"/ui/strategies/{strategy_id}",
+        flash="Scale Entry (diseno) " + ("quitado" if se is None else "guardado"),
+    )
+
+
 @router.post("/ui/strategies/{strategy_id}/status")
 async def change_status(
     request: Request,

@@ -101,9 +101,36 @@ async def test_scale_entry_off_removes(client: AsyncClient, db: AsyncSession) ->
 
 
 @pytest.mark.asyncio
-async def test_detail_page_renders_with_tabs(client: AsyncClient, db: AsyncSession) -> None:
+async def test_detail_page_renders(client: AsyncClient, db: AsyncSession) -> None:
     await _seed(db)
+    db.add(StrategyProfile(strategy_id="ES5m"))  # profile presente => tab Config visible
+    await db.commit()
     r = await client.get("/ui/strategies/ES5m")
     assert r.status_code == 200, r.text
-    assert "Efectivo" in r.text and "Scale Entry" in r.text
-    assert "stratCfg()" in r.text
+    assert "Efectivo" not in r.text           # tab Efectivo eliminada
+    assert "stratCfg" not in r.text           # JS del loader eliminado
+    assert "Compras escalonadas" in r.text    # Scale Entry ahora en Config
+    assert "/ui/strategies/ES5m/scale-entry" in r.text
+
+
+@pytest.mark.asyncio
+async def test_scale_entry_server_form_persists(client: AsyncClient, db: AsyncSession) -> None:
+    await _seed(db)
+    r = await client.post("/ui/strategies/ES5m/scale-entry", data={
+        "scale_entry_mode": "design_only", "levels": "0.75, 1.25",
+        "quantities": "0, 1, 4", "max_micro_contracts": "5"})
+    assert r.status_code == 303
+    p = (await db.execute(select(StrategyProfile).where(StrategyProfile.strategy_id == "ES5m"))).scalar_one()
+    await db.refresh(p)
+    se = p.pipeline_config_json["scale_entry"]
+    assert se["levels"] == [0.75, 1.25] and se["quantities"] == [0, 1, 4]
+    assert se["max_micro_contracts"] == 5 and se["mode"] == "design_only"
+    assert se["stop_mode"] == "common_position_stop"
+
+
+@pytest.mark.asyncio
+async def test_scale_entry_server_rejects_enabled(client: AsyncClient, db: AsyncSession) -> None:
+    await _seed(db)
+    r = await client.post("/ui/strategies/ES5m/scale-entry", data={"scale_entry_mode": "enabled"})
+    assert r.status_code == 303
+    assert "error" in r.headers["location"]

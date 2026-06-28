@@ -93,7 +93,7 @@
 
     <!-- Tabs -->
     <div class="border-b border-gray-800 flex gap-1 text-sm">
-        {% for key, label in [('overview','Overview'),('pipeline','Pipeline'),('performance','Performance'),('config','Config'),('efectivo','Efectivo'),('scale','Scale Entry'),('windows','Ventanas'),('ficha','Ficha')] %}
+        {% for key, label in [('overview','Overview'),('pipeline','Pipeline'),('performance','Performance'),('config','Config'),('windows','Ventanas'),('ficha','Ficha')] %}
         <button @click="tab = '{{ key }}'"
                 :class="tab === '{{ key }}' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'"
                 class="px-4 py-2 border-b-2 transition">{{ label }}</button>
@@ -271,6 +271,44 @@
                 <p class="text-xs text-gray-500">Si tu broker exige bracket (TP+SL), pon un TP (p. ej. <b>6.0</b>). Vacío = sin TP → puede fallar con <code>oto-orders-not-supported</code>.</p>
                 <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar SL/TP</button>
             </form>
+        </div>
+
+        {% set se = (profile.pipeline_config_json or {}).get('scale_entry') if profile else None %}
+        <div class="border-t border-gray-800 mt-3 pt-3">
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Compras escalonadas / Scale Entry — <span class="text-amber-400">DISEÑO (no ejecuta)</span></div>
+            <p class="text-xs text-gray-500 mb-2">NTEXECG opera <b>1 entrada + bracket</b>. Esto se guarda solo como diseño en la estrategia; <code>enabled</code> se rechaza (motor no existe).</p>
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/scale-entry" class="space-y-2">
+                <input type="hidden" name="scale_entry_mode" value="design_only">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Niveles ATR (C2, C3) — coma</label>
+                        <input name="levels" value="{{ se.levels|join(', ') if se and se.levels else '' }}" placeholder="0.75, 1.25"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Cantidades C1, C2, C3 — coma</label>
+                        <input name="quantities" value="{{ se.quantities|join(', ') if se and se.quantities else '' }}" placeholder="0, 1, 4"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">max_micro_contracts</label>
+                        <input name="max_micro_contracts" type="number" min="1" value="{{ se.max_micro_contracts if se and se.max_micro_contracts else '' }}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">scale_stop_mode</label>
+                        <input value="common_position_stop" disabled
+                               class="w-full bg-gray-800/50 border border-gray-700 rounded px-3 py-2 text-gray-500 text-sm">
+                    </div>
+                </div>
+                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar Scale Entry</button>
+            </form>
+            {% if se %}
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/scale-entry" class="mt-2">
+                <input type="hidden" name="scale_entry_mode" value="off">
+                <button class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-sm">Quitar diseño</button>
+            </form>
+            {% endif %}
         </div>
 
         {% set g = (profile.pipeline_config_json or {}).get('guardrails', {}) %}
@@ -492,72 +530,5 @@
         </form>
     </div>
 
-    <!-- Tab: Efectivo + Scale Entry (Anexo 19/20) -->
-    <div x-data="stratCfg()" x-init="load()">
-      <div x-show="tab === 'efectivo'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-4 text-sm">
-        <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Config efectiva (heredado activo / override estrategia / final)</div>
-        <template x-if="c">
-          <table class="w-full">
-            <thead><tr class="text-left text-xs text-gray-500"><th class="py-1">Campo</th><th>Heredado</th><th>Override</th><th>Efectivo</th></tr></thead>
-            <tbody class="text-gray-300">
-              <tr class="border-t border-gray-800"><td class="py-1">SL ATR mult</td><td x-text="fmt(c.inherited.sl_atr_multiplier)"></td><td x-text="fmt(c.override.sl_atr_multiplier)"></td><td class="text-white font-semibold" x-text="fmt(c.effective.sl_atr_multiplier)"></td></tr>
-              <tr class="border-t border-gray-800"><td class="py-1">ATR timeframe</td><td x-text="fmt(c.inherited.atr_timeframe)"></td><td x-text="fmt(c.override.atr_timeframe)"></td><td class="text-white font-semibold" x-text="fmt(c.effective.atr_timeframe)"></td></tr>
-              <tr class="border-t border-gray-800"><td class="py-1">TP ATR mult</td><td x-text="fmt(c.inherited.tp_atr_multiplier)"></td><td x-text="fmt(c.override.tp_atr_multiplier)"></td><td class="text-white font-semibold" x-text="fmt(c.effective.tp_atr_multiplier)"></td></tr>
-              <tr class="border-t border-gray-800"><td class="py-1">Ventana</td><td x-text="win(c.inherited.window)"></td><td x-text="c.override.windows ? winList(c.override.windows) : '—'"></td><td class="text-white font-semibold" x-text="win(c.effective.window)"></td></tr>
-            </tbody>
-          </table>
-        </template>
-        <p class="text-xs text-gray-600 mt-2">El override de StrategyProfile gana sobre el activo (ConfigResolver). El activo es respaldo neutral.</p>
-      </div>
-
-      <div x-show="tab === 'scale'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-4 text-sm space-y-3">
-        <div class="text-xs uppercase tracking-wider text-gray-500">Compras escalonadas / Scale Entry — <span class="text-amber-400">DISEÑO (no ejecuta)</span></div>
-        <p class="text-gray-500 text-xs">NTEXECG hoy opera <strong>1 entrada + bracket</strong>. Esto se guarda solo como diseño; <code>scale_entry_mode=enabled</code> se rechaza (motor escalonado no existe).</p>
-        <div class="grid grid-cols-2 gap-3">
-          <div><label class="block text-xs text-gray-400 mb-1">Niveles ATR (coma) — C2,C3</label><input x-model="levels" placeholder="0.75, 1.25" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100"></div>
-          <div><label class="block text-xs text-gray-400 mb-1">Cantidades C1,C2,C3 (coma)</label><input x-model="quantities" placeholder="0, 1, 4" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100"></div>
-          <div><label class="block text-xs text-gray-400 mb-1">max_micro_contracts</label><input x-model="maxm" type="number" min="1" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100"></div>
-          <div><label class="block text-xs text-gray-400 mb-1">scale_stop_mode</label><input value="common_position_stop" disabled class="w-full bg-gray-800/50 border border-gray-700 rounded px-2 py-1 text-gray-500"></div>
-        </div>
-        <div class="flex gap-2">
-          <button @click="save('design_only')" class="bg-green-700 hover:bg-green-600 text-white px-4 py-2 rounded">Guardar diseño</button>
-          <button @click="save('off')" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded">Quitar</button>
-        </div>
-        <p class="text-xs" :class="ok ? 'text-green-400':'text-amber-400'" x-text="msg"></p>
-      </div>
-    </div>
-
-    <script>
-    function stratCfg(){
-      return {
-        c:null, levels:'', quantities:'', maxm:'', msg:'', ok:true,
-        async load(){
-          const r = await fetch('/api/strategies/{{ strategy.strategy_id }}/config');
-          if(!r.ok){ this.msg='No se pudo cargar la config'; this.ok=false; return; }
-          this.c = await r.json();
-          const se = this.c.scale_entry || {};
-          this.levels=(se.levels||[]).join(', ');
-          this.quantities=(se.quantities||[]).join(', ');
-          this.maxm=se.max_micro_contracts || '';
-        },
-        fmt(v){ return (v===null||v===undefined||v==='')?'—':v; },
-        win(w){ if(!w||!w.start) return '—'; return w.start+'-'+w.end+(w.overnight?' (overnight)':'')+' ['+(w.days_label||'')+']'; },
-        winList(ws){ return ws.map(w=>w.start+'-'+w.end).join(' | '); },
-        async save(mode){
-          const body={mode};
-          if(mode==='design_only'){
-            body.levels=this.levels.split(',').map(x=>parseFloat(x.trim())).filter(x=>!isNaN(x));
-            body.quantities=this.quantities.split(',').map(x=>parseInt(x.trim())).filter(x=>!isNaN(x));
-            if(this.maxm) body.max_micro_contracts=parseInt(this.maxm);
-            body.stop_mode='common_position_stop';
-          }
-          const r=await fetch('/api/strategies/{{ strategy.strategy_id }}/scale-entry',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-          const j=await r.json(); this.ok=r.ok;
-          this.msg = r.ok ? 'Guardado (diseño).' : ('Error: '+(j.detail||r.status));
-          if(r.ok) this.load();
-        }
-      };
-    }
-    </script>
     </div>
 {% endblock %}

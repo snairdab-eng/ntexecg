@@ -165,6 +165,7 @@ async def update_asset(
     atr_period: str = Form(""),
     confirm: str = Form(""),
     form_full: str = Form(""),
+    form_active: str = Form(""),
 ) -> RedirectResponse:
     a = (await db.execute(select(AssetProfile).where(AssetProfile.symbol == symbol))).scalar_one_or_none()
     if a is None:
@@ -205,6 +206,9 @@ async def update_asset(
         cfg["next_day_end"] = (next_day_end in ("on", "yes"))
         cfg["allow_overnight"] = cfg["next_day_end"]
         a.session_config_json = cfg
+
+    if form_active == "1":
+        a.active = (active in ("on", "yes", "true"))
 
     if sl_atr_multiplier:
         a.sl_atr_multiplier = float(sl_atr_multiplier)

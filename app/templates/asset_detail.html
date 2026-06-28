@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ asset.symbol }} — Calibración{% endblock %}
+{% block title %}{{ asset.symbol }} — Activo{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto space-y-4">
@@ -7,107 +7,51 @@
     <h1 class="text-xl font-bold text-white">{{ asset.symbol }}
         <span class="text-gray-500 text-base font-normal">{{ asset.name }}</span></h1>
 
+    <!-- Catálogo del instrumento (referencia) -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4 text-sm grid grid-cols-2 gap-2">
         <div><span class="text-gray-500">Tipo contrato:</span> <span class="text-gray-300">{{ asset.contract_type or '—' }}</span></div>
         <div><span class="text-gray-500">Activo:</span>
             {% if asset.active %}<span class="text-green-400">● activo</span>{% else %}<span class="text-gray-500">○ inactivo</span>{% endif %}</div>
         <div><span class="text-gray-500">Pine Script:</span> <code class="text-sky-300 font-mono">{{ asset.pine_script_config }}</code></div>
-        <div><span class="text-gray-500">Ventana:</span> <span class="text-gray-300">{{ asset.session }}</span></div>
+        <div><span class="text-gray-500">Sesión (respaldo):</span> <span class="text-gray-400">{{ asset.session }}</span></div>
     </div>
 
-    {% if asset.multi_strategy %}
-    <div class="bg-amber-900/30 border border-amber-700 rounded p-3 text-sm text-amber-300">
-        ⚠ {{ asset.strategies|length }} estrategias usan <code>{{ asset.symbol }}</code>. Un cambio en el perfil las afecta a todas.
-    </div>
-    {% endif %}
-
-    <!-- ============ Editar perfil del activo ============ -->
+    <!-- Activar / desactivar el instrumento (lo único de nivel activo) -->
     <form method="post" action="/ui/assets/{{ asset.symbol }}"
-          class="bg-gray-900 border border-gray-800 rounded p-4 space-y-4 text-sm"
-          onsubmit="return validateAsset(this)">
-        <legend class="text-xs uppercase tracking-wider text-gray-500">Editar perfil ({{ asset.symbol }})</legend>
-        <input type="hidden" name="form_full" value="1">
-
+          class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3 text-sm">
+        <input type="hidden" name="form_active" value="1">
+        <legend class="text-xs uppercase tracking-wider text-gray-500">Instrumento</legend>
         <label class="flex items-center gap-2">
             <input type="checkbox" name="active" {% if asset.active %}checked{% endif %}>
-            <span class="text-gray-300">Activo</span>
+            <span class="text-gray-300">Activo (habilita el símbolo para operar)</span>
         </label>
-
-        <div class="border-t border-gray-800 pt-3">
-            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Ventana operativa</div>
-            <div class="grid grid-cols-2 gap-3">
-                <div>
-                    <label class="block text-xs text-gray-400 mb-1">Inicio (HH:MM)</label>
-                    <input name="entry_start" value="{{ asset.window.start }}" placeholder="09:30"
-                           class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100">
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-400 mb-1">Fin (HH:MM)</label>
-                    <input name="entry_end" value="{{ asset.window.end }}" placeholder="15:45"
-                           class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100">
-                </div>
-            </div>
-            <div class="mt-2">
-                <label class="block text-xs text-gray-400 mb-1">Días (0=Dom … 6=Sáb)</label>
-                <div class="flex flex-wrap gap-3">
-                    {% for d in range(7) %}
-                    <label class="flex items-center gap-1 text-gray-300">
-                        <input type="checkbox" name="days" value="{{ d }}" {% if d in asset.window.days %}checked{% endif %}>
-                        {{ day_names[d] }}
-                    </label>
-                    {% endfor %}
-                </div>
-            </div>
-            <label class="flex items-center gap-2 mt-2">
-                <input type="checkbox" name="next_day_end" {% if asset.window.nde %}checked{% endif %}>
-                <span class="text-gray-300">Sesión overnight (next_day_end) — cruza medianoche</span>
-            </label>
-            {% if asset.window.overnight %}<p class="text-xs text-sky-400 mt-1">Esta ventana es overnight (Globex 24h).</p>{% endif %}
-        </div>
-
-        <div class="border-t border-gray-800 pt-3 grid grid-cols-3 gap-3">
-            <div>
-                <label class="block text-xs text-gray-400 mb-1">SL ATR mult (&gt;0)</label>
-                <input name="sl_atr_multiplier" type="number" step="0.1" min="0.1"
-                       value="{{ asset.sl_atr_multiplier if asset.sl_atr_multiplier is not none else '' }}"
-                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100">
-            </div>
-            <div>
-                <label class="block text-xs text-gray-400 mb-1">ATR timeframe</label>
-                <select name="atr_timeframe" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100">
-                    <option value="">(heredar TF señal)</option>
-                    {% for tf in valid_tf %}<option value="{{ tf }}" {% if asset.atr_timeframe == tf %}selected{% endif %}>{{ tf }}</option>{% endfor %}
-                </select>
-            </div>
-            <div>
-                <label class="block text-xs text-gray-400 mb-1">TP ATR mult (bracket)</label>
-                <input name="tp_atr_multiplier" type="number" step="0.1"
-                       value="{{ asset.tp_atr_multiplier if asset.tp_atr_multiplier is not none else '' }}"
-                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100">
-            </div>
-        </div>
-
         {% if asset.has_live %}
         <label class="flex items-center gap-2 bg-red-900/30 border border-red-700 rounded p-2">
             <input type="checkbox" name="confirm" value="yes" required>
             <span class="text-red-300">Hay estrategias en paper/micro/live — confirmo el cambio.</span>
         </label>
         {% endif %}
-
         <button type="submit" class="bg-green-700 hover:bg-green-600 text-white px-4 py-2 rounded">Guardar</button>
+        <p class="text-xs text-gray-600">La calibración (SL, ventana, ATR tf, TP, scale entry) se define <b>por estrategia</b>
+           (Estrategias → tu estrategia → Config). El activo es solo respaldo neutral del instrumento.</p>
     </form>
 
-    <!-- ============ Estrategias relacionadas (Strategy.status) ============ -->
+    {% if asset.multi_strategy %}
+    <div class="bg-amber-900/30 border border-amber-700 rounded p-3 text-sm text-amber-300">
+        ⚠ {{ asset.strategies|length }} estrategias usan <code>{{ asset.symbol }}</code>.
+    </div>
+    {% endif %}
+
+    <!-- Estrategias de este símbolo (estado operativo en Strategy.status) -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4 text-sm space-y-2">
-        <div class="text-xs uppercase tracking-wider text-gray-500">Estrategias de {{ asset.symbol }} (estado operativo)</div>
+        <div class="text-xs uppercase tracking-wider text-gray-500">Estrategias de {{ asset.symbol }}</div>
         {% if asset.strategies %}
         <table class="w-full">
-            <thead><tr class="text-left text-xs text-gray-500"><th class="py-1">strategy_id</th><th>nombre</th><th>status</th><th></th></tr></thead>
+            <thead><tr class="text-left text-xs text-gray-500"><th class="py-1">strategy_id</th><th>status</th><th></th></tr></thead>
             <tbody>
             {% for s in asset.strategies %}
             <tr class="border-t border-gray-800">
-                <td class="py-1 font-mono text-gray-300">{{ s.strategy_id }}</td>
-                <td class="text-gray-400">{{ s.name }}</td>
+                <td class="py-1"><a href="/ui/strategies/{{ s.strategy_id }}" class="text-blue-400 hover:text-blue-300 font-mono">{{ s.strategy_id }}</a></td>
                 <td><span class="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">{{ s.status }}</span></td>
                 <td class="text-right">
                     <select id="st-{{ s.id }}" class="bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-gray-100 text-xs">
@@ -121,40 +65,17 @@
             </tbody>
         </table>
         {% else %}
-        <p class="text-gray-600">Sin estrategias para este símbolo. production/shadow se define al crear la estrategia (status).</p>
+        <p class="text-gray-600">Sin estrategias para este símbolo.</p>
         {% endif %}
-        <p class="text-xs text-gray-600">El estado operativo (production/shadow) NO se guarda en el perfil del activo; vive en <code>Strategy.status</code>.</p>
-    </div>
-
-    <!-- ============ Diseño pendiente (no implementado) ============ -->
-    <div class="bg-gray-900/50 border border-dashed border-gray-700 rounded p-4 text-sm">
-        <div class="text-xs uppercase tracking-wider text-gray-500 mb-1">Escalonado — diseño pendiente (no afecta ejecución)</div>
-        <p class="text-gray-500">Los campos <code>scale_entry_levels</code>, <code>scale_entry_quantities</code> y
-        <code>max_micro_contracts</code> aún no existen en el modelo. NTEXECG hoy solo soporta
-        <strong>una entrada + bracket</strong>. Se mostrarán aquí cuando se implementen.</p>
     </div>
 </div>
 
 <script>
-function validateAsset(form){
-  const sl = form.sl_atr_multiplier.value;
-  if (sl && parseFloat(sl) <= 0){ alert("SL ATR mult debe ser > 0"); return false; }
-  const re = /^\d{1,2}:\d{2}$/;
-  for (const f of ["entry_start","entry_end"]){
-    if (form[f].value && !re.test(form[f].value)){ alert(f+" debe ser HH:MM"); return false; }
-  }
-  const days = form.querySelectorAll('input[name=days]:checked');
-  if (days.length === 0){ alert("Selecciona al menos un día"); return false; }
-  return true;
-}
 async function setStatus(id){
-  const sel = document.getElementById('st-'+id);
-  const status = sel.value;
-  if (!confirm("¿Cambiar status a '"+status+"'?")) return;
-  const r = await fetch('/api/strategies/'+id+'/status', {
-    method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status})
-  });
-  if (r.ok){ location.reload(); } else { const e = await r.json(); alert('Error: '+(e.detail||r.status)); }
+  const sel=document.getElementById('st-'+id); const status=sel.value;
+  if(!confirm("¿Cambiar status a '"+status+"'?")) return;
+  const r=await fetch('/api/strategies/'+id+'/status',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+  if(r.ok){ location.reload(); } else { const e=await r.json(); alert('Error: '+(e.detail||r.status)); }
 }
 </script>
 {% endblock %}
