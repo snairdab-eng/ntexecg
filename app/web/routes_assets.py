@@ -26,7 +26,23 @@ _DAY_NAMES = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"]
 
 
 def readable_window(cfg: dict | None) -> dict:
+    """Ventana legible. Si el config trae 'windows' (repetibles, override de estrategia),
+    se resume la primera (SessionValidator usa 'windows' cuando existe)."""
     cfg = cfg or {}
+    wins = cfg.get("windows")
+    if wins:
+        w = wins[0]
+        days = w.get("days", w.get("days_enabled", [])) or []
+        nde = bool(w.get("next_day_end", False))
+        return {
+            "start": w.get("start", w.get("entry_start", "")),
+            "end": w.get("end", w.get("entry_end", "")),
+            "days": days,
+            "days_label": ", ".join(_DAY_NAMES[d] for d in days if 0 <= d <= 6) or "—",
+            "nde": nde, "overnight": nde,
+            "timezone": cfg.get("timezone", "America/New_York"),
+            "n_windows": len(wins),
+        }
     days = cfg.get("days_enabled", []) or []
     nde = bool(cfg.get("next_day_end", False))
     return {
@@ -37,6 +53,7 @@ def readable_window(cfg: dict | None) -> dict:
         "nde": nde,
         "overnight": nde or bool(cfg.get("allow_overnight", False)),
         "timezone": cfg.get("timezone", "America/New_York"),
+        "n_windows": 0,
     }
 
 
