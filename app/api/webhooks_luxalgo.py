@@ -94,7 +94,31 @@ async def process_signal(
         )
         return decision
 
-    # Not a duplicate: persist and evaluate through pipeline
+    # Not a duplicate within the dedup window. Persist and evaluate.
+    #
+    # The dedupe_key UNIQUE constraint is permanent, but make_dedupe_key is
+    # content-only (strategy/ticker/action/sentiment/price/interval — NO time),
+    # while Deduplicator.is_duplicate only looks back window_seconds. So a
+    # LEGITIMATE signal repeating the same fields outside that window (e.g. the
+    # price returns to the same level hours later) collides with the old row,
+    # raises IntegrityError, and kills the background task with no decision
+    # written. That is NOT a duplicate — give it a fresh unique storage key
+    # (content-level dedup already ran above) and process it normally.
+    from sqlalchemy import select as _select
+
+    key_exists = await db.scalar(
+        _select(NormalizedSignal.id)
+        .where(NormalizedSignal.dedupe_key == original_dedupe_key)
+        .limit(1)
+    )
+    if key_exists is not None:
+        norm.dedupe_key = f"rk:{uuid.uuid4().hex}"
+        logger.info(
+            "dedupe_key_rekeyed strategy={} original_key={} (legit repeat "
+            "outside dedup window)",
+            strategy_id, original_dedupe_key,
+        )
+
     db.add(norm)
     await db.flush()
 
@@ -276,43 +300,62 @@ async def _dispatch_approved(
     pipeline_result: object,
     decision: StrategyDecision,
 ) -> None:
-    """Build payload, send to TradersPost, record WebhookDelivery, update state."""
+    """Build payload(s), send to TradersPost, record WebhookDelivery, update state.
+
+    Scaled entries (scale_entry mode in {execute, live}) expand into multiple legs
+    (C1 market + C2..Cn limit) sharing a common stop; one WebhookDelivery per leg.
+    Single-payload behaviour (exits / non-scaled entries) is unchanged.
+    """
     from app.services.payload_builder import PayloadBuilder
     from app.services.traderspost_client import TradersPostClient
     from app.services.position_service import PositionService
     from app.models.webhook_delivery import WebhookDelivery
 
-    payload = PayloadBuilder().build(norm, strategy, config, pipeline_result)
+    payloads = PayloadBuilder().build_scaled(norm, strategy, config, pipeline_result)
     webhook_url = config.get("traderspost_webhook_url")
     # Layered gate: env kill-switch AND traderspost_enabled AND not dry_run.
     dry_run = resolve_effective_dry_run(settings, config)
-
     client = TradersPostClient(settings)
-    result = await client.send(
-        webhook_url or "",
-        payload,
-        signal_role=norm.signal_role or "",
-        dry_run=dry_run,
-        signal_ts=norm.signal_ts,
-    )
 
-    delivery = WebhookDelivery(
-        decision_id=decision.id,
-        strategy_id=norm.strategy_id,
-        destination="traderspost",
-        url_masked=result.url_masked,
-        payload_json=result.payload_json,
-        response_status_code=result.response_status_code,
-        response_body=result.response_body,
-        status=result.status,
-        attempts=result.attempts,
-        latency_ms=result.latency_ms,
-        error_message=result.error_message,
-        sent_at=_utcnow() if result.status == "SENT" else None,
-    )
-    db.add(delivery)
+    any_sent = False
+    total_qty = 0
+    n_legs = len(payloads)
+    for leg_idx, payload in enumerate(payloads, start=1):
+        result = await client.send(
+            webhook_url or "",
+            payload,
+            signal_role=norm.signal_role or "",
+            dry_run=dry_run,
+            signal_ts=norm.signal_ts,
+        )
+        db.add(WebhookDelivery(
+            decision_id=decision.id,
+            strategy_id=norm.strategy_id,
+            destination="traderspost",
+            url_masked=result.url_masked,
+            payload_json=result.payload_json,
+            response_status_code=result.response_status_code,
+            response_body=result.response_body,
+            status=result.status,
+            attempts=result.attempts,
+            latency_ms=result.latency_ms,
+            error_message=result.error_message,
+            sent_at=_utcnow() if result.status == "SENT" else None,
+        ))
+        if result.status == "SENT":
+            any_sent = True
+        try:
+            total_qty += int(payload.get("quantity") or 0)
+        except (TypeError, ValueError):
+            pass
+        if n_legs > 1:
+            logger.info(
+                "dispatch_leg strategy={} leg={}/{} status={} qty={}",
+                norm.strategy_id, leg_idx, n_legs, result.status,
+                payload.get("quantity"),
+            )
 
-    # Update estimated position state
+    # Update estimated position state (once, aggregate quantity for scaled entries)
     is_exit = norm.action == "exit"
     account_id = config.get("account_id", "paper_default")
     position_service = PositionService()
@@ -322,23 +365,23 @@ async def _dispatch_approved(
         )
     else:
         direction = "long" if norm.action == "buy" else "short"
+        qty = total_qty or (norm.quantity or 1)
         await position_service.on_entry_approved(
             db, norm.strategy_id, account_id, norm.mapped_symbol,
-            direction, norm.quantity or 1,
+            direction, qty,
             float(norm.price) if norm.price is not None else None,
             norm.id,
         )
 
     # SENT (not DRY_RUN) → count as dispatched, confirm estimated position
-    if result.status == "SENT":
-        decision_perf_symbol = norm.mapped_symbol
+    if any_sent:
         await position_service.on_delivery_confirmed(
-            db, norm.strategy_id, account_id, decision_perf_symbol
+            db, norm.strategy_id, account_id, norm.mapped_symbol
         )
 
     logger.info(
-        "dispatch_complete strategy={} status={} attempts={}",
-        norm.strategy_id, result.status, result.attempts,
+        "dispatch_complete strategy={} legs={} any_sent={}",
+        norm.strategy_id, n_legs, any_sent,
     )
 
 
