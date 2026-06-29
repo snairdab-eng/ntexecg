@@ -74,6 +74,8 @@ class ConfigResolver:
             "filters": {},
             # Market regime (Fase 6) - opt-in; empty → gate disabled.
             "regime": {},
+            # Scaled entry (Anexo 14 §8) - design/execution metadata; empty → entrada única.
+            "scale_entry": {},
         }
 
         # Merge GlobalProfile (base)
@@ -181,6 +183,13 @@ class ConfigResolver:
                     "score_minimum")
                 if isinstance(_score_min, (int, float)) and _score_min > 0:
                     config["score_minimum"] = int(_score_min)
+                # Scaled entry (Anexo 14 §8) — diseño/ejecución escalonada.
+                # Necesario para que PayloadBuilder.build_scaled lo vea; sin esto
+                # el motor cae siempre a entrada única.
+                _scale = (strategy_profile.pipeline_config_json or {}).get(
+                    "scale_entry")
+                if isinstance(_scale, dict):
+                    config["scale_entry"] = _scale
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run

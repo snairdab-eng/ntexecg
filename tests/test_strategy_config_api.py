@@ -55,12 +55,16 @@ async def test_resolver_reads_score_filters_regime_from_profile(
         "filters": {"volume_relative": {"enabled": True, "weight": 25},
                     "time_of_day": {"enabled": True, "weight": 25}},
         "regime": {"enabled": True, "timeframe": "1h", "allowed_regimes": ["ranging"]},
+        "scale_entry": {"mode": "execute", "levels": [0.75, 1.25],
+                        "quantities": [0, 1, 4], "max_micro_contracts": 5},
     }))
     await db.commit()
     cfg = await ConfigResolver().resolve(db, "ES5m", "MES")
     assert cfg["score_minimum"] == 55                                  # override per-estrategia
     assert cfg["filters"]["volume_relative"]["enabled"] is True
     assert cfg["regime"]["allowed_regimes"] == ["ranging"]
+    assert cfg["scale_entry"]["mode"] == "execute"                     # build_scaled lo necesita
+    assert cfg["scale_entry"]["quantities"] == [0, 1, 4]
 
 
 @pytest.mark.asyncio
