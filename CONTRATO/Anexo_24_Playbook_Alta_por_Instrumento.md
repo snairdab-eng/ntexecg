@@ -122,3 +122,55 @@ Tabla resumen final: estrategia, PF, WR, peor operación, Max DD, % señales exc
 
 > Con esos archivos: aplico §3-§6 (descartar / calibrar SL catastrófico / QualityScorer / A vs B /
 > elegir 2-3 decorrelacionadas) y damos de alta las elegidas en demo.
+
+---
+
+## 11. Batería de pruebas por estrategia (qué se prueba y con qué script)
+
+Herramienta única (corre 1–6 de un golpe, SOLO LECTURA):
+`python -m scripts.eval_strategy_battery --trades <trades_*.csv> --sym <NQ|ES|GC|RTY|6J|...> --tf 5m`
+Lee la lista de operaciones (con MAE/MFE) + barras HOLC locales; todo en USD/micro (2 micros).
+
+| # | Prueba | Qué mide / para qué | Script(s) | Criterio de decisión |
+|---|---|---|---|---|
+| 1 | **Baseline nativo** | PF/WR/Net/DD/peor de la estrategia sin tocar | `eval_strategy_battery` (1); reportes ClaudeCode+TV | Filtro de entrada: **PF ≥ 1.8** |
+| 2 | **Barrido SL k×ATR** | efecto de un SL operativo (2/2.5/3/4/8×) | `eval_strategy_battery` (2); `sim_sl_matrix.py`; `calibrate_sl_from_trades.py` | En "limpias" el SL ajustado **resta neto** → no usar tight |
+| 3 | **SL catastrófico** | seguro de cola: SL en **p95 del MAE** | `eval_strategy_battery` (3) | Debe **cubrir el crash sin costar neto** |
+| 4 | **Distribución MAE** | percentiles (p40/p50/p70/p95) para niveles y SL cat | `eval_strategy_battery` (usa percentiles) | Sitúa niveles de escalonado y el SL cat |
+| 5 | **Compras escalonadas** | si entrar en pullback mejora (a igual tamaño) | `eval_strategy_battery` (4); `sim_scaled_entry.py`; `sim_sizing.py`; preview: `preview_scaled.py` | Activar **solo si supera** la entrada base |
+| 6 | **QualityScorer** | si filtrar señales sube PF/neto (score 55/60/65) | `eval_strategy_battery` (5); `eval_quality_filters.py` | Activar **solo si mejora** PF y neto |
+| 7 | **Filtro de régimen (HMM)** | si el régimen 1h filtra perdedores | `eval_strategy_battery` (6); `eval_quality_filters.py` | Opcional (ES: bloquear `trending_bear`) |
+| 8 | **A vs B (NTEXECG vs nativo)** | valor neto y de riesgo del gateway completo | `compare_ntexecg_vs_luxalgo.py` | Confirmar que NTEXECG aporta |
+| 9 | **Decorrelación / solape** | señales compartidas + correlación de P&L | matriz de ClaudeCode+TV (`senales_compartidas_*.csv`, `correlacion_pnl.csv`) | Elegir 2-3 con solape <30% y corr <0.3 |
+| 10 | **Ventana / sesión** | RTH vs 24h vs AM | integrado en simulaciones / reportes | Mejor ventana por estrategia |
+| 11 | **Validación en demo** | fills reales, bloqueos de filtro, dispatch | `show_strategy_configs.py`, `compare_filter_decisions.py`, `show_recent_deliveries.py` | ≥ 1 semana antes de promover |
+
+## 12. Inventario de scripts (`scripts/`) y motores
+
+**Pruebas / simulación (solo lectura):**
+- `eval_strategy_battery.py` — **batería completa** (pruebas 1–6) sobre una estrategia.
+- `compare_ntexecg_vs_luxalgo.py` — A (NTEXECG) vs B (LuxAlgo 2 micros).
+- `eval_quality_filters.py` — QualityScorer + HMM (lift por filtro/umbral).
+- `sim_sl_matrix.py` — matriz SL k×ATR · `sim_scaled_entry.py` — escalonado · `sim_sizing.py` — cantidades por nivel · `sweep_matrix.py` — barridos combinados.
+- `calibrate_sl_from_trades.py`, `calibrate_all.py` — SL desde listas de trades.
+- `preview_scaled.py` — previsualiza los legs escalonados que se enviarían.
+- `train_hmm.py` — entrena el modelo HMM (opcional; baseline = Kaufman ER).
+
+**Aplicación / configuración (dry-run + backup + auditoría):**
+- `apply_strategy_calibration_v1.py` — escribe SL/atr_tf/ventanas por estrategia.
+- `apply_scale_entry_design_v1.py` — siembra diseño escalonado · `set_scale_execution.py` — activa/desactiva ejecución escalonada.
+- `apply_quality_filter.py` — activa QualityScorer · `apply_anexo21_demo.py` — GC score + YM régimen.
+- `enable_traderspost_demo.py` — habilita dispatch a TradersPost demo · `sync_strategy_windows_v1.py` — ventanas.
+- `rename_strategy.py` (--delete-old) · `delete_strategy.py` · `create_new_strategies_v1.py` — alta/gestión.
+
+**Diagnóstico:**
+- `show_strategy_configs.py` — config efectiva por estrategia + estado Anexo 21.
+- `show_recent_deliveries.py` — envíos a TradersPost (valida legs escalonados).
+- `compare_filter_decisions.py` — actividad de filtros en vivo (log de decisiones).
+- `diag_profiles.py` · `import_results.py` (resultados TradersPost).
+
+**Motores (en `app/services/`):**
+- `quality_scorer.py` (Nivel 4 score) · `hmm_service.py` (régimen, Kaufman ER / HMM) · `filter_pipeline.py` (5 niveles) · `sl_tp_calculator.py` (SL/TP por ATR) · `session_validator.py` (ventanas) · `payload_builder.py` (incl. `build_scaled` escalonado) · `config_resolver.py` (jerarquía de config).
+
+> Reproducibilidad: con `eval_strategy_battery.py` + `compare_ntexecg_vs_luxalgo.py` se reconstruye todo
+> el análisis de una estrategia desde su `trades_*.csv` + HOLC, sin depender de memoria ni de pasos manuales.
