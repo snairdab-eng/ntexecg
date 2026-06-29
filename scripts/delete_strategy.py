@@ -33,8 +33,9 @@ async def main():
                            "profile":bool(p),"pipeline_config_json":(p.pipeline_config_json if p else None)})
             print(f"  borrar {sid}  (status={s.status}, perfil={'sí' if p else 'no'})")
             if a.apply:
-                if p: await db.delete(p)
-                await db.delete(s)
+                if p:
+                    await db.delete(p); await db.flush()
+                await db.delete(s); await db.flush()
                 await AuditService().log(db,actor="delete_strategy",action="DELETE",object_type="Strategy",
                     object_id=sid,old_value={"status":s.status},new_value={},reason="cleanup/discard")
             done.append(sid)

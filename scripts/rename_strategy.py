@@ -49,7 +49,8 @@ async def main():
         print(f"  vieja → {'BORRADA' if a.delete_old else 'retirada'} · ⚠ reapuntar alerta a /webhooks/luxalgo/{a.new}")
         if a.apply:
             if a.delete_old:
-                if oprof: await db.delete(oprof)
+                if oprof:
+                    await db.delete(oprof); await db.flush()
                 await db.delete(old); await db.flush()
             else:
                 old.status="retired"; old.enabled=False; old.webhook_token=None; await db.flush()
