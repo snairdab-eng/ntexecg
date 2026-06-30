@@ -223,9 +223,9 @@
         <div class="space-y-4">
             {% for g in delivery_groups %}
             <div>
-                {% if g.profile != '—' %}
+                {% if delivery_groups | length > 1 %}
                 <div class="text-xs font-bold text-blue-300 uppercase tracking-wider mb-1">
-                    Perfil: {{ g.profile }}
+                    {% if g.profile == '—' %}Base / principal{% else %}Perfil: {{ g.profile }}{% endif %}
                     <span class="text-gray-600 font-normal normal-case">— {{ g['items'] | length }} pierna(s)</span>
                 </div>
                 {% endif %}

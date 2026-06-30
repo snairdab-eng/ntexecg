@@ -63,18 +63,24 @@ def resolve_destinations(config: dict) -> list[dict]:
     profiles = config.get("profiles") or []
     enabled = [p for p in profiles if isinstance(p, dict) and p.get("enabled")]
 
-    if not enabled:
-        return [{
-            "name": None,
-            "webhook_url": base_webhook,
-            "scale_entry": base_scale,
-            "sl_atr_multiplier": base_sl,
-            "tp_atr_multiplier": base_tp,
-            "dry_run": base_dry,
-            "traderspost_enabled": base_tpen,
-        }]
+    base_dest = {
+        "name": None,
+        "webhook_url": base_webhook,
+        "scale_entry": base_scale,
+        "sl_atr_multiplier": base_sl,
+        "tp_atr_multiplier": base_tp,
+        "dry_run": base_dry,
+        "traderspost_enabled": base_tpen,
+    }
 
     dests: list[dict] = []
+    # The base ALWAYS dispatches to its own webhook (the main account). It is
+    # excluded only when it has no webhook AND at least one profile is enabled
+    # (that is how you say "solo manden los perfiles"). With no profiles, the
+    # base is the single destination → identical to the previous behaviour.
+    if base_webhook or not enabled:
+        dests.append(base_dest)
+
     for p in enabled:
         q = p.get("quantities")
         if q is None:
@@ -107,7 +113,20 @@ def resolve_destinations(config: dict) -> list[dict]:
                 if isinstance(p.get("traderspost_enabled"), bool) else base_tpen
             ),
         })
-    return dests
+
+    # Dedupe by webhook_url (non-empty): a profile that reuses the base webhook
+    # (e.g. left blank → inherited it) would double-send to the same account, so
+    # keep only the first occurrence (the base wins).
+    seen: set = set()
+    out: list[dict] = []
+    for d in dests:
+        wh = d.get("webhook_url") or ""
+        if wh and wh in seen:
+            continue
+        if wh:
+            seen.add(wh)
+        out.append(d)
+    return out
 
 
 def make_dest_config(base_config: dict, dest: dict) -> dict:

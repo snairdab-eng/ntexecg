@@ -314,7 +314,7 @@
         {% set profiles = (profile.pipeline_config_json or {}).get('profiles') or [] %}
         <div class="border-t border-gray-800 mt-3 pt-3">
             <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Perfiles de riesgo (tiers)</div>
-            <p class="text-xs text-gray-500 mb-3">Cada perfil <b>hereda la base</b> y solo cambia lo que rellenes — normalmente las <b>cantidades por pierna</b>. Campo vacío = hereda. Cada perfil habilitado envía a su propio webhook de TradersPost (1 estrategia por símbolo×perfil). Sin perfiles habilitados se usa el webhook base (comportamiento actual).</p>
+            <p class="text-xs text-gray-500 mb-3">La <b>base siempre opera</b> tu cuenta principal (el webhook de arriba). Cada perfil habilitado es una <b>cuenta ADICIONAL</b>: hereda la base y solo cambia lo que rellenes — normalmente las <b>cantidades por pierna</b> (vacío = hereda). Pon el <b>webhook propio</b> de cada perfil (si lo dejas vacío se ignora, para no duplicar en la cuenta base). Para agregar una fondeadora: habilita un perfil con su webhook y sus cantidades. Para que la base deje de operar y solo manden los perfiles, borra el webhook base de arriba.</p>
             <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/profiles" class="space-y-3">
                 {% for i in range(4) %}
                 {% set p = profiles[i] if i < (profiles|length) else {} %}
