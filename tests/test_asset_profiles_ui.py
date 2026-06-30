@@ -150,4 +150,4 @@ async def test_ui_form_rejects_bad_sl(client: AsyncClient, db: AsyncSession) -> 
         "sl_atr_multiplier": "-1",
     })
     assert r.status_code == 303
-    assert "error" in r.headers["location"] or "flash" in r.he
+    assert "error" in r.headers["location"] or "flash" in r.headers["location"]

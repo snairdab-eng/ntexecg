@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ntexecg/schemas/account_profile.schema.json",
+  "title": "Perfil de cuenta NTEXECG",
+  "description": "Vive lo que es de la CUENTA, no de la estrategia. Varias estrategias referencian la misma cuenta.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "nombre", "broker_ref"],
+  "properties": {
+    "id": { "type": "string", "x-source": "system" },
+    "nombre": { "type": "string", "x-source": "user", "description": "p. ej. PAPER_FUTURES, NT_Principal" },
+    "broker_ref": { "type": "string", "x-source": "user", "description": "Identificador del broker/cuenta en TradersPost" },
+    "tipo": { "type": "string", "enum": ["paper", "real", "eval"], "x-source": "user" },
+    "riesgo_usd_max_diario": { "type": "number", "exclusiveMinimum": 0, "x-source": "user",
+      "description": "Limite agregado del dia para TODAS las estrategias que apuntan a esta cuenta" },
+    "trailing_drawdown_usd": { "type": "number", "x-source": "user", "description": "Regla del prop si aplica" },
+    "dueno_riesgo_diario": { "type": "string", "enum": ["ntexecg", "broker_prop"], "default": "ntexecg", "x-source": "user",
+      "description": "Decision explicita: quien enforca el limite diario" },
+    "notas": { "type": "string", "x-source": "user" }
+  }
+}

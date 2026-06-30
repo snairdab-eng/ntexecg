@@ -1,0 +1,102 @@
+<svg viewBox="0 0 1180 720" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#1F4E79"/>
+    </marker>
+    <marker id="arrG" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#2e7d32"/>
+    </marker>
+    <marker id="arrR" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#c0392b"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="30" y="38" font-size="22" font-weight="bold" fill="#1F4E79">Anexo B — Flujo LuxAlgo → NTEXECG → TradersPost</text>
+  <text x="30" y="60" font-size="13" fill="#555">Identidad por endpoint · el gate fino vive en NTEXECG · TradersPost ejecuta</text>
+
+  <!-- ===================== LUXALGO ===================== -->
+  <rect x="30" y="95" width="240" height="34" rx="5" fill="#1F4E79"/>
+  <text x="150" y="117" font-size="14" font-weight="bold" fill="#fff" text-anchor="middle">LuxAlgo</text>
+  <rect x="30" y="135" width="240" height="250" rx="6" fill="#EAF1F8" stroke="#9db8d2"/>
+  <text x="45" y="158" font-size="12.5" font-weight="bold" fill="#1F4E79">Estrategia + Alerta</text>
+  <text x="45" y="176" font-size="11" fill="#444">Chart en contrato estándar</text>
+  <text x="45" y="191" font-size="11" fill="#444">(LuxAlgo no tiene micros)</text>
+
+  <rect x="45" y="202" width="210" height="132" rx="5" fill="#fff" stroke="#cfd6dd"/>
+  <text x="56" y="220" font-size="10.5" font-family="Consolas, monospace" fill="#222">{</text>
+  <text x="64" y="235" font-size="10.5" font-family="Consolas, monospace" fill="#b03060">"ticker": "MES",</text>
+  <text x="64" y="250" font-size="10.5" font-family="Consolas, monospace" fill="#222">"action", "sentiment",</text>
+  <text x="64" y="265" font-size="10.5" font-family="Consolas, monospace" fill="#222">"quantity", "price",</text>
+  <text x="64" y="280" font-size="10.5" font-family="Consolas, monospace" fill="#222">"time", "interval"</text>
+  <text x="56" y="295" font-size="10.5" font-family="Consolas, monospace" fill="#222">}</text>
+  <text x="56" y="320" font-size="9.5" fill="#c0392b">ticker hardcodeado al micro</text>
+
+  <!-- arrow LuxAlgo -> NTEXECG -->
+  <text x="285" y="180" font-size="10.5" font-family="Consolas, monospace" fill="#1F4E79">POST /hook/{token}</text>
+  <line x1="270" y1="200" x2="305" y2="200" stroke="#1F4E79" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- ===================== NTEXECG ===================== -->
+  <rect x="300" y="95" width="560" height="34" rx="5" fill="#1F4E79"/>
+  <text x="580" y="117" font-size="14" font-weight="bold" fill="#fff" text-anchor="middle">NTEXECG — compuerta de calidad</text>
+  <rect x="300" y="135" width="560" height="445" rx="6" fill="#f7fafd" stroke="#1F4E79"/>
+  <text x="315" y="158" font-size="11" fill="#555">Resuelve estrategia por token de URL · valida en orden · reenvía solo si pasa</text>
+
+  <!-- pipeline pills -->
+  <g font-size="11.5" fill="#1a1a1a">
+    <rect x="315" y="172" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="192">1 · Resolver estrategia (token)</text>
+    <rect x="315" y="209" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="229">2 · Estado = enabled</text>
+    <rect x="315" y="246" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="266">3 · Símbolo == esperado ✅</text>
+    <rect x="315" y="283" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="303">4 · Temporalidad == esperada ✅</text>
+    <rect x="315" y="320" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="340">5 · Antigüedad ≤ umbral ✅</text>
+    <rect x="315" y="357" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="377">6 · Dedup</text>
+    <rect x="315" y="394" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="414">7 · Ventana (solo entradas)</text>
+    <rect x="315" y="431" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="451">8 · Cantidad ≤ máximo ✅</text>
+    <rect x="315" y="468" width="258" height="30" rx="5" fill="#fff" stroke="#cfd6dd"/><text x="326" y="488">9 · Riesgo ≤ máx · stop ✅</text>
+    <rect x="315" y="505" width="258" height="30" rx="5" fill="#e7f4ea" stroke="#2e7d32"/><text x="326" y="525" fill="#1e5a28" font-weight="bold">10 · Reenviar ▶ TradersPost</text>
+  </g>
+
+  <!-- fail branch -->
+  <line x1="585" y1="190" x2="585" y2="490" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="585" y1="190" x2="608" y2="190" stroke="#c0392b" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <rect x="612" y="166" width="232" height="50" rx="6" fill="#fdecea" stroke="#c0392b"/>
+  <text x="624" y="186" font-size="11.5" font-weight="bold" fill="#c0392b">✗ Rechazar + loguear</text>
+  <text x="624" y="203" font-size="10" fill="#a5392b">reason_code · sin reenviar</text>
+  <text x="600" y="345" font-size="9.5" fill="#c0392b" transform="rotate(90 600 345)">cualquier paso 1–9 que falle</text>
+
+  <!-- pass arrow to TradersPost -->
+  <path d="M573,520 L852,520 L852,300 L876,300" fill="none" stroke="#2e7d32" stroke-width="2" marker-end="url(#arrG)"/>
+  <text x="700" y="513" font-size="10.5" font-weight="bold" fill="#2e7d32">válida ▶ reenvía</text>
+
+  <!-- ===================== TRADERSPOST ===================== -->
+  <rect x="880" y="95" width="270" height="34" rx="5" fill="#2b6171"/>
+  <text x="1015" y="117" font-size="14" font-weight="bold" fill="#fff" text-anchor="middle">TradersPost — ejecutor</text>
+  <rect x="880" y="135" width="270" height="445" rx="6" fill="#eef5f7" stroke="#7fa9b4"/>
+
+  <rect x="895" y="150" width="240" height="86" rx="5" fill="#fff" stroke="#cfd6dd"/>
+  <text x="907" y="170" font-size="12" font-weight="bold" fill="#2b6171">Suscripción → Broker</text>
+  <text x="907" y="188" font-size="10.5" fill="#444">Ejecuta: Market, TIF,</text>
+  <text x="907" y="203" font-size="10.5" fill="#444">price type, cancel/retry</text>
+  <text x="907" y="224" font-size="10" fill="#c0392b">Config uniforme — NO gate fino</text>
+
+  <rect x="895" y="248" width="240" height="58" rx="5" fill="#fff7e6" stroke="#d9a441"/>
+  <text x="907" y="268" font-size="11" font-weight="bold" fill="#9a6a12">Backstop de seguridad</text>
+  <text x="907" y="285" font-size="10" fill="#7a5512">Ventana amplia +</text>
+  <text x="907" y="299" font-size="10" fill="#7a5512">exits/cancels outside ON</text>
+
+  <text x="895" y="332" font-size="10.5" font-weight="bold" fill="#444">Brokers conectados:</text>
+  <rect x="895" y="340" width="112" height="24" rx="12" fill="#e7f4ea" stroke="#2e7d32"/><text x="951" y="356" font-size="10" fill="#1e5a28" text-anchor="middle">PAPER_FUTURES</text>
+  <rect x="1013" y="340" width="122" height="24" rx="12" fill="#fdecea" stroke="#c0392b"/><text x="1074" y="356" font-size="10" fill="#a5392b" text-anchor="middle">NT_Principal (real)</text>
+  <text x="895" y="382" font-size="9.5" fill="#c0392b">1 alerta → 1 webhook → 1 suscripción</text>
+
+  <line x1="1015" y1="395" x2="1015" y2="425" stroke="#2b6171" stroke-width="2" marker-end="url(#arr)"/>
+  <rect x="915" y="428" width="200" height="40" rx="6" fill="#2b6171"/>
+  <text x="1015" y="453" font-size="12" font-weight="bold" fill="#fff" text-anchor="middle">Broker / Mercado</text>
+
+  <!-- ===================== FOOTER NOTES ===================== -->
+  <rect x="30" y="608" width="1120" height="86" rx="6" fill="#f2f4f7" stroke="#d6dbe1"/>
+  <text x="45" y="630" font-size="12" font-weight="bold" fill="#1F4E79">Notas de diseño</text>
+  <text x="45" y="650" font-size="10.8" fill="#333">• Identidad por endpoint: 1 URL = 1 estrategia. El JSON de LuxAlgo no trae id de estrategia ni autenticación → el token de la URL es identidad y llave.</text>
+  <text x="45" y="668" font-size="10.8" fill="#333">• Salidas: siempre permitidas (no se bloquean por ventana); las entradas sí. Cierre forzado EOD lo aplica NTEXECG.</text>
+  <text x="45" y="686" font-size="10.8" fill="#333">• Riesgo diario por cuenta: vive en el perfil de cuenta, no en la estrategia. NTEXECG no reintenta reenvíos fallidos (evita duplicados).</text>
+</svg>

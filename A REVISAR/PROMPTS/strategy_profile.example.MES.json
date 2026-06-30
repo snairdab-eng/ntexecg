@@ -1,0 +1,65 @@
+{
+  "id": "a1f9c2e7-0000-4000-8000-000000000001",
+  "nombre_corto": "MES15m Confirmation Any - Contrarian Uptrend - Overflow",
+  "descripcion": "Micro E-mini S&P 500 (MES, 15m). Backtest corrido sobre ES estandar; cifras en USD = ES / 10. Metricas %: winrate 96.43%, PF 10.6, DD 11.78%.",
+  "url_unica": "https://ntexecg.example/hook/a1f9c2e7d4b94f0aa1c3e5f70123abcd",
+  "token": "a1f9c2e7d4b94f0aa1c3e5f70123abcd",
+  "estado": "disabled",
+  "fecha_alta": "2026-06-19",
+  "responsable": "Sergio",
+  "created_at": "2026-06-19T18:00:00.000Z",
+  "updated_at": "2026-06-19T18:00:00.000Z",
+  "version": 1,
+  "definicion": {
+    "toolkit": "Signals & Overlays + Oscillator Matrix",
+    "gatillo": "Confirmation Any Bullish (long) / Bearish (short)",
+    "filtro_1": "Contrarian Uptrend / Downtrend",
+    "filtro_2": "Bearish / Bullish Overflow (Money Flow)",
+    "condicion_salida": "Confirmation Builtin-Exits",
+    "backtest_inicio": "2025-08-20",
+    "backtest_fin": "2026-06-09",
+    "num_operaciones": 56,
+    "winrate_pct": 96.43,
+    "profit_factor": 10.6,
+    "max_drawdown_pct": 11.78,
+    "beneficio_neto_usd": 5927.50,
+    "avg_win_usd": 121.20,
+    "avg_loss_usd": 308.75,
+    "max_drawdown_usd": 816.25,
+    "frecuencia": "~1 senal cada 5.2 dias",
+    "tamano_orden_backtest": "unitario"
+  },
+  "instrumento": {
+    "simbolo_esperado": "MES",
+    "tipo_contrato": "micro",
+    "valor_tick": 1.25,
+    "tick_minimo": 0.25,
+    "temporalidad_esperada_min": 15
+  },
+  "ventanas": {
+    "timezone": "America/New_York",
+    "salidas_siempre_permitidas": true,
+    "cierre_forzado_eod": "16:00",
+    "windows": [
+      { "dias": ["L", "M", "X", "J"], "hora_inicio": "09:00", "hora_fin": "15:45" },
+      { "dias": ["V"], "hora_inicio": "09:00", "hora_fin": "12:00" }
+    ]
+  },
+  "filtros": {
+    "antiguedad_entrada_seg": 120,
+    "antiguedad_salida_seg": 120,
+    "dedup_seg": 5,
+    "confirmaciones_adicionales": ""
+  },
+  "riesgo": {
+    "stop_obligatorio": true,
+    "stop_esperado_ticks": 40,
+    "riesgo_usd_max_operacion": 100.0,
+    "cantidad_maxima_contratos": 2
+  },
+  "ruteo": {
+    "webhook_traderspost": "https://webhooks.traderspost.io/trading/webhook/REEMPLAZAR",
+    "cuenta_objetivo": "PAPER_FUTURES",
+    "notas_ruteo": "stop_esperado_ticks es PLACEHOLDER; reemplazar con el stop real del backtest MES."
+  }
+}

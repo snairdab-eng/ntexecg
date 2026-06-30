@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "descripcion": "Catalogo de instrumentos NTEXECG. Datos semilla. La estrategia referencia 'symbol' y NTEXECG autocompleta type/tick_value/tick_size/point_value.",
+    "point_value": "Derivado: tick_value / tick_size",
+    "fuente": "Documento de referencia de riesgo NTEXECG/TradersPost",
+    "version": 1
+  },
+  "instruments": [
+    { "symbol": "MYM", "name": "Micro E-mini Dow",        "type": "micro",    "tick_value": 0.50,  "tick_size": 1.00,       "point_value": 0.50 },
+    { "symbol": "M2K", "name": "Micro Russell 2000",       "type": "micro",    "tick_value": 0.50,  "tick_size": 0.10,       "point_value": 5.00 },
+    { "symbol": "MNQ", "name": "Micro E-mini Nasdaq 100",  "type": "micro",    "tick_value": 0.50,  "tick_size": 0.25,       "point_value": 2.00 },
+    { "symbol": "MGC", "name": "Micro Gold",               "type": "micro",    "tick_value": 1.00,  "tick_size": 0.10,       "point_value": 10.00 },
+    { "symbol": "MCL", "name": "Micro Crude Oil",          "type": "micro",    "tick_value": 1.00,  "tick_size": 0.01,       "point_value": 100.00, "nota": "puede moverse rapido" },
+    { "symbol": "MNG", "name": "Micro Natural Gas",        "type": "micro",    "tick_value": 1.00,  "tick_size": 0.001,      "point_value": 1000.00, "nota": "muy volatil" },
+    { "symbol": "MES", "name": "Micro E-mini S&P 500",     "type": "micro",    "tick_value": 1.25,  "tick_size": 0.25,       "point_value": 5.00 },
+    { "symbol": "M6E", "name": "Micro Euro FX",            "type": "micro",    "tick_value": 1.25,  "tick_size": 0.0001,     "point_value": 12500.00 },
+    { "symbol": "M6J", "name": "Micro Japanese Yen",       "type": "micro",    "tick_value": 1.25,  "tick_size": 0.000001,   "point_value": 1250000.00, "aliases": ["MJY"] },
+    { "symbol": "YM",  "name": "E-mini Dow",               "type": "mini",     "tick_value": 5.00,  "tick_size": 1.00,       "point_value": 5.00 },
+    { "symbol": "RTY", "name": "E-mini Russell 2000",      "type": "mini",     "tick_value": 5.00,  "tick_size": 0.10,       "point_value": 50.00 },
+    { "symbol": "NQ",  "name": "E-mini Nasdaq 100",        "type": "mini",     "tick_value": 5.00,  "tick_size": 0.25,       "point_value": 20.00 },
+    { "symbol": "6E",  "name": "Euro FX",                  "type": "estandar", "tick_value": 6.25,  "tick_size": 0.00005,    "point_value": 125000.00 },
+    { "symbol": "6J",  "name": "Japanese Yen",             "type": "estandar", "tick_value": 6.25,  "tick_size": 0.0000005,  "point_value": 12500000.00 },
+    { "symbol": "ES",  "name": "E-mini S&P 500",           "type": "mini",     "tick_value": 12.50, "tick_size": 0.25,       "point_value": 50.00 },
+    { "symbol": "QO",  "name": "E-mini Gold",              "type": "mini",     "tick_value": 12.50, "tick_size": 0.25,       "point_value": 50.00 },
+    { "symbol": "QM",  "name": "E-mini Crude Oil",         "type": "mini",     "tick_value": 12.50, "tick_size": 0.025,      "point_value": 500.00 },
+    { "symbol": "QG",  "name": "E-mini Natural Gas",       "type": "mini",     "tick_value": 12.50, "tick_size": 0.005,      "point_value": 2500.00 }
+  ],
+  "defaults_por_tipo": {
+    "micro":    { "cantidad_maxima_contratos_sugerida": 2 },
+    "mini":     { "cantidad_maxima_contratos_sugerida": 1 },
+    "estandar": { "cantidad_maxima_contratos_sugerida": 1 }
+  }
+}

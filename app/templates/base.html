@@ -15,6 +15,8 @@
     <style>
         [x-cloak] { display: none !important; }
     </style>
+
+    {% block extra_head %}{% endblock %}
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col">
 
@@ -35,6 +37,7 @@
             {{ nav('/ui', 'Dashboard', exact=True) }}
             {{ nav('/ui/strategies', 'Estrategias') }}
             {{ nav('/ui/signals', 'Señales') }}
+            {{ nav('/ui/analytics', 'Analítica') }}
             {{ nav('/ui/positions', 'Posiciones') }}
             {{ nav('/ui/assets', 'Activos') }}
             {{ nav('/ui/symbol-map', 'Symbol Mapper') }}

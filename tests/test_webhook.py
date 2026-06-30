@@ -368,6 +368,57 @@ async def test_different_ticker_not_duplicate(db: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_legit_repeat_outside_window_rekeyed_not_crash(
+    db: AsyncSession,
+) -> None:
+    """Regression: a signal whose content dedupe_key already exists in the DB
+    but OUTSIDE the 60s dedup window is a LEGITIMATE new signal, not a
+    duplicate.
+
+    make_dedupe_key is content-only (no timestamp) while the dedupe_key UNIQUE
+    constraint is permanent. Before the fix, the second occurrence of the same
+    strategy/ticker/action/price/interval hours later passed is_duplicate()
+    (old row outside the window) and then crashed on the UNIQUE constraint with
+    no decision written. It must now be stored under a fresh "rk:" key and
+    produce a real decision.
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.services.signal_normalizer import make_dedupe_key
+
+    content_key = make_dedupe_key(
+        "stale_strat", "MES", "buy", "long", "5500.00", "5",
+    )
+    seed_raw = await _make_raw(db, "stale_strat")
+    stale = NormalizedSignal(
+        raw_signal_id=seed_raw.id,
+        source="luxalgo",
+        strategy_id="stale_strat",
+        ticker_received="MES",
+        action="buy",
+        sentiment="long",
+        quantity=1,
+        price=5500.0,
+        timeframe="5m",
+        signal_ts=datetime.now(timezone.utc),
+        signal_role="entry_long",
+        dedupe_key=content_key,
+        status="processed",
+    )
+    stale.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    db.add(stale)
+    await db.flush()
+
+    raw = await _make_raw(db, "stale_strat")
+    # Would previously raise UniqueViolationError → no decision.
+    decision = await process_signal(db, "stale_strat", raw.id, _PAYLOAD, _MD)
+
+    assert decision.outcome != "IGNORE_DUPLICATE"
+    stored = await db.get(NormalizedSignal, decision.normalized_signal_id)
+    assert stored is not None
+    assert stored.dedupe_key.startswith("rk:")
+
+
+@pytest.mark.asyncio
 async def test_normalized_signal_created(db: AsyncSession) -> None:
     """process_signal always creates a NormalizedSignal."""
     raw = await _make_raw(db, "norm_strat")

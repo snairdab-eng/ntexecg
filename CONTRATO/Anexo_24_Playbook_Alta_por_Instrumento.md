@@ -54,8 +54,9 @@ no convierte una mala en buena de forma robusta).
 
 ## 8. Proceso (pasos)
 
-1. **ClaudeCode+TV:** 6-9 candidatas del instrumento (5m) → export trades+MAE/MFE, ATR(14), métricas,
-   y matriz de solape/correlación.
+1. **Ideación con LuxAlgo** (3 a la vez): pedir candidatas del perfil (§9). 2b. **Estudio con ClaudeCode+TV
+   UNA a la vez** (§10): por cada estrategia configurada en el chart, export trades+MAE/MFE, ATR(14) y métricas;
+   se acumulan en la misma carpeta. La matriz de solape/correlación la calculo yo desde los CSV acumulados.
 2. Aplicar **§3** (descartar las que no califican).
 3. **Calibrar:** SL catastrófico (§4) + QualityScorer si aplica (§5).
 4. **A vs B** (estilo Anexo 22) para confirmar el valor de NTEXECG.
@@ -63,65 +64,56 @@ no convierte una mala en buena de forma robusta).
 6. **Alta** en NTEXECG (paper/demo) con webhooks; crear alertas en TradingView.
 7. **Validar en demo ≥ 1 semana** antes de cualquier promoción a real.
 
-## 9. Prompt reusable para ClaudeCode+TV (plantilla)
+## 9. Ideación con LuxAlgo (3 estrategias a la vez)
 
-> Reemplaza `<INSTRUMENTO>` / `<MICRO>` / `<SÍMBOLO_TV>` y ejecuta.
-
-```
-Contexto: alimento un gateway externo (NTEXECG) que añade un SL catastrófico (anti-crash) y, donde
-mejora, un filtro de calidad. NO quiero mejorar estrategias malas: busco estrategias YA buenas cuyo
-único hueco sea el riesgo de cola. Trabaja en AUTOMÁTICO, sin pedir confirmación.
-
-OBJETIVO: genera y backtestea 6 a 9 estrategias de <INSTRUMENTO> (<SÍMBOLO_TV>) en 5m, sobre el
-máximo histórico, 1 contrato, sin comisiones ni slippage. Varía el modo de señal y los módulos para
-obtener candidatas con SEÑALES POCO SOLAPADAS entre sí (favorece Confirmation + salidas de
-seguimiento de tendencia tipo Smart Trail / Trend Catcher, que es lo que mejor combina con el SL/PF).
-
-CRITERIO: prioriza las que tengan Profit Factor ≥ 1.8, win rate razonable y ≥ 60 operaciones.
-Descarta de la entrega las que no cumplan.
-
-POR CADA ESTRATEGIA ENTREGA:
-1) CSV de operaciones en C:\NTEXECG\ClaudeCodeTV_<FECHA>\ListaDeOperaciones\
-   Nombre: trades_<INSTRUMENTO>_<codigo-corto-ficha>.csv
-   Columnas EXACTAS: trade_id, side(long/short), entry_time, exit_time, entry_price, exit_price,
-   qty, pnl_usd, mae_usd, mfe_usd   (tiempos en ET; pnl/mae/mfe en USD del contrato grande, 1 lote).
-2) Reporte .md: ficha técnica exacta; nº trades, PF, WR, Net, ganancia/pérdida promedio, PEOR
-   operación, Max Drawdown ($ y %); $/punto grande y micro (<MICRO>); ATR(14) real 5m; periodo.
-3) Una MATRIZ de coincidencia de señales (misma barra 5m + mismo lado) y de CORRELACIÓN de P&L
-   diario entre las candidatas (para elegir 2-3 decorrelacionadas).
-
-Usa las barras HOLC locales de C:\NTEXECG\NINJATRADER\HOLC (ya existen para ES, NQ, RTY, 6J).
-Al final, tabla resumen: estrategia, PF, WR, peor operación, Max DD, % señales exclusivas, y rutas.
-```
-
-## 10. Instancia lista — NQ (próximo lote)
+LuxAlgo solo entrega de 3 en 3 y no exporta CSV/MAE/ATR → se usa solo para **proponer fichas** del
+perfil correcto; el estudio real lo hace ClaudeCode+TV (§10).
 
 ```
-Contexto: alimento un gateway externo (NTEXECG) que añade un SL catastrófico (anti-crash) y, donde
-mejora, un filtro de calidad. NO quiero mejorar estrategias malas: busco estrategias de NQ YA buenas
-cuyo único hueco sea el riesgo de cola. Trabaja en AUTOMÁTICO, sin pedir confirmación.
-
-OBJETIVO: genera y backtestea 6 a 9 estrategias de NQ (CME_MINI:NQ1!) en 5m, máximo histórico,
-1 contrato, sin comisiones ni slippage. Varía modo de señal y módulos para que las SEÑALES SE
-SOLAPEN LO MENOS POSIBLE entre sí (favorece Confirmation + Smart Trail / Trend Catcher).
-
-CRITERIO: prioriza PF ≥ 1.8, WR razonable y ≥ 60 operaciones. Descarta las que no cumplan.
-
-POR CADA ESTRATEGIA ENTREGA:
-1) CSV en C:\NTEXECG\ClaudeCodeTV_NQ\ListaDeOperaciones\ con nombre
-   trades_NQ_<codigo-corto-ficha>.csv y columnas EXACTAS:
-   trade_id, side, entry_time, exit_time, entry_price, exit_price, qty, pnl_usd, mae_usd, mfe_usd
-   (tiempos en ET; importes en USD del contrato grande NQ, 1 lote).
-2) Reporte .md por estrategia: ficha exacta; nº trades, PF, WR, Net, gan/pérd promedio, PEOR
-   operación, Max DD ($ y %); $/punto NQ ($20) y MNQ ($2); ATR(14) real 5m; periodo.
-3) Matriz de coincidencia de señales y de correlación de P&L diario entre las candidatas.
-
-Usa las barras HOLC locales NQ_5m/15m/1h de C:\NTEXECG\NINJATRADER\HOLC (ya existen).
-Tabla resumen final: estrategia, PF, WR, peor operación, Max DD, % señales exclusivas, rutas.
+Dame 3 estrategias de futuros <INSTRUMENTO> en 5 minutos con este perfil:
+- Entrada tipo CONFIRMATION (a favor de tendencia): Normal, Strong o Any.
+- Salida / trailing de tendencia: SMART TRAIL o TREND CATCHER (que deje correr a los ganadores).
+- Que las 3 sean DISTINTAS entre sí (distinto módulo / confluencia / filtro) para que sus señales
+  se solapen lo menos posible — las quiero como cartera decorrelacionada.
+- Prioriza PROFIT FACTOR alto (≥ 1.8) y win rate razonable, con al menos ~60 operaciones.
+- NO optimices ni ajustes stop loss ni gestión de riesgo: el control de riesgo (stop catastrófico
+  anti-desplome) lo añade un sistema externo. Quiero el edge en crudo, no estrategias "ya protegidas".
+Por cada una: ficha técnica exacta (modo de señal, módulos/filtros, lógica long/short, salida) y
+métricas (nº operaciones, PF, WR, Net, gan/pérd promedio, PEOR operación, Max Drawdown $ y %).
+Al final, tabla comparativa de las 3.
 ```
+Para más candidatas, repetir pidiendo que sean **diferentes a las anteriores**.
 
-> Con esos archivos: aplico §3-§6 (descartar / calibrar SL catastrófico / QualityScorer / A vs B /
-> elegir 2-3 decorrelacionadas) y damos de alta las elegidas en demo.
+## 10. Estudio con ClaudeCode+TV (UNA estrategia a la vez)
+
+Modo real: el usuario configura **una** estrategia en la pestaña/chart activo y ClaudeCode la analiza.
+Se corre una vez por estrategia; todas caen en la misma carpeta y se acumulan. Plantilla
+(reemplaza `<INSTRUMENTO>`/`<SÍMBOLO_TV>`/`<$pt>`/`<MICRO $pt>`; para NQ: NQ · CME_MINI:NQ1! · $20 · MNQ $2):
+
+```
+Hay UNA sola estrategia LuxAlgo configurada en la pestaña/chart activo de TradingView; analiza ESA
+(no generes otras). Trabaja en AUTOMÁTICO, sin pedir confirmación.
+
+Activo <INSTRUMENTO> (<SÍMBOLO_TV>), 5m, máximo histórico, 1 contrato, sin comisiones ni slippage.
+Ficha de esta estrategia: <PEGA la ficha exacta, ej. "Confirmation Strong - Smart Trail - Trend Catcher">
+→ úsala para nombrar los archivos.
+
+ENTREGA 2 archivos en C:\NTEXECG\ClaudeCodeTV_<INSTRUMENTO>\ListaDeOperaciones\ (crea la carpeta si
+no existe; NO borres lo que ya haya: acumulamos una estrategia por corrida):
+
+1) trades_<INSTRUMENTO>_<codigo-corto-ficha>.csv  — columnas EXACTAS, una fila por operación cerrada:
+   trade_id, side(long/short), entry_time, exit_time, entry_price, exit_price, qty, pnl_usd, mae_usd, mfe_usd
+   (tiempos en ET; pnl/mae/mfe en USD del contrato grande, 1 lote; mae=desv. adversa, mfe=desv. favorable).
+
+2) Reporte_<INSTRUMENTO>_<codigo-corto-ficha>.md  — ficha exacta; nº trades, PF, WR, Net, gan/pérd
+   promedio, PEOR operación, Max Drawdown ($ y %); $/punto grande (<$pt>) y micro (<MICRO $pt>);
+   ATR(14) real 5m; periodo cubierto.
+
+Usa las barras HOLC locales <INSTRUMENTO>_5m / _1h de C:\NTEXECG\NINJATRADER\HOLC (ya existen para
+ES, NQ, RTY, 6J; no las regeneres). Al terminar, dime las rutas generadas.
+```
+> Con 6-9 acumuladas en la carpeta, corro `eval_strategy_battery` a cada una + la correlación/solape
+> entre todas, y elijo las 2-3 decorrelacionadas con mejor control de riesgo + PF.
 
 ---
 

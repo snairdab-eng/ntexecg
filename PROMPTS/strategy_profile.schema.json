@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ntexecg/schemas/strategy_profile.schema.json",
+  "title": "Perfil de estrategia NTEXECG",
+  "description": "Ficha que se llena por estrategia. x-source: system|user|catalog|validation indica el origen de cada campo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["nombre_corto", "estado", "instrumento", "ventanas", "filtros", "riesgo", "ruteo"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid", "x-source": "system" },
+    "nombre_corto": { "type": "string", "minLength": 3, "x-source": "user",
+      "description": "Debe iniciar con el simbolo que se opera (p. ej. MES15m...), no el estandar" },
+    "descripcion": { "type": "string", "x-source": "user",
+      "description": "Documentar la fuente/escala de las metricas (p. ej. backtest ES, cifras MES = ES/10)" },
+    "url_unica": { "type": "string", "format": "uri", "x-source": "system" },
+    "token": { "type": "string", "minLength": 32, "x-source": "system" },
+    "estado": { "type": "string", "enum": ["disabled", "enabled"], "default": "disabled", "x-source": "system|user" },
+    "fecha_alta": { "type": "string", "format": "date", "x-source": "user" },
+    "responsable": { "type": "string", "x-source": "user" },
+    "created_at": { "type": "string", "format": "date-time", "x-source": "system" },
+    "updated_at": { "type": "string", "format": "date-time", "x-source": "system" },
+    "version": { "type": "integer", "minimum": 1, "x-source": "system" },
+
+    "definicion": {
+      "type": "object", "additionalProperties": false,
+      "description": "Definicion LuxAlgo y metricas de backtest. Documental; no se valida en runtime.",
+      "properties": {
+        "toolkit": { "type": "string", "x-source": "user" },
+        "gatillo": { "type": "string", "x-source": "user" },
+        "filtro_1": { "type": "string", "x-source": "user" },
+        "filtro_2": { "type": "string", "x-source": "user" },
+        "condicion_salida": { "type": "string", "x-source": "user" },
+        "backtest_inicio": { "type": "string", "format": "date", "x-source": "user" },
+        "backtest_fin": { "type": "string", "format": "date", "x-source": "user" },
+        "num_operaciones": { "type": "integer", "minimum": 0, "x-source": "user" },
+        "winrate_pct": { "type": "number", "minimum": 0, "maximum": 100, "x-source": "user" },
+        "profit_factor": { "type": "number", "minimum": 0, "x-source": "user" },
+        "max_drawdown_pct": { "type": "number", "minimum": 0, "x-source": "user" },
+        "beneficio_neto_usd": { "type": "number", "x-source": "user" },
+        "avg_win_usd": { "type": "number", "x-source": "user" },
+        "avg_loss_usd": { "type": "number", "x-source": "user" },
+        "max_drawdown_usd": { "type": "number", "x-source": "user" },
+        "frecuencia": { "type": "string", "x-source": "user" },
+        "tamano_orden_backtest": { "type": "string", "x-source": "user" }
+      }
+    },
+
+    "instrumento": {
+      "type": "object", "additionalProperties": false,
+      "required": ["simbolo_esperado", "temporalidad_esperada_min"],
+      "properties": {
+        "simbolo_esperado": { "type": "string", "x-source": "user", "x-validation": "== payload.ticker",
+          "description": "Referencia al catalogo de instrumentos" },
+        "tipo_contrato": { "type": "string", "enum": ["micro", "mini", "estandar"], "x-source": "catalog" },
+        "valor_tick": { "type": "number", "exclusiveMinimum": 0, "x-source": "catalog" },
+        "tick_minimo": { "type": "number", "exclusiveMinimum": 0, "x-source": "catalog" },
+        "temporalidad_esperada_min": { "type": "integer", "minimum": 1, "x-source": "user", "x-validation": "== int(payload.interval)" }
+      }
+    },
+
+    "ventanas": {
+      "type": "object", "additionalProperties": false,
+      "required": ["timezone", "windows"],
+      "properties": {
+        "timezone": { "type": "string", "default": "America/New_York", "x-source": "user" },
+        "salidas_siempre_permitidas": { "type": "boolean", "default": true, "x-source": "user" },
+        "cierre_forzado_eod": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$", "x-source": "user" },
+        "windows": {
+          "type": "array", "minItems": 1, "x-source": "user",
+          "description": "Grupo repetible. Cada ventana lleva sus propios dias.",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["dias", "hora_inicio", "hora_fin"],
+            "properties": {
+              "dias": { "type": "array", "minItems": 1,
+                "items": { "type": "string", "enum": ["L", "M", "X", "J", "V", "S", "D"] } },
+              "hora_inicio": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" },
+              "hora_fin": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" }
+            }
+          }
+        }
+      }
+    },
+
+    "filtros": {
+      "type": "object", "additionalProperties": false,
+      "required": ["antiguedad_entrada_seg", "antiguedad_salida_seg", "dedup_seg"],
+      "properties": {
+        "antiguedad_entrada_seg": { "type": "integer", "minimum": 0, "default": 120, "x-source": "user", "x-validation": "now - payload.time <= valor" },
+        "antiguedad_salida_seg": { "type": "integer", "minimum": 0, "default": 120, "x-source": "user", "x-validation": "now - payload.time <= valor" },
+        "dedup_seg": { "type": "integer", "minimum": 0, "default": 5, "x-source": "user" },
+        "confirmaciones_adicionales": { "type": "string", "x-source": "user" }
+      }
+    },
+
+    "riesgo": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stop_obligatorio", "riesgo_usd_max_operacion", "cantidad_maxima_contratos"],
+      "properties": {
+        "stop_obligatorio": { "type": "boolean", "default": true, "x-source": "user", "x-validation": "stop presente si true" },
+        "stop_esperado_ticks": { "type": "integer", "minimum": 1, "x-source": "user" },
+        "riesgo_usd_max_operacion": { "type": "number", "exclusiveMinimum": 0, "x-source": "user", "x-validation": "quantity * stop_ticks * valor_tick <= valor" },
+        "cantidad_maxima_contratos": { "type": "integer", "minimum": 1, "x-source": "user", "x-validation": "payload.quantity <= valor" }
+      }
+    },
+
+    "ruteo": {
+      "type": "object", "additionalProperties": false,
+      "required": ["webhook_traderspost", "cuenta_objetivo"],
+      "properties": {
+        "webhook_traderspost": { "type": "string", "format": "uri", "x-source": "user" },
+        "cuenta_objetivo": { "type": "string", "x-source": "user", "description": "Referencia a un account_profile.id" },
+        "notas_ruteo": { "type": "string", "x-source": "user" }
+      }
+    }
+  }
+}

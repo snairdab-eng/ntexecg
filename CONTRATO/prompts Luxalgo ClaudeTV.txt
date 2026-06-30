@@ -1,0 +1,57 @@
+Dame 3 estrategias de futuros NQ (E-mini Nasdaq 100) en 5 minutos con este perfil:
+
+- Entrada tipo CONFIRMATION (a favor de tendencia): Normal, Strong o Any.
+- Salida / trailing de tendencia: SMART TRAIL o TREND CATCHER (que deje correr a los ganadores).
+- Que las 3 sean DISTINTAS entre sí (distinto módulo / confluencia / filtro de momentum) para que
+  sus señales se solapen lo menos posible — las quiero como una cartera decorrelacionada.
+- Prioriza PROFIT FACTOR alto (≥ 1.8) y win rate razonable, con al menos ~60 operaciones en el histórico.
+- NO optimices ni ajustes stop loss ni gestión de riesgo: el control de riesgo (un stop catastrófico
+  anti-desplome) lo añade un sistema externo. Quiero el edge en crudo, no estrategias "ya protegidas".
+
+Por cada una entrégame:
+- Ficha técnica exacta: modo de señal, módulos/filtros activos, lógica long y short, y salida.
+- Métricas: nº de operaciones, Profit Factor, Win Rate, Net Profit, ganancia promedio, pérdida
+  promedio, PEOR operación y Max Drawdown ($ y %).
+
+Al final, una tabla comparativa de las 3.
+
+
+
+
+
+
+
+
+Hay UNA sola estrategia LuxAlgo configurada en la pestaña/chart activo de TradingView; analiza
+ESA (no generes otras). Trabaja en AUTOMÁTICO, sin pedir confirmación.
+
+Activo NQ (CME_MINI:NQ1!), 5m, máximo histórico, 1 contrato, sin comisiones ni slippage.
+La ficha de esta estrategia es: <PEGA AQUÍ la ficha exacta: modo de señal + módulos/filtros, ej.
+"Confirmation Strong - Smart Trail - Trend Catcher">  → úsala para nombrar los archivos.
+
+ENTREGA 2 archivos en C:\NTEXECG\ClaudeCodeTV_NQ\ListaDeOperaciones\ (crea la carpeta si no existe;
+NO borres lo que ya haya: vamos acumulando una estrategia por corrida):
+
+1) CSV de operaciones: trades_NQ_<codigo-corto-ficha>.csv
+   Columnas EXACTAS (una fila por operación cerrada):
+   trade_id, side(long/short), entry_time, exit_time, entry_price, exit_price, qty, pnl_usd, mae_usd, mfe_usd
+   - tiempos en hora del Este (ET), misma zona que las barras HOLC locales.
+   - pnl_usd = P&L neto (1 contrato grande NQ); mae_usd = desviación adversa máxima (USD);
+     mfe_usd = desviación favorable máxima (USD).
+
+2) Reporte: Reporte_NQ_<codigo-corto-ficha>.md con:
+   - Ficha técnica exacta (modo de señal, módulos/filtros, lógica long/short, salida).
+   - Métricas: nº operaciones, Profit Factor, Win Rate, Net Profit, ganancia promedio,
+     pérdida promedio, PEOR operación, Max Drawdown ($ y %).
+   - $/punto NQ ($20) y MNQ ($2); ATR(14) real en 5m (puntos); periodo cubierto.
+
+Usa las barras HOLC locales NQ_5m / NQ_1h de C:\NTEXECG\NINJATRADER\HOLC (ya existen; no las regeneres).
+Al terminar, dime la ruta del CSV y del reporte generados.
+
+
+
+
+
+
+
+

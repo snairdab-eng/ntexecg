@@ -24,28 +24,30 @@ real por trade pero el fill exacto es aproximado por MAE/MFE.
 
 ## 3. Tabla comparativa (USD de microcontrato)
 
+*Ordenada de mejor a peor por **Neto $ con NTEXECG (A)**.*
+
 > Nota de lectura: A y B tienen **tamaños distintos** (A = sizing del diseño; B = 2 micros fijos), así que
 > los importes absolutos (gan/pérd promedio, neto) reflejan ese tamaño real. El **PF** y la **forma del
 > riesgo** (DD, peor) son lo más comparable.
 
-| Estrategia | Var | n | Gana­doras | Perde­doras | Gan. prom $ | Pérd. prom $ | PF | Neto $ | Drawdown $ | Peor $ |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **ES** | A · NTEXECG | 37 | 18 | 19 | 566 | −224 | **2.39** | 5,933 | **−891** | **−524** |
-| ES | B · LuxAlgo 2m | 122 | 99 | 23 | 156 | −390 | 1.72 | 6,448 | −2,350 | −2,032 |
-| **NQ** | A · NTEXECG | 33 | 16 | 17 | 1,131 | −523 | **2.03** | **9,206** | **−1,789** | **−842** |
-| NQ | B · LuxAlgo 2m | 65 | 54 | 11 | 348 | −1,188 | 1.44 | 5,732 | −7,177 | −6,345 |
-| **YM** | A · NTEXECG | 16 | 10 | 6 | 521 | −552 | 1.57 | 1,897 | −1,731 | **−883** |
-| YM | B · LuxAlgo 2m | 48 | 43 | 5 | 220 | −983 | **1.92** | 4,538 | −1,835 | −1,835 |
-| **GC** | A · NTEXECG | 21 | 12 | 9 | 1,149 | −312 | **4.91** | 10,974 | **−812** | **−549** |
-| GC | B · LuxAlgo 2m | 107 | 65 | 42 | 854 | −677 | 1.95 | **27,078** | −7,738 | −5,878 |
-| **RTY** | A · NTEXECG | 11 | 10 | 1 | 334 | −290 | **11.55** | 3,054 | **−290** | **−290** |
-| RTY | B · LuxAlgo 2m | 112 | 97 | 14 | 172 | −555 | 2.15 | 8,924 | −1,493 | −1,483 |
-| **6E** | A · NTEXECG | 20 | 16 | 4 | 47 | −29 | **6.52** | 633 | **−45** | **−45** |
-| 6E | B · LuxAlgo 2m | 99 | 84 | 15 | 29 | −111 | 1.44 | 732 | −599 | −375 |
-| **6J** | A · NTEXECG | 45 | 26 | 19 | 37 | −36 | 1.37 | 257 | −320 | **−87** |
-| 6J | B · LuxAlgo 2m | 78 | 73 | 4 | 14 | −64 | **3.99** | 766 | −135 | −135 |
-| **CL** | A · NTEXECG | 47 | 24 | 23 | 452 | −492 | 0.96 | −468 | −2,435 | −1,669 |
-| CL | B · LuxAlgo 2m | 105 | 82 | 23 | 196 | −521 | **1.34** | **4,090** | −4,474 | −4,166 |
+| # | Estrategia | Var | n | Ganadoras | Perdedoras | Gan. prom $ | Pérd. prom $ | PF | Neto $ | Drawdown $ | Peor $ |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **1** | **GC** | A · NTEXECG | 21 | 12 | 9 | 1,149 | −312 | 4.91 | 10,974 | −812 | −549 |
+|  | GC | B · LuxAlgo 2m | 107 | 65 | 42 | 854 | −677 | 1.95 | 27,078 | −7,738 | −5,878 |
+| **2** | **NQ** | A · NTEXECG | 33 | 16 | 17 | 1,131 | −523 | 2.03 | 9,206 | −1,789 | −842 |
+|  | NQ | B · LuxAlgo 2m | 65 | 54 | 11 | 348 | −1,188 | 1.44 | 5,732 | −7,177 | −6,345 |
+| **3** | **ES** | A · NTEXECG | 37 | 18 | 19 | 566 | −224 | 2.39 | 5,933 | −891 | −524 |
+|  | ES | B · LuxAlgo 2m | 122 | 99 | 23 | 156 | −390 | 1.72 | 6,448 | −2,350 | −2,032 |
+| **4** | **RTY** | A · NTEXECG | 11 | 10 | 1 | 334 | −290 | 11.55 | 3,054 | −290 | −290 |
+|  | RTY | B · LuxAlgo 2m | 112 | 97 | 14 | 172 | −555 | 2.15 | 8,924 | −1,493 | −1,483 |
+| **5** | **YM** | A · NTEXECG | 16 | 10 | 6 | 521 | −552 | 1.57 | 1,897 | −1,731 | −883 |
+|  | YM | B · LuxAlgo 2m | 48 | 43 | 5 | 220 | −983 | 1.92 | 4,538 | −1,835 | −1,835 |
+| **6** | **6E** | A · NTEXECG | 20 | 16 | 4 | 47 | −29 | 6.52 | 633 | −45 | −45 |
+|  | 6E | B · LuxAlgo 2m | 99 | 84 | 15 | 29 | −111 | 1.44 | 732 | −599 | −375 |
+| **7** | **6J** | A · NTEXECG | 45 | 26 | 19 | 37 | −36 | 1.37 | 257 | −320 | −87 |
+|  | 6J | B · LuxAlgo 2m | 78 | 73 | 4 | 14 | −64 | 3.99 | 766 | −135 | −135 |
+| **8** | **CL** | A · NTEXECG | 47 | 24 | 23 | 452 | −492 | 0.96 | −468 | −2,435 | −1,669 |
+|  | CL | B · LuxAlgo 2m | 105 | 82 | 23 | 196 | −521 | 1.34 | 4,090 | −4,474 | −4,166 |
 
 **Totales cartera (suma de las 8, USD micro):**
 
@@ -74,3 +76,36 @@ real por trade pero el fill exacto es aproximado por MAE/MFE.
   más cerca del nativo.
 - **CL**: el diseño actual no aporta; candidata a rediseñar (C1 a mercado) o mantener en shadow.
 - Recordatorio: esto es backtest sin comisiones/slippage; la cuenta **demo** de esta semana dará el dato real.
+
+
+## 6. Tipo de estrategia: qué funciona mejor con NTEXECG
+
+Cruzando la **ficha técnica** (modo de señal · módulo de salida/trail · confluencia) con el resultado con NTEXECG (A):
+
+| # | Estr | Modo de señal | Salida / Trail | Confluencia / filtro | Neto $ A | PF A |
+|---|---|---|---|---|---:|---:|
+| 1 | GC | Contrarian Normal | Smart Trail | Weak Confluence | 10,974 | 4.91 |
+| 2 | NQ | Confirmation Any | Smart Trail + Trend Catcher | — | 9,206 | 2.03 |
+| 3 | ES | Confirmation Normal | Trend Catcher | Trend Strength Ranging | 5,933 | 2.39 |
+| 4 | RTY | Confirmation Normal | Neo Cloud | Trend Strength Trending | 3,054 | 11.55 |
+| 5 | YM | Contrarian Any | Neo Cloud | HyperWave Below 20 | 1,897 | 1.57 |
+| 6 | 6E | Confirmation Strong | Neo Cloud | Weak Confluence | 633 | 6.52 |
+| 7 | 6J | Contrarian Any | Trend Tracer | Money Flow Above 50 | 257 | 1.37 |
+| 8 | CL | Contrarian Normal | Trend Catcher | Trend Strength Trending | −468 | 0.96 |
+
+**Tendencias (muestra chica, n=8 — hipótesis, no reglas):**
+
+1. **Señal de Confirmación = consistente con NTEXECG.** ES, NQ, RTY y 6E (todas "Confirmation") quedan con PF ≥ 2 (dos > 6). El SL + escalonado complementan entradas a favor de tendencia: los *adds* llenan en pullback a mejor precio y el trailing deja correr.
+2. **Contrarian = bimodal.** GC (Contrarian) es el #1, **pero** con filtro de calidad (score≥55) + Smart Trail. Los otros contrarian (YM, 6J, CL) son los más flojos: su edge es *fade* y el SL de NTEXECG corta la continuación — en YM y 6J el nativo gana; CL pierde.
+3. **Salida Smart Trail = top 2** (GC, NQ). El trailing de tendencia casa mejor con el TP/SL de NTEXECG que módulos de reversión.
+4. **Mercado:** índices (ES, NQ) y oro (GC) son el *sweet spot*. FX (6E aceptable pero $ pequeño; 6J malo) y CL quedan flojos.
+5. **Timeframe:** 5m rindió mejor que 15m en este conjunto.
+
+**Perfil ideal para sumar estrategias que funcionen con NTEXECG:**
+
+- **Modo:** Confirmación (a favor de tendencia). Contrarian solo si va con **filtro de calidad + trailing** (patrón GC).
+- **Salida:** Smart Trail o Trend Catcher (trailing de tendencia), no reversión pura.
+- **Mercado:** índices o metales; evitar contrarian puro de FX con osciladores extremos (HyperWave, Money Flow).
+- **Timeframe:** 5m.
+
+> Caveat: 8 estrategias es una muestra pequeña; tratar como tendencias a confirmar con más datos (demo) antes de generalizar.

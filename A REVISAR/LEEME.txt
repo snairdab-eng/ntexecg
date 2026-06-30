@@ -1,0 +1,18 @@
+PAQUETE NTEXECG — generado el 19/06/2026
+
+Estructura:
+  /PROMPTS  -> los 6 archivos para Claude Code (colócalos en c:\NTEXECG\PROMPTS)
+              EJECUTAR_NTEXECG.md, NTEXECG_build_prompt.md,
+              instrument_catalog.json, strategy_profile.schema.json,
+              account_profile.schema.json, strategy_profile.example.MES.json
+
+  /DOCS     -> documentacion de diseño (contexto para el arquitecto)
+              NTEXECG_diseno_continuacion_con_anexo.md  (diseño + Anexo A contrato + Anexo B diagrama)
+              NTEXECG_diseno_continuacion_con_anexo.pdf
+              NTEXECG_anexo_B_flujo.svg
+
+  /FASES_ANTERIORES -> material previo
+              correcciones_traderspost_luxalgo.md
+              machote_registro_estrategia_ntexecg.(md/docx/pdf)
+
+Sugerencia: descomprime en c:\NTEXECG para que toda la documentacion viva en tu disco.
