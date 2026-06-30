@@ -212,7 +212,7 @@
     <div class="bg-gray-900 border border-gray-800 rounded p-4">
         <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-2">
             Payload enviado a TradersPost
-            {% if deliveries | length > 1 %}<span class="text-gray-600 normal-case">— {{ deliveries | length }} piernas (compra escalonada)</span>{% endif %}
+            {% if delivery_groups | length > 1 %}<span class="text-gray-600 normal-case">— {{ delivery_groups | length }} perfiles</span>{% endif %}
         </h2>
 
         {% if not deliveries %}
@@ -220,43 +220,55 @@
             {% if decision.outcome == 'APPROVE' %}Aprobada pero sin delivery registrado.{% else %}No se envió nada — la señal fue {{ decision.outcome }} antes del dispatch.{% endif %}
         </p>
         {% else %}
-        <div class="space-y-3">
-            {% for d in deliveries %}
-            {% set p = d.payload_json or {} %}
-            <div class="bg-gray-950 border border-gray-800 rounded p-3">
-                <div class="flex items-center flex-wrap gap-3 text-sm mb-2">
-                    {% if deliveries | length > 1 %}
-                        <span class="text-xs font-semibold text-blue-300">
-                            Pierna {{ loop.index }}{% if p.get('orderType') == 'limit' %} · LÍMITE @ {{ p.get('limitPrice') }}{% else %} · MERCADO{% endif %}
-                        </span>
-                    {% endif %}
-                    {{ delivery_badge(d.status) }}
-                    <span class="text-gray-400 text-xs">HTTP {{ d.response_status_code or '—' }}</span>
-                    <span class="text-gray-400 text-xs">{{ d.attempts }} intento(s)</span>
-                    {% if d.latency_ms %}<span class="text-gray-400 text-xs">{{ d.latency_ms }}ms</span>{% endif %}
-                    <span class="text-gray-600 text-xs ml-auto">{{ d.created_at.strftime('%H:%M:%S') }}</span>
+        <div class="space-y-4">
+            {% for g in delivery_groups %}
+            <div>
+                {% if g.profile != '—' %}
+                <div class="text-xs font-bold text-blue-300 uppercase tracking-wider mb-1">
+                    Perfil: {{ g.profile }}
+                    <span class="text-gray-600 font-normal normal-case">— {{ g['items'] | length }} pierna(s)</span>
                 </div>
-
-                <!-- Quick-read of the key fields -->
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-1 text-xs text-gray-400 mb-2">
-                    <div><span class="text-gray-600">action:</span> {{ p.get('action', '—') }}</div>
-                    <div><span class="text-gray-600">symbol:</span> {{ p.get('ticker') or p.get('symbol') or '—' }}</div>
-                    <div><span class="text-gray-600">qty:</span> {{ p.get('quantity') if p.get('quantity') is not none else '—' }}</div>
-                    <div><span class="text-gray-600">orderType:</span> {{ p.get('orderType', 'market') }}</div>
-                    <div><span class="text-gray-600">stopLoss:</span> {{ (p.get('stopLoss') or {}).get('stopPrice', '—') if (p.get('stopLoss') is mapping) else (p.get('stopLoss') or '—') }}</div>
-                    <div><span class="text-gray-600">takeProfit:</span> {{ (p.get('takeProfit') or {}).get('limitPrice', '—') if (p.get('takeProfit') is mapping) else (p.get('takeProfit') or '—') }}</div>
-                    {% if p.get('limitPrice') is not none %}<div><span class="text-gray-600">limitPrice:</span> {{ p.get('limitPrice') }}</div>{% endif %}
-                </div>
-
-                {% if d.error_message %}
-                <div class="text-xs text-red-300 mb-2">⚠ {{ d.error_message }}</div>
                 {% endif %}
+                <div class="space-y-3">
+                    {% for d in g['items'] %}
+                    {% set p = d.payload_json or {} %}
+                    <div class="bg-gray-950 border border-gray-800 rounded p-3">
+                        <div class="flex items-center flex-wrap gap-3 text-sm mb-2">
+                            {% if g['items'] | length > 1 %}
+                                <span class="text-xs font-semibold text-blue-300">
+                                    Pierna {{ loop.index }}{% if p.get('orderType') == 'limit' %} · LÍMITE @ {{ p.get('limitPrice') }}{% else %} · MERCADO{% endif %}
+                                </span>
+                            {% endif %}
+                            {{ delivery_badge(d.status) }}
+                            <span class="text-gray-400 text-xs">HTTP {{ d.response_status_code or '—' }}</span>
+                            <span class="text-gray-400 text-xs">{{ d.attempts }} intento(s)</span>
+                            {% if d.latency_ms %}<span class="text-gray-400 text-xs">{{ d.latency_ms }}ms</span>{% endif %}
+                            <span class="text-gray-600 text-xs ml-auto">{{ d.created_at.strftime('%H:%M:%S') }}</span>
+                        </div>
 
-                <details>
-                    <summary class="text-xs text-gray-500 hover:text-gray-300 cursor-pointer select-none">Ver JSON completo enviado</summary>
-                    <pre class="mt-2 bg-black/40 rounded p-3 text-xs text-gray-300 overflow-x-auto">{{ p | tojson(indent=2) }}</pre>
-                </details>
-                {% if d.url_masked %}<div class="text-xs text-gray-700 mt-1 break-all">{{ d.url_masked }}</div>{% endif %}
+                        <!-- Quick-read of the key fields -->
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-1 text-xs text-gray-400 mb-2">
+                            <div><span class="text-gray-600">action:</span> {{ p.get('action', '—') }}</div>
+                            <div><span class="text-gray-600">symbol:</span> {{ p.get('ticker') or p.get('symbol') or '—' }}</div>
+                            <div><span class="text-gray-600">qty:</span> {{ p.get('quantity') if p.get('quantity') is not none else '—' }}</div>
+                            <div><span class="text-gray-600">orderType:</span> {{ p.get('orderType', 'market') }}</div>
+                            <div><span class="text-gray-600">stopLoss:</span> {{ (p.get('stopLoss') or {}).get('stopPrice', '—') if (p.get('stopLoss') is mapping) else (p.get('stopLoss') or '—') }}</div>
+                            <div><span class="text-gray-600">takeProfit:</span> {{ (p.get('takeProfit') or {}).get('limitPrice', '—') if (p.get('takeProfit') is mapping) else (p.get('takeProfit') or '—') }}</div>
+                            {% if p.get('limitPrice') is not none %}<div><span class="text-gray-600">limitPrice:</span> {{ p.get('limitPrice') }}</div>{% endif %}
+                        </div>
+
+                        {% if d.error_message %}
+                        <div class="text-xs text-red-300 mb-2">⚠ {{ d.error_message }}</div>
+                        {% endif %}
+
+                        <details>
+                            <summary class="text-xs text-gray-500 hover:text-gray-300 cursor-pointer select-none">Ver JSON completo enviado</summary>
+                            <pre class="mt-2 bg-black/40 rounded p-3 text-xs text-gray-300 overflow-x-auto">{{ p | tojson(indent=2) }}</pre>
+                        </details>
+                        {% if d.url_masked %}<div class="text-xs text-gray-700 mt-1 break-all">{{ d.url_masked }}</div>{% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
             </div>
             {% endfor %}
         </div>

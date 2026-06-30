@@ -245,6 +245,15 @@ async def signal_detail(
     pipeline = decision.pipeline_execution_json or {}
     ribbon = build_ribbon(decision, pipeline, cfg, deliveries)
 
+    # Group deliveries by risk profile (parsed from destination tag) so a
+    # multi-profile dispatch shows "agresivo: 3 piernas · conservador: 1 pierna".
+    from app.services.dispatch_profiles import profile_from_tag
+    _groups: dict[str, list] = {}
+    for d in deliveries:
+        key = profile_from_tag(d.destination) or "—"
+        _groups.setdefault(key, []).append(d)
+    delivery_groups = [{"profile": k, "items": v} for k, v in _groups.items()]
+
     return await render(
         request, "signal_detail.html",
         {
@@ -252,6 +261,7 @@ async def signal_detail(
             "raw": raw,
             "deliveries": deliveries,
             "delivery": deliveries[0] if deliveries else None,
+            "delivery_groups": delivery_groups,
             "pipeline": pipeline,
             "ribbon": ribbon,
             "scale_plan": scale_plan(cfg),

@@ -311,6 +311,77 @@
             {% endif %}
         </div>
 
+        {% set profiles = (profile.pipeline_config_json or {}).get('profiles') or [] %}
+        <div class="border-t border-gray-800 mt-3 pt-3">
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Perfiles de riesgo (tiers)</div>
+            <p class="text-xs text-gray-500 mb-3">Cada perfil <b>hereda la base</b> y solo cambia lo que rellenes — normalmente las <b>cantidades por pierna</b>. Campo vacío = hereda. Cada perfil habilitado envía a su propio webhook de TradersPost (1 estrategia por símbolo×perfil). Sin perfiles habilitados se usa el webhook base (comportamiento actual).</p>
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/profiles" class="space-y-3">
+                {% for i in range(4) %}
+                {% set p = profiles[i] if i < (profiles|length) else {} %}
+                <div class="bg-gray-800/40 border border-gray-700 rounded p-3">
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <label class="flex items-center gap-2 text-sm text-gray-200">
+                            <input type="checkbox" name="p{{ i }}_enabled" value="1" class="rounded bg-gray-800 border-gray-700" {% if p.get('enabled') %}checked{% endif %}>
+                            Perfil {{ i + 1 }} — habilitar
+                        </label>
+                        <input name="p{{ i }}_name" value="{{ p.get('name', '') }}" placeholder="nombre (ej. conservador)"
+                               class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs w-56">
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Cantidades por pierna (C1, C2, C3) — coma · vacío = hereda</label>
+                            <input name="p{{ i }}_quantities" value="{{ p.get('quantities')|join(', ') if p.get('quantities') is not none else '' }}" placeholder="0, 1, 0"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">max_contracts (tope duro)</label>
+                            <input name="p{{ i }}_max" type="number" min="0" value="{{ p.get('max_contracts') if p.get('max_contracts') is not none else '' }}"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-xs text-gray-400 mb-1">Webhook TradersPost (de este perfil)</label>
+                            <input name="p{{ i }}_webhook" value="{{ p.get('webhook_url', '') }}" placeholder="https://webhooks.traderspost.io/trading/webhook/..."
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-xs">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Nota (cuenta destino)</label>
+                            <input name="p{{ i }}_note" value="{{ p.get('note', '') }}" placeholder="APEX 50k"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-xs">
+                        </div>
+                        <div class="flex items-end">
+                            <label class="flex items-center gap-2 text-xs text-gray-300">
+                                <input type="checkbox" name="p{{ i }}_dry_run" value="1" class="rounded bg-gray-800 border-gray-700" {% if p.get('dry_run') %}checked{% endif %}>
+                                Forzar dry-run (paper) en este perfil
+                            </label>
+                        </div>
+                    </div>
+                    <details class="mt-2">
+                        <summary class="text-xs text-gray-500 cursor-pointer select-none">Avanzado — override de niveles / SL / TP (normalmente NO tocar; viene de los estudios)</summary>
+                        <div class="grid grid-cols-3 gap-2 mt-2">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Niveles ATR — coma</label>
+                                <input name="p{{ i }}_levels" value="{{ p.get('levels')|join(', ') if p.get('levels') is not none else '' }}" placeholder="hereda"
+                                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">SL ×ATR</label>
+                                <input name="p{{ i }}_sl" value="{{ p.get('sl_atr_multiplier', '') }}" placeholder="hereda"
+                                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">TP ×ATR</label>
+                                <input name="p{{ i }}_tp" value="{{ p.get('tp_atr_multiplier', '') }}" placeholder="hereda"
+                                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
+                            </div>
+                        </div>
+                    </details>
+                </div>
+                {% endfor %}
+                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar perfiles</button>
+                <p class="text-xs text-gray-600">Para que un perfil ejecute escalonado, la base debe tener Scale Entry en modo ejecución. El SL/TP se hereda de la base (mover el SL cambia WR/PF) — para bajar riesgo usa menos contratos.</p>
+            </form>
+        </div>
+
         {% set g = (profile.pipeline_config_json or {}).get('guardrails', {}) %}
         <div class="border-t border-gray-800 mt-3 pt-3">
             <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Guardarraíles (Anexo 08)</div>

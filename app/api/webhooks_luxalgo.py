@@ -306,57 +306,99 @@ async def _dispatch_approved(
     (C1 market + C2..Cn limit) sharing a common stop; one WebhookDelivery per leg.
     Single-payload behaviour (exits / non-scaled entries) is unchanged.
     """
+    from types import SimpleNamespace
+
     from app.services.payload_builder import PayloadBuilder
     from app.services.traderspost_client import TradersPostClient
     from app.services.position_service import PositionService
     from app.models.webhook_delivery import WebhookDelivery
+    from app.services import dispatch_profiles as dprof
 
-    payloads = PayloadBuilder().build_scaled(norm, strategy, config, pipeline_result)
-    webhook_url = config.get("traderspost_webhook_url")
-    # Layered gate: env kill-switch AND traderspost_enabled AND not dry_run.
-    dry_run = resolve_effective_dry_run(settings, config)
+    builder = PayloadBuilder()
     client = TradersPostClient(settings)
+    is_exit = norm.action == "exit"
+    is_long = norm.action == "buy"
+    entry_price = float(norm.price) if norm.price is not None else None
+
+    # Risk profiles (tiers): one dispatch destination per enabled profile, each to
+    # its own TradersPost webhook. No profiles → single base destination (unchanged).
+    destinations = dprof.resolve_destinations(config)
+    base_sl = config.get("sl_atr_multiplier")
+    base_tp = config.get("tp_atr_multiplier")
 
     any_sent = False
-    total_qty = 0
-    n_legs = len(payloads)
-    for leg_idx, payload in enumerate(payloads, start=1):
-        result = await client.send(
-            webhook_url or "",
-            payload,
-            signal_role=norm.signal_role or "",
-            dry_run=dry_run,
-            signal_ts=norm.signal_ts,
-        )
-        db.add(WebhookDelivery(
-            decision_id=decision.id,
-            strategy_id=norm.strategy_id,
-            destination="traderspost",
-            url_masked=result.url_masked,
-            payload_json=result.payload_json,
-            response_status_code=result.response_status_code,
-            response_body=result.response_body,
-            status=result.status,
-            attempts=result.attempts,
-            latency_ms=result.latency_ms,
-            error_message=result.error_message,
-            sent_at=_utcnow() if result.status == "SENT" else None,
-        ))
-        if result.status == "SENT":
-            any_sent = True
-        try:
-            total_qty += int(payload.get("quantity") or 0)
-        except (TypeError, ValueError):
-            pass
-        if n_legs > 1:
-            logger.info(
-                "dispatch_leg strategy={} leg={}/{} status={} qty={}",
-                norm.strategy_id, leg_idx, n_legs, result.status,
-                payload.get("quantity"),
+    primary_qty = 0
+    for di, dest in enumerate(destinations):
+        dest_config = dprof.make_dest_config(config, dest)
+
+        # Per-profile SL/TP only differs if the profile overrides the multipliers
+        # (rare — by default SL/TP are inherited from the researched base).
+        dest_result = pipeline_result
+        if not is_exit and (
+            dest["sl_atr_multiplier"] != base_sl
+            or dest["tp_atr_multiplier"] != base_tp
+        ):
+            atr_v = getattr(pipeline_result, "atr_value", None)
+            sl_p, tp_p = dprof.recompute_sl_tp(
+                entry_price, float(atr_v) if atr_v is not None else None,
+                is_long, dest["sl_atr_multiplier"], dest["tp_atr_multiplier"],
+            )
+            dest_result = SimpleNamespace(
+                sl_price=sl_p if sl_p is not None else getattr(pipeline_result, "sl_price", None),
+                tp_price=tp_p,
+                atr_value=getattr(pipeline_result, "atr_value", None),
+                score=getattr(pipeline_result, "score", None),
+                market_data_provider=getattr(pipeline_result, "market_data_provider", None),
             )
 
-    # Update estimated position state (once, aggregate quantity for scaled entries)
-    is_exit = norm.action == "exit"
+        payloads = builder.build_scaled(norm, strategy, dest_config, dest_result)
+        webhook_url = dest["webhook_url"]
+        # Layered gate evaluated PER destination (a profile can be dry-run while
+        # another is live): env kill-switch AND traderspost_enabled AND not dry_run.
+        dry_run = resolve_effective_dry_run(settings, dest_config)
+        tag = dprof.delivery_tag(dest["name"])
+        n_legs = len(payloads)
+        dest_qty = 0
+        for leg_idx, payload in enumerate(payloads, start=1):
+            result = await client.send(
+                webhook_url or "",
+                payload,
+                signal_role=norm.signal_role or "",
+                dry_run=dry_run,
+                signal_ts=norm.signal_ts,
+            )
+            db.add(WebhookDelivery(
+                decision_id=decision.id,
+                strategy_id=norm.strategy_id,
+                destination=tag,
+                url_masked=result.url_masked,
+                payload_json=result.payload_json,
+                response_status_code=result.response_status_code,
+                response_body=result.response_body,
+                status=result.status,
+                attempts=result.attempts,
+                latency_ms=result.latency_ms,
+                error_message=result.error_message,
+                sent_at=_utcnow() if result.status == "SENT" else None,
+            ))
+            if result.status == "SENT":
+                any_sent = True
+            try:
+                dest_qty += int(payload.get("quantity") or 0)
+            except (TypeError, ValueError):
+                pass
+            if n_legs > 1 or len(destinations) > 1:
+                logger.info(
+                    "dispatch_leg strategy={} profile={} leg={}/{} status={} qty={}",
+                    norm.strategy_id, dest["name"] or "base", leg_idx, n_legs,
+                    result.status, payload.get("quantity"),
+                )
+        if di == 0:
+            primary_qty = dest_qty
+
+    # Update estimated position state ONCE (shared estimate for Level-3 gating).
+    # NOTE: per-account position tracking across profiles is a future phase
+    # (riesgo por portafolio); here we keep one estimate keyed by the base account.
     account_id = config.get("account_id", "paper_default")
     position_service = PositionService()
     if is_exit:
@@ -365,7 +407,7 @@ async def _dispatch_approved(
         )
     else:
         direction = "long" if norm.action == "buy" else "short"
-        qty = total_qty or (norm.quantity or 1)
+        qty = primary_qty or (norm.quantity or 1)
         await position_service.on_entry_approved(
             db, norm.strategy_id, account_id, norm.mapped_symbol,
             direction, qty,
@@ -380,8 +422,8 @@ async def _dispatch_approved(
         )
 
     logger.info(
-        "dispatch_complete strategy={} legs={} any_sent={}",
-        norm.strategy_id, n_legs, any_sent,
+        "dispatch_complete strategy={} destinations={} any_sent={}",
+        norm.strategy_id, len(destinations), any_sent,
     )
 
 

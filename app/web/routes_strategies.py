@@ -942,6 +942,127 @@ async def update_scale_entry(
     )
 
 
+@router.post("/ui/strategies/{strategy_id}/profiles")
+async def update_profiles(
+    request: Request,
+    strategy_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Perfiles de riesgo (tiers) — deltas sobre la base, en
+    pipeline_config_json['profiles']. Cada perfil hereda la base y solo overridea
+    lo que se rellena (normalmente las cantidades por pierna). Hasta 8 slots
+    (la UI muestra 4). Vacío en un campo = hereda de la base."""
+    form = await request.form()
+    prof_res = await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )
+    profile = prof_res.scalar_one_or_none()
+    if profile is None:
+        profile = StrategyProfile(strategy_id=strategy_id)
+        db.add(profile)
+
+    def _ints(raw: str) -> list:
+        out = []
+        for tok in (raw or "").replace(";", ",").split(","):
+            tok = tok.strip()
+            if tok == "":
+                continue
+            try:
+                out.append(max(0, int(float(tok))))
+            except ValueError:
+                continue
+        return out
+
+    def _floats(raw: str) -> list:
+        out = []
+        for tok in (raw or "").replace(";", ",").split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                f = float(tok)
+            except ValueError:
+                continue
+            if f > 0:
+                out.append(f)
+        return out
+
+    def _num(raw):
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    profiles: list[dict] = []
+    warn = False
+    for i in range(8):  # UI shows 4; support up to 8
+        name = (form.get(f"p{i}_name") or "").strip()
+        enabled = form.get(f"p{i}_enabled") == "1"
+        webhook = (form.get(f"p{i}_webhook") or "").strip()
+        qty_raw = form.get(f"p{i}_quantities")
+        max_raw = (form.get(f"p{i}_max") or "").strip()
+        note = (form.get(f"p{i}_note") or "").strip()
+        dry = form.get(f"p{i}_dry_run") == "1"
+        levels_raw = form.get(f"p{i}_levels")
+        sl_raw = form.get(f"p{i}_sl")
+        tp_raw = form.get(f"p{i}_tp")
+        # Skip a completely empty slot
+        if not (name or webhook or enabled or (qty_raw or "").strip()):
+            continue
+        p: dict = {"name": name or f"perfil{i + 1}", "enabled": enabled}
+        if webhook:
+            p["webhook_url"] = webhook
+        if (qty_raw or "").strip():
+            p["quantities"] = _ints(qty_raw)
+        if max_raw:
+            try:
+                p["max_contracts"] = max(0, int(float(max_raw)))
+            except ValueError:
+                pass
+        if note:
+            p["note"] = note
+        if dry:
+            p["dry_run"] = True
+        if (levels_raw or "").strip():
+            p["levels"] = _floats(levels_raw)
+        sl = _num(sl_raw)
+        if sl:
+            p["sl_atr_multiplier"] = sl
+        tp = _num(tp_raw)
+        if tp:
+            p["tp_atr_multiplier"] = tp
+        if enabled and not webhook:
+            warn = True
+        profiles.append(p)
+
+    cfg = dict(profile.pipeline_config_json or {})
+    before = cfg.get("profiles")
+    if profiles:
+        cfg["profiles"] = profiles
+    else:
+        cfg.pop("profiles", None)
+    profile.pipeline_config_json = cfg or None
+    profile.version = (profile.version or 1) + 1
+    profile.updated_by = "admin"
+
+    await AuditService().log(
+        db, actor="admin", action="UPDATE", object_type="StrategyProfile",
+        object_id=strategy_id, old_value={"profiles": before},
+        new_value={"profiles": profiles}, reason="risk profiles",
+    )
+    await db.commit()
+    msg = f"Perfiles guardados ({len(profiles)})."
+    if warn:
+        msg += " ⚠ Algún perfil habilitado sin webhook propio: heredará el de la base."
+    return redirect(
+        f"/ui/strategies/{strategy_id}", flash=msg,
+        category="warning" if warn else "success",
+    )
+
+
 @router.post("/ui/strategies/{strategy_id}/status")
 async def change_status(
     request: Request,

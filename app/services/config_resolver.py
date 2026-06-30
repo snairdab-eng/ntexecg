@@ -76,6 +76,9 @@ class ConfigResolver:
             "regime": {},
             # Scaled entry (Anexo 14 §8) - design/execution metadata; empty → entrada única.
             "scale_entry": {},
+            # Perfiles de riesgo (tiers) - lista de deltas sobre la base; [] → un solo
+            # destino (el webhook base). Cada perfil overridea cantidades/levels/webhook/etc.
+            "profiles": [],
         }
 
         # Merge GlobalProfile (base)
@@ -190,6 +193,12 @@ class ConfigResolver:
                     "scale_entry")
                 if isinstance(_scale, dict):
                     config["scale_entry"] = _scale
+                # Perfiles de riesgo (tiers) — deltas sobre la base, usados por el
+                # dispatch multi-perfil (app/services/dispatch_profiles.py).
+                _profiles = (strategy_profile.pipeline_config_json or {}).get(
+                    "profiles")
+                if isinstance(_profiles, list):
+                    config["profiles"] = _profiles
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run
