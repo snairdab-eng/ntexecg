@@ -1,0 +1,42 @@
+cd ~/ntexecg
+python - <<'PY'
+import asyncio
+from sqlalchemy import select
+from app.db.session import AsyncSessionLocal
+from app.models.strategy import Strategy
+from app.core.config import settings
+async def main():
+    async with AsyncSessionLocal() as db:
+        s = (await db.execute(select(Strategy).where(
+            Strategy.strategy_id == "GC5m_ContraNormal_ST_WeakConf"))).scalar_one_or_none()
+        tok = s.webhook_token if (s and s.webhook_token) else settings.LUXALGO_WEBHOOK_SECRET
+        print("TOKEN:", tok)
+asyncio.run(main())
+PY
+TOKEN: sMtEpADezdwzK4AsoGHr3AeSzTXOj8aI
+(.venv) cadmin@ntexecg:~/ntexecg$
+
+*****************************************
+
+cd ~/ntexecg
+python -m scripts.simulate_webhook --strategy-id GC5m_ContraNormal_ST_WeakConf --ticker MGC --action buy --sentiment long --price 4025.5 --interval 5 --token sMtEpADezdwzK4AsoGHr3AeSzTXOj8aI
+
+****************************
+
+(.venv) cadmin@ntexecg:~/ntexecg$ cd ~/ntexecg
+python - <<'PY'
+import asyncio
+from app.db.session import AsyncSessionLocal
+from app.services.config_resolver import ConfigResolver
+from app.services.repositories import get_strategy_by_id
+async def main():
+    async with AsyncSessionLocal() as db:
+        s = await get_strategy_by_id(db, "GC5m_ContraNormal_ST_WeakConf")
+        cfg = await ConfigResolver().resolve(db, "GC5m_ContraNormal_ST_WeakConf", s.asset_symbol)
+        print("timezone:", cfg.get("timezone"))
+        print("session_config_json:", cfg.get("session_config_json"))
+asyncio.run(main())
+PY
+timezone: America/New_York
+session_config_json: {'timezone': 'America/New_York', 'days_enabled': [1, 2, 3, 4, 5], 'entry_start': '08:20', 'entry_end': '13:30', 'next_day_end': False, 'avoid_open_minutes': 30, 'avoid_close_minutes': 15, 'force_flat_time': '13:40', 'allow_overnight': False, 'allow_exits_outside_window': True, 'windows': [{'days': [1, 2, 3, 4, 5], 'start': '09:30', 'end': '15:45', 'next_day_end': False}]}
+(.venv) cadmin@ntexecg:~/ntexecg$
