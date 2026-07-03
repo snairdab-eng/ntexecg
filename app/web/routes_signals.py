@@ -64,14 +64,34 @@ def build_ribbon(decision, pipeline: dict, cfg: dict, deliveries: list) -> list[
         nodes.append(_node("rango", "Rango op.", "na", "No evaluado"))
 
     # ③ Filtro técnico (QualityScorer — Nivel 4)
+    # NX-04 (Anexo 25 §1-bis): un score sin medición real (sin filtros activos
+    # ni régimen) es calidad UNKNOWN — se pinta gris (inactive), NUNCA el ✅
+    # verde. Decisiones históricas sin la marca en level_4: se infiere de la
+    # config efectiva actual (misma aproximación que régimen/TP/escalonada).
     if l4.get("skipped"):
         nodes.append(_node("filtro", "Filtro técnico", "skip", "Exento (salida)"))
     elif l4.get("score") is not None:
         smin = cfg.get("score_minimum", 70)
-        if l4.get("passed"):
-            nodes.append(_node("filtro", "Filtro técnico", "pass", f"Score {l4.get('score')} ≥ {smin}"))
+        score = l4.get("score")
+        measured = l4.get("filters_active")
+        if measured is None:
+            from app.services.quality_scorer import filters_active as _fa
+            measured = _fa(cfg)
+        quality = l4.get("quality") or (
+            "UNKNOWN" if not measured else None
+        )
+        if not l4.get("passed"):
+            nodes.append(_node(
+                "filtro", "Filtro técnico", "block",
+                f"Score {score} < {smin}" + (f" · calidad {quality}" if quality else "")))
+        elif not measured:
+            nodes.append(_node(
+                "filtro", "Filtro técnico", "inactive",
+                f"Score {score} — calidad NO medida (UNKNOWN: sin filtros activos)"))
         else:
-            nodes.append(_node("filtro", "Filtro técnico", "block", f"Score {l4.get('score')} < {smin}"))
+            nodes.append(_node(
+                "filtro", "Filtro técnico", "pass",
+                f"Score {score} ≥ {smin}" + (f" · calidad {quality}" if quality else "")))
     else:
         nodes.append(_node("filtro", "Filtro técnico", "na", "No evaluado"))
 

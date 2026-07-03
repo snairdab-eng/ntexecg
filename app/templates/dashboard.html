@@ -87,7 +87,7 @@
                         <td class="px-3 py-2 text-gray-400">{{ d.ticker }}</td>
                         <td class="px-3 py-2 text-gray-400">{{ d.action }}</td>
                         <td class="px-3 py-2 text-gray-500 text-xs">
-                            {% if d.outcome == 'APPROVE' %}score: {{ d.score }}
+                            {% if d.outcome == 'APPROVE' %}score: {{ d.score if d.score is not none else '—' }}
                             {% elif d.block_reason %}{{ d.block_reason }}{% endif %}
                         </td>
                     </tr>

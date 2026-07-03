@@ -365,6 +365,9 @@ async def _dispatch_approved(
                 atr_value=getattr(pipeline_result, "atr_value", None),
                 score=getattr(pipeline_result, "score", None),
                 market_data_provider=getattr(pipeline_result, "market_data_provider", None),
+                # NX-04 — la etiqueta de calidad viaja igual en los legs por perfil.
+                quality=getattr(pipeline_result, "quality", None),
+                filters_active=getattr(pipeline_result, "filters_active", None),
             )
 
         payloads = builder.build_scaled(norm, strategy, dest_config, dest_result)

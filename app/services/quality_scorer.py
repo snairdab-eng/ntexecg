@@ -24,6 +24,62 @@ from app.models.normalized_signal import NormalizedSignal
 
 _NAMES = ("volume_relative", "atr_normalized", "vwap_position", "time_of_day")
 
+# ---------------------------------------------------------------------------
+# NX-04 — taxonomía de calidad (Anexo 25 §1-bis)
+# Un score=100 solo es confiable si proviene de filtros reales activos.
+# Sin medición → UNKNOWN (nunca HIGH). El gate numérico no cambia.
+# ---------------------------------------------------------------------------
+
+QUALITY_UNKNOWN = "UNKNOWN"   # sin medición: solo pasó los gates estructurales
+QUALITY_LOW = "LOW"           # medida y < score_minimum (se bloquea en N4)
+QUALITY_MEDIUM = "MEDIUM"     # medida, score_minimum ≤ score < umbral_alto
+QUALITY_HIGH = "HIGH"         # medida y ≥ umbral_alto
+
+# Umbral por defecto para HIGH; override opcional con
+# config["quality_high_threshold"] (1..100).
+DEFAULT_HIGH_THRESHOLD = 80
+
+
+def active_filter_names(config: dict) -> list[str]:
+    """Nombres de subscores habilitados con peso > 0 (los que de verdad miden)."""
+    filters = (config or {}).get("filters") or {}
+    out: list[str] = []
+    for name in _NAMES:
+        f = filters.get(name)
+        if isinstance(f, dict) and f.get("enabled"):
+            try:
+                w = float(f.get("weight", 0) or 0)
+            except (ValueError, TypeError):
+                w = 0.0
+            if w > 0:
+                out.append(name)
+    return out
+
+
+def filters_active(config: dict) -> bool:
+    """Anexo 25 §1-bis: hay medición real si hay filtros de score activos O el
+    gate de régimen está habilitado."""
+    if active_filter_names(config):
+        return True
+    return bool(((config or {}).get("regime") or {}).get("enabled"))
+
+
+def quality_label(
+    score: int,
+    measured: bool,
+    score_minimum: int,
+    high_threshold: int = DEFAULT_HIGH_THRESHOLD,
+) -> str:
+    """Etiqueta de calidad. Independiente del gate: el score se sigue usando
+    para bloquear (score ≥ score_minimum); la etiqueta dice si hubo medición."""
+    if not measured:
+        return QUALITY_UNKNOWN
+    if score < score_minimum:
+        return QUALITY_LOW
+    if score >= high_threshold:
+        return QUALITY_HIGH
+    return QUALITY_MEDIUM
+
 
 def _f(b: dict, key: str) -> float:
     try:

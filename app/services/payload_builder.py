@@ -73,10 +73,16 @@ class PayloadBuilder:
                 }
 
         # extras — always included, useful for cross-referencing in TradersPost
+        # NX-04: ntexecg_quality + filters_active viajan junto al score para que
+        # un 100 sin medición sea distinguible (UNKNOWN) del 100 medido (HIGH).
+        # getattr con default: forced_exit / dispatch por perfil pasan
+        # SimpleNamespace sin estos campos.
         payload["extras"] = {
             "strategy_id": signal.strategy_id,
             "signal_id": str(signal.id),
             "ntexecg_score": pipeline_result.score,
+            "ntexecg_quality": getattr(pipeline_result, "quality", None),
+            "filters_active": getattr(pipeline_result, "filters_active", None),
             "atr_value": (
                 float(pipeline_result.atr_value)
                 if pipeline_result.atr_value is not None else None
@@ -173,6 +179,8 @@ class PayloadBuilder:
                 "leg_quantity": q,
                 "level_atr": level_atr,
                 "ntexecg_score": pipeline_result.score,
+                "ntexecg_quality": getattr(pipeline_result, "quality", None),
+                "filters_active": getattr(pipeline_result, "filters_active", None),
                 "atr_value": atr,
                 "sl_multiplier": config.get("sl_atr_multiplier"),
                 "provider": pipeline_result.market_data_provider,

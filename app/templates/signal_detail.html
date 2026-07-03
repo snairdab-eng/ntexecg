@@ -136,7 +136,9 @@
 
             {{ step('Nivel 4 — Quality score', l4,
                 ('Exento (señal de salida)') if (l4 and l4.get('skipped'))
-                else (('Score ' ~ l4.get('score') ~ ' — ' ~ ('≥ mínimo, pasó' if l4.get('passed') else '< mínimo, BLOQUEÓ')) if (l4 and l4.get('score') is not none)
+                else (('Score ' ~ l4.get('score') ~ ' — ' ~ ('≥ mínimo, pasó' if l4.get('passed') else '< mínimo, BLOQUEÓ')
+                       ~ (' · calidad ' ~ l4.get('quality') if l4.get('quality') else '')
+                       ~ (' (sin filtros activos: NO medida)' if l4.get('quality') == 'UNKNOWN' else '')) if (l4 and l4.get('score') is not none)
                 else ('No evaluado')), 'filtro') }}
 
             {{ step('Nivel 5 — SL/TP por ATR', l5,
@@ -160,7 +162,14 @@
             {% if decision.outcome == 'APPROVE' %}
             <div class="text-sm text-green-400 font-semibold">✅ DECISIÓN: APPROVE</div>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 text-xs text-gray-400">
-                <div><span class="text-gray-500">Score:</span> {{ decision.score }}</div>
+                <div><span class="text-gray-500">Score:</span> {{ decision.score if decision.score is not none else '—' }}
+                    {% set q = (l4 or {}).get('quality') %}
+                    {% if q == 'UNKNOWN' %}<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-amber-300" title="Calidad no medida: sin filtros activos">UNKNOWN</span>
+                    {% elif q == 'HIGH' %}<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-green-900 text-green-300">HIGH</span>
+                    {% elif q == 'MEDIUM' %}<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-blue-900 text-blue-300">MEDIUM</span>
+                    {% elif q == 'LOW' %}<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-red-900 text-red-300">LOW</span>
+                    {% endif %}
+                </div>
                 <div><span class="text-gray-500">SL:</span> {{ decision.sl_price }}</div>
                 <div><span class="text-gray-500">ATR:</span> {{ decision.atr_value }}</div>
                 <div><span class="text-gray-500">TP:</span> {{ decision.tp_price or 'Builtin-Exits' }}</div>

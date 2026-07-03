@@ -28,7 +28,12 @@ from app.models.normalized_signal import NormalizedSignal
 from app.models.strategy import Strategy
 from app.services.hmm_service import HMMService
 from app.services.market_data_service import MarketDataService
-from app.services.quality_scorer import QualityScorer
+from app.services.quality_scorer import (
+    DEFAULT_HIGH_THRESHOLD,
+    QualityScorer,
+    filters_active as _quality_measured,
+    quality_label,
+)
 from app.services.session_validator import SessionValidator
 from app.services.sl_tp_calculator import SLTPCalculator
 from app.services.symbol_mapper import SymbolMapper
@@ -66,11 +71,16 @@ class PipelineResult:
     outcome: str  # APPROVE, BLOCK, IGNORE_DUPLICATE, QUEUE_FOR_REVIEW
     block_reason: str | None = None
     block_level: int | None = None  # 1-5, None if APPROVE
-    score: int = 100
+    # NX-04: el score ya NO parte en 100 — solo existe cuando el Nivel 4 corrió
+    # (entradas). Salidas y blocks tempranos → None (calidad no medida).
+    score: int | None = None
     sl_price: float | None = None
     tp_price: float | None = None
     atr_value: float | None = None
     market_data_provider: str | None = None
+    # NX-04 (Anexo 25 §1-bis): etiqueta de calidad + si hubo medición real.
+    quality: str | None = None  # UNKNOWN / LOW / MEDIUM / HIGH (None si N4 no corrió)
+    filters_active: bool = False
     pipeline_execution_json: dict = field(default_factory=dict)
 
 
@@ -176,8 +186,13 @@ class FilterPipeline:
 
         # ─────────────────────────────────────────────────────────────────
         # LEVEL 4 — QUALITY SCORE (entries only)
+        # NX-04: score/quality solo existen si este nivel corre. Sin filtros
+        # reales activos la calidad es UNKNOWN (nunca HIGH) aunque el score
+        # passthrough sea 100. El gate numérico no cambia.
         # ─────────────────────────────────────────────────────────────────
-        score = 100
+        score: int | None = None
+        quality: str | None = None
+        measured = False
         if is_exit:
             execution["level_4"] = {"skipped": True, "reason": "exit_signal"}
         else:
@@ -209,13 +224,25 @@ class FilterPipeline:
             score = await self._quality_scorer.score(signal, bars, config)
             score_minimum = config.get("score_minimum", 70)
             passed = score >= score_minimum
-            execution["level_4"] = {"score": score, "passed": passed}
+
+            # NX-04 — medición real = filtros de score activos O gate de régimen.
+            measured = _quality_measured(config)
+            high_thr = config.get("quality_high_threshold")
+            if not (isinstance(high_thr, (int, float)) and 1 <= high_thr <= 100):
+                high_thr = DEFAULT_HIGH_THRESHOLD
+            quality = quality_label(score, measured, score_minimum, int(high_thr))
+            execution["level_4"] = {
+                "score": score, "passed": passed,
+                "filters_active": measured, "quality": quality,
+            }
             if not passed:
                 return PipelineResult(
                     outcome="BLOCK",
                     block_reason="score_below_minimum",
                     block_level=4,
                     score=score,
+                    quality=quality,
+                    filters_active=measured,
                     pipeline_execution_json=execution,
                 )
 
@@ -251,6 +278,8 @@ class FilterPipeline:
                     block_reason=calc["reason"],
                     block_level=5,
                     score=score,
+                    quality=quality,
+                    filters_active=measured,
                     pipeline_execution_json=execution,
                 )
             sl_price = calc["sl_price"]
@@ -266,6 +295,8 @@ class FilterPipeline:
             tp_price=tp_price,
             atr_value=atr_value,
             market_data_provider=type(self.market_data.provider).__name__,
+            quality=quality,
+            filters_active=measured,
             pipeline_execution_json=execution,
         )
 
