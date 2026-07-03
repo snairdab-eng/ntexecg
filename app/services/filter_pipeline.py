@@ -231,8 +231,12 @@ class FilterPipeline:
                 data_symbol, signal.timeframe or "5m",
                 period=config.get("atr_period", 14),
             )
+            # NX-05: pasar None (no 0.0) si falta el precio — el calculador
+            # bloquea con entry_price_missing en vez de fabricar un SL absurdo.
             calc = await self._sl_tp_calc.calculate(
-                signal, atr_value, signal.price or 0.0, config
+                signal, atr_value,
+                float(signal.price) if signal.price is not None else None,
+                config,
             )
             execution["level_5"] = {
                 "atr": atr_value,

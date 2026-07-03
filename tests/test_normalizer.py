@@ -191,12 +191,14 @@ async def test_price_string_to_float(db: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_price_defaults_to_zero_on_invalid(db: AsyncSession) -> None:
+async def test_price_invalid_becomes_none(db: AsyncSession) -> None:
+    """NX-05: precio no parseable → None (antes 0.0, que fabricaba un SL
+    absurdo en el Nivel 5 con passed=True)."""
     raw = await _make_raw(db)
     norm = await SignalNormalizer().normalize(
         db, raw.id, "s1", _base_payload(price="N/A")
     )
-    assert norm.price == pytest.approx(0.0)
+    assert norm.price is None
 
 
 # ---------------------------------------------------------------------------

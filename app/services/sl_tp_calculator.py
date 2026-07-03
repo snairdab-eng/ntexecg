@@ -16,7 +16,7 @@ class SLTPCalculator:
         self,
         signal: NormalizedSignal,
         atr: float | None,
-        entry_price: float,
+        entry_price: float | None,
         config: dict,
     ) -> dict:
         """Calculate SL and TP prices.
@@ -24,6 +24,9 @@ class SLTPCalculator:
         CRITICAL INVARIANT:
           If returned with passed=True, sl_price is NEVER None.
           If ATR is unavailable → passed=False, reason="atr_calculation_failed"
+          If entry_price is missing/<=0 → passed=False,
+          reason="entry_price_missing" (NX-05: an SL computed against 0 is a
+          naked order in disguise)
 
         Args:
             signal: Normalized signal (has action, sentiment)
@@ -47,6 +50,16 @@ class SLTPCalculator:
                 "sl_price": None,
                 "tp_price": None,
                 "atr_value": None,
+            }
+
+        # NX-05 — sin precio de entrada válido no hay SL calculable: BLOCK.
+        if entry_price is None or entry_price <= 0:
+            return {
+                "passed": False,
+                "reason": "entry_price_missing",
+                "sl_price": None,
+                "tp_price": None,
+                "atr_value": atr,
             }
 
         sl_multiplier = config.get("sl_atr_multiplier", 1.5)

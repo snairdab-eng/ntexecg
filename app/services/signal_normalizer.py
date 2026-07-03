@@ -98,12 +98,16 @@ class SignalNormalizer:
         except (ValueError, TypeError):
             quantity = 1
 
-        # price: payload sends strings, model expects float
+        # price: payload sends strings, model expects float.
+        # NX-05 (fail-closed): ausente / no parseable / <= 0 → None, NUNCA 0.0.
+        # Un 0.0 aquí producía un SL absurdo (0 − ATR×k) con passed=True en N5.
         price_raw_str = str(payload.get("price", "0"))
         try:
             price = float(price_raw_str)
         except (ValueError, TypeError):
-            price = 0.0
+            price = None
+        if price is not None and price <= 0:
+            price = None
 
         interval_raw = str(payload.get("interval", ""))
         timeframe = _normalize_timeframe(interval_raw)
