@@ -36,7 +36,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.services.market_data_service import _calc_atr  # lógica viva de ATR
+from bisect import bisect_right
+from types import SimpleNamespace
+from datetime import timezone as _utc_tz
+from zoneinfo import ZoneInfo
+
+from app.services.hmm_service import classify_regime      # lógica viva (Kaufman ER)
+from app.services.market_data_service import _calc_atr    # lógica viva de ATR
+from app.services.quality_scorer import _SUBSCORES        # lógica viva (4 subscores)
+
+_NY = ZoneInfo("America/New_York")
 
 HOLC_DIR = Path("NINJATRADER/HOLC")
 TRADES_DIR = Path("ListaDeOperaciones")
@@ -74,6 +83,15 @@ class Trade:
     bar_close: float | None = None
     hour: int | None = None   # hora en la TZ del OHLC (ET)
     in_sample: bool = True
+    aligned_ts: datetime | None = None   # entry_ts + offset (clave del OHLC)
+    # Fase 2 — features (None si sin cobertura):
+    sub_volume: float | None = None
+    sub_atr: float | None = None
+    sub_vwap: float | None = None
+    sub_time: float | None = None
+    regime_1h: str | None = None
+    regime_4h: str | None = None
+    ema_with: dict = field(default_factory=dict)  # "1h20"→bool with-trend
 
     @property
     def mae_atr(self) -> float | None:
@@ -213,63 +231,90 @@ def _median_abs_dev(vals: list[float]) -> float:
     return statistics.median([abs(v - med) for v in vals])
 
 
+_ROLL_PAIR_MAX_GAP_DAYS = 10    # pares "mismo contrato" para el score local
+_NEIGHBORS_FOR_DELTA = 7        # vecinos más cercanos EN TIEMPO para el δ
+
+
+def _local_dispersion(pts: list[tuple[datetime, float]]) -> float | None:
+    """Mediana de |d_i − d_j| entre trades CONSECUTIVOS cercanos en el tiempo
+    (gap ≤ 10 días → casi siempre el mismo contrato). Los saltos de nivel por
+    roll (constantes por tramos) quedan FUERA del score: en un backtest de baja
+    frecuencia (YM ~1 trade/semana, 10 meses, varios rolls) la dispersión
+    global mezcla los escalones de roll y ahoga la señal del offset horario."""
+    steps = []
+    for (ts_a, d_a), (ts_b, d_b) in zip(pts, pts[1:]):
+        if abs((ts_b - ts_a).total_seconds()) <= _ROLL_PAIR_MAX_GAP_DAYS * 86400:
+            steps.append(abs(d_b - d_a))
+    if len(steps) < 5:
+        return None
+    return statistics.median(steps)
+
+
 def detect_tz_offset(
     trades: list[Trade], bars: dict[datetime, tuple], sample: int = 60,
 ) -> tuple[int, float, dict]:
     """Detecta el offset (minutos) que alinea `Fecha y hora` del CSV con el
     DateTime del OHLC. Devuelve (offset_min, sanity, detalle).
 
-    Método: para cada offset candidato, diffs = close(barra en ts+off) − precio;
-    el offset correcto minimiza la dispersión (MAD) — robusto al offset de
-    NIVEL por roll del continuo back-ajustado (constante por tramos). Después,
-    sanity = % de precios dentro de [Low,High] de su barra tras corregir el
-    nivel con la mediana móvil de diffs (±5 vecinos, método de la Memoria §2.C).
+    Método: para cada offset candidato, d_i = close(barra en ts+off) − precio_i;
+    el offset correcto minimiza la dispersión LOCAL (pares consecutivos con gap
+    ≤ 10 días, robusto a los escalones de nivel por roll del continuo
+    back-ajustado). Después, sanity = % de precios dentro de [Low,High] de su
+    barra tras corregir el nivel con la mediana de los 7 vecinos más cercanos
+    EN TIEMPO (método δ de la Memoria §2.C, versión temporal).
     """
     covered = [t for t in trades if t.entry_ts is not None]
     step = max(1, len(covered) // sample)
     sampled = covered[::step][:sample]
 
-    # (mad, |offset|, offset): el MAD manda; a MAD ~igual gana el offset más
-    # pequeño (evita elegir un corrimiento absurdo cuando la serie es tan
-    # regular que varios offsets empatan).
+    # (score, |offset|, offset): la dispersión local manda; a empate gana el
+    # offset más pequeño (series demasiado regulares empatan varios offsets).
     best: tuple[float, int, int] | None = None
+    used_fallback = False
     for off in _CANDIDATE_OFFSETS:
         delta = timedelta(minutes=off)
-        diffs: list[float] = []
+        pts: list[tuple[datetime, float]] = []
         for t in sampled:
             bar = bars.get(t.entry_ts + delta)
             if bar is None:
                 continue
-            diffs.append(bar[3] - t.entry_price)
-        if len(diffs) < max(5, len(sampled) // 2):
+            pts.append((t.entry_ts, bar[3] - t.entry_price))
+        if len(pts) < max(5, len(sampled) // 2):
             continue                                  # cobertura insuficiente
-        mad = round(_median_abs_dev(diffs), 6)
-        key = (mad, abs(off), off)
+        score = _local_dispersion(pts)
+        if score is None:                             # trades muy espaciados
+            score = _median_abs_dev([d for _, d in pts])
+            used_fallback = True
+        key = (round(score, 6), abs(off), off)
         if best is None or key < best:
             best = key
 
     if best is None:
         raise SystemExit("⛔ TZ: ningún offset candidato tiene cobertura de barras.")
 
-    mad, _absoff, off = best
+    score, _absoff, off = best
     delta = timedelta(minutes=off)
 
-    # Sanity con corrección de nivel (mediana móvil ±5 vecinos)
+    # Sanity con corrección de nivel: δ_i = mediana de los diffs de los 7
+    # vecinos más cercanos en tiempo (self incluido — 7 valores diluyen el
+    # sesgo de incluirse y aguantan cruzar como mucho un roll).
     seq = [(t, bars.get(t.entry_ts + delta)) for t in sampled]
     seq = [(t, b) for t, b in seq if b is not None]
-    raw = [b[3] - t.entry_price for t, b in seq]
+    raw = [(t.entry_ts, b[3] - t.entry_price) for t, b in seq]
     inside = 0
     for i, (t, b) in enumerate(seq):
-        lo, hi = max(0, i - 5), min(len(seq), i + 6)
-        d = statistics.median(raw[lo:hi])
-        o, h, low, c, _v = b
+        near = sorted(raw, key=lambda p: abs((p[0] - t.entry_ts).total_seconds()))
+        d = statistics.median([v for _, v in near[:_NEIGHBORS_FOR_DELTA]])
+        _o, h, low, _c, _v = b
         tol = 0.1 * max(h - low, 1e-9)
         if (low - tol) <= (t.entry_price + d) <= (h + tol):
             inside += 1
     sanity = inside / len(seq) if seq else 0.0
-    detail = {"offset_minutes": off, "mad": round(mad, 4),
+    detail = {"offset_minutes": off, "mad": round(score, 4),
               "sanity": round(sanity, 4), "sampled": len(seq),
-              "median_level_delta": round(statistics.median(raw), 2)}
+              "median_level_delta": round(statistics.median([v for _, v in raw]), 2),
+              "dispersion_metric": "MAD-global (fallback)" if used_fallback
+                                   else "local (pares ≤10d)"}
     return off, sanity, detail
 
 
@@ -305,6 +350,7 @@ def enrich_with_bars(
         t.bar_close = close
         t.atr_pct = round(atr / close * 100.0, 6)
         t.hour = ts.hour
+        t.aligned_ts = ts
     return uncovered
 
 
@@ -367,6 +413,227 @@ def baseline(trades: list[Trade]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Fase 2 — features por trade: subscores vivos, régimen 1h/4h, EMA-bias
+# ---------------------------------------------------------------------------
+
+def _ema_series(closes: list[float], period: int) -> list[float | None]:
+    """EMA clásica (semilla = SMA del primer periodo). None hasta tener datos."""
+    out: list[float | None] = [None] * len(closes)
+    if len(closes) < period:
+        return out
+    alpha = 2.0 / (period + 1)
+    ema = sum(closes[:period]) / period
+    out[period - 1] = ema
+    for i in range(period, len(closes)):
+        ema = closes[i] * alpha + ema * (1 - alpha)
+        out[i] = ema
+    return out
+
+
+class _TfSeries:
+    """Serie de un timeframe (keys ordenadas + closes + EMAs 20/50)."""
+
+    def __init__(self, bars: dict[datetime, tuple]):
+        self.keys = sorted(bars)
+        self.closes = [bars[k][3] for k in self.keys]
+        self.ema = {20: _ema_series(self.closes, 20),
+                    50: _ema_series(self.closes, 50)}
+
+    def idx_at(self, ts: datetime) -> int:
+        """Índice de la última barra con key ≤ ts (−1 si ninguna)."""
+        return bisect_right(self.keys, ts) - 1
+
+
+def compute_phase2_features(
+    trades: list[Trade], bars5: dict[datetime, tuple], instrument: str,
+) -> None:
+    """Subscores de calidad (funciones VIVAS de quality_scorer), régimen
+    (classify_regime, Kaufman ER) en 1h/4h y EMA-bias (1h/4h · 20/50)."""
+    keys5 = sorted(bars5)
+    idx5 = {k: i for i, k in enumerate(keys5)}
+    tf1h = _TfSeries(load_holc(instrument, "1h"))
+    tf4h = _TfSeries(load_holc(instrument, "4h"))
+
+    for t in trades:
+        if t.aligned_ts is None:
+            continue
+        i = idx5[t.aligned_ts]
+        window = [
+            {"high": bars5[k][1], "low": bars5[k][2],
+             "close": bars5[k][3], "volume": bars5[k][4]}
+            for k in keys5[max(0, i - 99): i + 1]
+        ]
+        # signal_ts: el HOLC es ET-naive; time_of_day (vivo) espera tz-aware
+        # (naive lo trataría como UTC y correría la hora 4-5h).
+        ts_utc = t.aligned_ts.replace(tzinfo=_NY).astimezone(_utc_tz.utc)
+        sig = SimpleNamespace(
+            price=t.bar_close,
+            action="buy" if t.side == "long" else "sell",
+            signal_ts=ts_utc,
+        )
+        cfg = {"timezone": "America/New_York"}
+        t.sub_volume = round(_SUBSCORES["volume_relative"](sig, window, cfg), 4)
+        t.sub_atr = round(_SUBSCORES["atr_normalized"](sig, window, cfg), 4)
+        t.sub_vwap = round(_SUBSCORES["vwap_position"](sig, window, cfg), 4)
+        t.sub_time = round(_SUBSCORES["time_of_day"](sig, window, cfg), 4)
+
+        for name, tf in (("1h", tf1h), ("4h", tf4h)):
+            j = tf.idx_at(t.aligned_ts)
+            closes = tf.closes[max(0, j - 249): j + 1] if j >= 0 else []
+            setattr(t, f"regime_{name}", classify_regime(closes))
+            close_tf = tf.closes[j] if j >= 0 else None
+            for period in (20, 50):
+                ema = tf.ema[period][j] if j >= 0 else None
+                key = f"{name}{period}"
+                if close_tf is None or ema is None:
+                    t.ema_with[key] = None
+                elif t.side == "long":
+                    t.ema_with[key] = close_tf > ema
+                else:
+                    t.ema_with[key] = close_tf < ema
+
+
+# ---------------------------------------------------------------------------
+# Fase 2 — lift de filtros sustractivos (incluir/excluir + re-agregar)
+# ---------------------------------------------------------------------------
+
+def filter_lift(trades: list[Trade], keep) -> dict:
+    """Aplica un predicado de inclusión a los trades CON features y re-agrega.
+    Devuelve in/out + % conservado (los sin cobertura quedan fuera del universo)."""
+    universe = [t for t in trades if t.atr_pct is not None]
+
+    def block(sel_in: bool) -> dict:
+        base_sel = [t for t in universe if t.in_sample == sel_in]
+        kept = [t for t in base_sel if keep(t)]
+        m = aggregate([t.pnl_pct for t in kept])
+        m["kept_pct"] = (round(100 * len(kept) / len(base_sel), 1)
+                         if base_sel else None)
+        return m
+
+    return {"in": block(True), "out": block(False)}
+
+
+def regime_breakdown(trades: list[Trade], tf: str) -> dict[str, dict]:
+    """Métricas por valor de régimen (desglose, no gate)."""
+    out: dict[str, dict] = {}
+    universe = [t for t in trades if t.atr_pct is not None]
+    for reg in ("trending_bull", "trending_bear", "ranging", "unknown"):
+        sel = [t for t in universe if getattr(t, f"regime_{tf}") == reg]
+        if not sel:
+            continue
+        out[reg] = {
+            "in": aggregate([t.pnl_pct for t in sel if t.in_sample]),
+            "out": aggregate([t.pnl_pct for t in sel if not t.in_sample]),
+            "n": len(sel),
+        }
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Fase 2 — TP sweep y SL+TP conjunto (orden de toques intrabar en el 5m)
+# ---------------------------------------------------------------------------
+
+TP_KS = (3.0, 4.0, 6.0)
+JOINT_SL_KS = (2.0, 2.5, 4.0, 8.0)
+
+
+def resim_tp(trades: list[Trade], tp: float) -> dict:
+    """TP activa ⟺ mfe% ≥ tp·atr% → desenlace +tp·atr% (sin SL)."""
+    def block(sel: list[Trade]) -> dict:
+        pnls, hit = [], 0
+        for t in sel:
+            if t.atr_pct is None:
+                continue
+            thr = tp * t.atr_pct
+            if t.mfe_pct >= thr:
+                pnls.append(thr)
+                hit += 1
+            else:
+                pnls.append(t.pnl_pct)
+        m = aggregate(pnls)
+        m["tp_pct"] = round(100 * hit / len(pnls), 1) if pnls else None
+        return m
+
+    return {"in": block([t for t in trades if t.in_sample]),
+            "out": block([t for t in trades if not t.in_sample])}
+
+
+def _first_touch(
+    t: Trade, k: float, tp: float,
+    keys5: list[datetime], idx5: dict, bars5: dict,
+) -> str:
+    """Orden de toques SL vs TP caminando las barras 5m entre entrada y salida.
+    Devuelve "sl" | "tp" | "ambiguous_sl" (ambos en la misma barra → SL,
+    conservador) | "none"."""
+    if t.aligned_ts is None or t.bar_close is None:
+        return "none"
+    sl_off = k * t.atr_pct / 100.0 * t.bar_close
+    tp_off = tp * t.atr_pct / 100.0 * t.bar_close
+    if t.side == "long":
+        sl_level, tp_level = t.bar_close - sl_off, t.bar_close + tp_off
+    else:
+        sl_level, tp_level = t.bar_close + sl_off, t.bar_close - tp_off
+    end_ts = (t.exit_ts + (t.aligned_ts - t.entry_ts)) if t.exit_ts else None
+    i = idx5[t.aligned_ts]
+    for k5 in keys5[i:]:
+        if end_ts is not None and k5 > end_ts:
+            break
+        _o, high, low, _c, _v = bars5[k5]
+        if t.side == "long":
+            sl_hit, tp_hit = low <= sl_level, high >= tp_level
+        else:
+            sl_hit, tp_hit = high >= sl_level, low <= tp_level
+        if sl_hit and tp_hit:
+            return "ambiguous_sl"
+        if sl_hit:
+            return "sl"
+        if tp_hit:
+            return "tp"
+    return "none"
+
+
+def resim_sl_tp(
+    trades: list[Trade], k: float, tp: float,
+    keys5: list[datetime], idx5: dict, bars5: dict,
+) -> dict:
+    """SL+TP conjunto. mae/mfe del CSV deciden QUÉ umbrales se alcanzaron; el
+    camino intrabar del 5m decide el ORDEN cuando se alcanzaron ambos."""
+    def block(sel: list[Trade]) -> dict:
+        pnls, n_sl, n_tp, n_amb = [], 0, 0, 0
+        for t in sel:
+            if t.atr_pct is None:
+                continue
+            sl_thr, tp_thr = k * t.atr_pct, tp * t.atr_pct
+            sl_reach, tp_reach = t.mae_pct >= sl_thr, t.mfe_pct >= tp_thr
+            if sl_reach and tp_reach:
+                order = _first_touch(t, k, tp, keys5, idx5, bars5)
+                if order in ("sl", "ambiguous_sl", "none"):
+                    pnls.append(-sl_thr)
+                    n_sl += 1
+                    n_amb += order == "ambiguous_sl"
+                else:
+                    pnls.append(tp_thr)
+                    n_tp += 1
+            elif sl_reach:
+                pnls.append(-sl_thr)
+                n_sl += 1
+            elif tp_reach:
+                pnls.append(tp_thr)
+                n_tp += 1
+            else:
+                pnls.append(t.pnl_pct)
+        m = aggregate(pnls)
+        if pnls:
+            m["sl_pct"] = round(100 * n_sl / len(pnls), 1)
+            m["tp_pct"] = round(100 * n_tp / len(pnls), 1)
+            m["ambiguous"] = n_amb
+        return m
+
+    return {"in": block([t for t in trades if t.in_sample]),
+            "out": block([t for t in trades if not t.in_sample])}
+
+
+# ---------------------------------------------------------------------------
 # SL sweep (re-sim sustractivo del desenlace: Anexo 25 §8.1 punto 5)
 # ---------------------------------------------------------------------------
 
@@ -416,9 +683,29 @@ def _fmt(v, nd=2):
     return f"{v:.{nd}f}" if isinstance(v, float) else str(v)
 
 
+def _lift_row(label: str, d: dict, base: dict) -> str:
+    i, o = d["in"], d["out"]
+    dpi = (f"{i['pf'] - base['in']['pf']:+.2f}"
+           if i["pf"] is not None and base["in"]["pf"] is not None else "—")
+    dpo = (f"{o['pf'] - base['out']['pf']:+.2f}"
+           if o["pf"] is not None and base["out"]["pf"] is not None else "—")
+    warn = " ⚠" if (i["n"] < _LOW_N or o["n"] < _LOW_N) else ""
+    return (f"| {label}{warn} | {i['n']} ({_fmt(i.get('kept_pct'),0)}%) | "
+            f"{_fmt(i['pf'])} ({dpi}) | {_fmt(i['wr'],1)} | "
+            f"{_fmt(i['expectancy_pct'],3)} | {o['n']} "
+            f"({_fmt(o.get('kept_pct'),0)}%) | {_fmt(o['pf'])} ({dpo}) | "
+            f"{_fmt(o['wr'],1)} | {_fmt(o['expectancy_pct'],3)} |")
+
+
+_LIFT_HDR = ("| filtro | in n (kept) | in PF (Δ) | in WR% | in exp% | "
+             "out n (kept) | out PF (Δ) | out WR% | out exp% |\n"
+             "|---|---|---|---|---|---|---|---|---|")
+
+
 def render_report(instrument: str, csv_path: Path, tz_detail: dict,
                   uncovered: int, base: dict, sweeps: dict[float, dict],
-                  hours: dict[int, dict], oos: float, holc_range: tuple) -> str:
+                  hours: dict[int, dict], oos: float, holc_range: tuple,
+                  phase2: dict | None = None) -> str:
     L: list[str] = []
     L.append(f"# LAB — {instrument} (LuxAlgo nativo vs re-simulación) · "
              f"{datetime.now():%Y-%m-%d %H:%M}")
@@ -478,8 +765,67 @@ def render_report(instrument: str, csv_path: Path, tz_detail: dict,
                  f"{_fmt(i['pf'])} | {_fmt(i['expectancy_pct'],3)} | "
                  f"{_fmt(o['wr'],1)} | {_fmt(o['pf'])} | "
                  f"{_fmt(o['expectancy_pct'],3)} |")
+    if phase2:
+        L.append("")
+        L.append("## 5. Filtros de calidad — lift por subscore y umbral "
+                 "(sustractivo; funciones VIVAS de quality_scorer)")
+        L.append(_LIFT_HDR)
+        for name, by_thr in phase2["subs"].items():
+            for thr, d in by_thr.items():
+                L.append(_lift_row(f"{name} ≥ {thr}", d, base))
+        L.append("")
+        L.append("## 6. Régimen (classify_regime, Kaufman ER) — desglose y gates")
+        for tf, brk in phase2["regimes"].items():
+            L.append(f"**Desglose {tf}:**")
+            L.append("| régimen | n | in PF | in WR% | in exp% | out PF | out exp% |")
+            L.append("|---|---|---|---|---|---|---|")
+            for reg, d in brk.items():
+                mark = " ⚠" if d["n"] < _LOW_N else ""
+                L.append(f"| {reg}{mark} | {d['n']} | {_fmt(d['in']['pf'])} | "
+                         f"{_fmt(d['in']['wr'],1)} | "
+                         f"{_fmt(d['in']['expectancy_pct'],3)} | "
+                         f"{_fmt(d['out']['pf'])} | "
+                         f"{_fmt(d['out']['expectancy_pct'],3)} |")
+            L.append("")
+        L.append("**Gates de régimen (unknown pasa — semántica viva):**")
+        L.append(_LIFT_HDR)
+        for label, d in phase2["regime_gates"].items():
+            L.append(_lift_row(f"solo {label}", d, base))
+        L.append("")
+        L.append("## 7. EMA-bias (con-tendencia: long>EMA / short<EMA)")
+        L.append(_LIFT_HDR)
+        for key, d in phase2["ema_gates"].items():
+            L.append(_lift_row(f"EMA {key[:2]} · {key[2:]}", d, base))
+        L.append("")
+        L.append("## 8. TP sweep (TP ⟺ mfe% ≥ tp·ATR%; desenlace +tp·ATR%)")
+        L.append("| tp×ATR | in PF (Δ) | in WR% | in exp% | %TP | out PF (Δ) | out exp% |")
+        L.append("|---|---|---|---|---|---|---|")
+        for tp, s in phase2["tp"].items():
+            i, o = s["in"], s["out"]
+            dpi = (f"{i['pf'] - base['in']['pf']:+.2f}"
+                   if i["pf"] is not None and base["in"]["pf"] is not None else "—")
+            dpo = (f"{o['pf'] - base['out']['pf']:+.2f}"
+                   if o["pf"] is not None and base["out"]["pf"] is not None else "—")
+            L.append(f"| {tp} | {_fmt(i['pf'])} ({dpi}) | {_fmt(i['wr'],1)} | "
+                     f"{_fmt(i['expectancy_pct'],3)} | {_fmt(i.get('tp_pct'),1)} | "
+                     f"{_fmt(o['pf'])} ({dpo}) | {_fmt(o['expectancy_pct'],3)} |")
+        L.append("")
+        L.append("## 9. SL+TP conjunto (orden de toques intrabar en el 5m; "
+                 "ambigüedad en la misma barra → SL, conservador)")
+        L.append("| k / tp | in PF (Δ) | in exp% | %SL | %TP | amb | out PF (Δ) | out exp% |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for (k, tp), s in phase2["joint"].items():
+            i, o = s["in"], s["out"]
+            dpi = (f"{i['pf'] - base['in']['pf']:+.2f}"
+                   if i["pf"] is not None and base["in"]["pf"] is not None else "—")
+            dpo = (f"{o['pf'] - base['out']['pf']:+.2f}"
+                   if o["pf"] is not None and base["out"]["pf"] is not None else "—")
+            L.append(f"| {k}×/{tp}× | {_fmt(i['pf'])} ({dpi}) | "
+                     f"{_fmt(i['expectancy_pct'],3)} | {_fmt(i.get('sl_pct'),1)} | "
+                     f"{_fmt(i.get('tp_pct'),1)} | {i.get('ambiguous', 0)} | "
+                     f"{_fmt(o['pf'])} ({dpo}) | {_fmt(o['expectancy_pct'],3)} |")
     L.append("")
-    L.append("## 4. Notas metodológicas")
+    L.append("## Notas metodológicas")
     L.append("- Filtros = sustractivos (re-agregar); SL/TP = cambian el desenlace (re-sim).")
     L.append("- ATR(14) con la lógica viva (`market_data_service._calc_atr`) sobre las "
              "barras 5m hasta la barra de entrada inclusive; atr% = ATR/close de barra "
@@ -498,6 +844,10 @@ def dump_features(instrument: str, trades: list[Trade]) -> Path:
         "atr_entry": t.atr_entry, "atr_pct": t.atr_pct,
         "mae_atr": t.mae_atr, "mfe_atr": t.mfe_atr,
         "hour": t.hour, "in_sample": t.in_sample,
+        "sub_volume": t.sub_volume, "sub_atr": t.sub_atr,
+        "sub_vwap": t.sub_vwap, "sub_time": t.sub_time,
+        "regime_1h": t.regime_1h, "regime_4h": t.regime_4h,
+        "ema_with": t.ema_with or None,
     } for t in trades]
     REPORTES.mkdir(exist_ok=True)
     p = REPORTES / f"lab_features_{instrument}.json"
@@ -540,8 +890,44 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     sweeps = {k: resim_sl(trades, k) for k in SL_KS}
     hours = hourly_edge(trades)
 
+    # ── Fase 2 ──
+    compute_phase2_features(trades, bars, instrument)
+    keys5 = sorted(bars)
+    idx5 = {k: i for i, k in enumerate(keys5)}
+    subs = {}
+    for name, attr in (("volume_relative", "sub_volume"),
+                       ("atr_normalized", "sub_atr"),
+                       ("vwap_position", "sub_vwap"),
+                       ("time_of_day", "sub_time")):
+        subs[name] = {
+            thr: filter_lift(
+                trades,
+                lambda t, a=attr, x=thr: (getattr(t, a) or 0) * 100 >= x)
+            for thr in (50, 60, 70, 80)
+        }
+    regimes = {tf: regime_breakdown(trades, tf) for tf in ("1h", "4h")}
+    regime_gates = {}
+    for tf in ("1h", "4h"):
+        for label, allowed in (("trend", ("trending_bull", "trending_bear")),
+                               ("ranging", ("ranging",))):
+            regime_gates[f"{tf}·{label}"] = filter_lift(
+                trades,
+                lambda t, tf=tf, al=allowed:
+                    getattr(t, f"regime_{tf}") in al
+                    or getattr(t, f"regime_{tf}") == "unknown")  # fail-open vivo
+    ema_gates = {
+        key: filter_lift(trades,
+                         lambda t, k=key: t.ema_with.get(k) is True)
+        for key in ("1h20", "1h50", "4h20", "4h50")
+    }
+    tp_sweeps = {tp: resim_tp(trades, tp) for tp in TP_KS}
+    joint = {(k, tp): resim_sl_tp(trades, k, tp, keys5, idx5, bars)
+             for k in JOINT_SL_KS for tp in TP_KS}
+    phase2 = {"subs": subs, "regimes": regimes, "regime_gates": regime_gates,
+              "ema_gates": ema_gates, "tp": tp_sweeps, "joint": joint}
+
     report = render_report(instrument, csv_path, tz_detail, uncovered, base,
-                           sweeps, hours, oos, holc_range)
+                           sweeps, hours, oos, holc_range, phase2)
     REPORTES.mkdir(exist_ok=True)
     out = REPORTES / f"LAB_{instrument}_{datetime.now():%Y-%m-%d}.md"
     out.write_text(report, encoding="utf-8")

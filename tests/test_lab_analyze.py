@@ -7,13 +7,19 @@ import pytest
 
 from scripts.lab_analyze import (
     Trade,
+    _ema_series,
+    _first_touch,
     aggregate,
     baseline,
+    compute_phase2_features,
     detect_tz_offset,
     enrich_with_bars,
+    filter_lift,
     hourly_edge,
     parse_luxalgo_csv,
     resim_sl,
+    resim_sl_tp,
+    resim_tp,
     split_in_out,
 )
 
@@ -116,6 +122,112 @@ def test_resim_sl_skips_uncovered():
 
 
 # ---------------------------------------------------------------------------
+# Fase 2 — TP re-sim, SL+TP conjunto (orden intrabar), EMA, lift, subscores
+# ---------------------------------------------------------------------------
+
+def test_resim_tp_known_answer():
+    # mfe=1.0, atr%=0.2 → tp=4: umbral 0.8 ≤ 1.0 → +0.8; tp=6: 1.2 > 1.0 → pnl
+    t = _trade(-0.3, 0.5, 0.2)
+    t.mfe_pct = 1.0
+    m = resim_tp([t], tp=4.0)["in"]
+    assert m["expectancy_pct"] == 0.8 and m["tp_pct"] == 100.0
+    m = resim_tp([t], tp=6.0)["in"]
+    assert m["expectancy_pct"] == -0.3 and m["tp_pct"] == 0.0
+
+
+def _flat_bars(start: datetime, seq: list[tuple[float, float]], base=100.0):
+    """Barras 5m con (high, low) dados y close=base (para el walk intrabar)."""
+    out = {}
+    for i, (h, low) in enumerate(seq):
+        ts = start + timedelta(minutes=5 * i)
+        out[ts] = (base, h, low, base, 100.0)
+    return out
+
+
+def test_first_touch_orders():
+    start = datetime(2026, 3, 16, 9, 0)
+    # long @100, atr%=1 → k=2: SL 98; tp=3: TP 103
+    t = _trade(0.5, 5.0, 1.0)          # mae y mfe alcanzan ambos umbrales
+    t.mfe_pct = 5.0
+    t.aligned_ts = start
+    t.bar_close = 100.0
+    t.exit_ts = None
+
+    # baja a 97.9 primero (barra 1), luego sube → SL primero
+    bars = _flat_bars(start, [(100.5, 99.5), (100.2, 97.9), (103.5, 99.0)])
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    assert _first_touch(t, 2.0, 3.0, keys, idx, bars) == "sl"
+
+    # sube a 103.2 primero → TP primero
+    bars = _flat_bars(start, [(100.5, 99.5), (103.2, 99.8), (100.0, 97.0)])
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    assert _first_touch(t, 2.0, 3.0, keys, idx, bars) == "tp"
+
+    # ambos en la MISMA barra → ambiguo → SL (conservador)
+    bars = _flat_bars(start, [(103.5, 97.5)])
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    assert _first_touch(t, 2.0, 3.0, keys, idx, bars) == "ambiguous_sl"
+
+
+def test_resim_sl_tp_uses_touch_order():
+    start = datetime(2026, 3, 16, 9, 0)
+    t = _trade(0.5, 5.0, 1.0)
+    t.mfe_pct = 5.0
+    t.aligned_ts = start
+    t.bar_close = 100.0
+    bars = _flat_bars(start, [(103.2, 99.8), (100.0, 97.0)])  # TP primero
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    m = resim_sl_tp([t], 2.0, 3.0, keys, idx, bars)["in"]
+    assert m["expectancy_pct"] == 3.0          # +tp·atr% = +3·1.0
+    assert m["tp_pct"] == 100.0 and m["sl_pct"] == 0.0
+
+
+def test_ema_series_known():
+    ema = _ema_series([10.0] * 30, 20)
+    assert ema[18] is None and ema[19] == 10.0 and ema[29] == 10.0
+    rising = _ema_series(list(range(1, 61)), 20)
+    assert rising[59] < 60 and rising[59] > rising[40]   # EMA persigue por abajo
+
+
+def test_filter_lift_kept_pct():
+    a, b = _trade(1.0, 0.1, 0.5), _trade(-1.0, 0.1, 0.5)
+    a.sub_volume, b.sub_volume = 0.9, 0.3
+    d = filter_lift([a, b], lambda t: (t.sub_volume or 0) * 100 >= 50)
+    assert d["in"]["n"] == 1 and d["in"]["kept_pct"] == 50.0
+    assert d["in"]["expectancy_pct"] == 1.0    # solo sobrevive el bueno
+
+
+def test_phase2_features_time_of_day_tz(tmp_path, monkeypatch):
+    """El adapter debe pasar signal_ts tz-aware: 10:30 ET = franja prime → 1.0
+    (naive se trataría como UTC y correría la hora)."""
+    import scripts.lab_analyze as lab
+
+    start = datetime(2026, 3, 16, 4, 0)
+    bars5 = _bars(start, 200)
+    entry = start + timedelta(minutes=5 * 78)          # 10:30 ET
+    assert entry.hour == 10 and entry.minute == 30
+    t = _trade(1.0, 0.2, 0.5)
+    t.entry_ts = entry
+    t.aligned_ts = entry
+    t.bar_close = bars5[entry][3]
+
+    def _fake_load(sym, tf="5m"):
+        assert tf in ("1h", "4h")
+        return {start + timedelta(hours=i): (100, 101, 99, 100 + i, 10)
+                for i in range(60)}
+
+    monkeypatch.setattr(lab, "load_holc", _fake_load)
+    compute_phase2_features([t], bars5, "ES")
+    assert t.sub_time == 1.0                            # prime 10:00–11:30 ET
+    assert t.regime_1h in ("trending_bull", "trending_bear", "ranging", "unknown")
+    assert set(t.ema_with) == {"1h20", "1h50", "4h20", "4h50"}
+
+
+# ---------------------------------------------------------------------------
 # Detección de TZ (bloqueante) — barras sintéticas con offset conocido
 # ---------------------------------------------------------------------------
 
@@ -168,6 +280,36 @@ def test_detect_tz_survives_roll_level_offset():
     off, sanity, _ = detect_tz_offset(trades, bars, sample=30)
     assert off == 0
     assert sanity >= 0.9
+
+
+def test_detect_tz_sparse_trades_with_roll_steps():
+    """Caso YM: ~1 trade/semana durante meses, con ESCALONES de δ por roll
+    trimestral (cientos de puntos). La dispersión global mezcla los escalones
+    y ahoga el offset horario — el score local (pares ≤10 días) no."""
+    import math
+    start = datetime(2025, 8, 1, 0, 0)
+    bars = {}
+    px = 45000.0
+    n_bars = 12 * 24 * 300              # 300 días de barras 5m
+    for i in range(n_bars):
+        ts = start + timedelta(minutes=5 * i)
+        bars[ts] = (px, px + 15, px - 15, px + 3, 100.0)
+        px += math.sin(i * 0.7) * 30 + math.sin(i * 0.113) * 45
+
+    trades = []
+    for w in range(40):                  # 40 trades, ~1 por semana
+        bar_ts = start + timedelta(days=7 * w, hours=6)
+        c = bars[bar_ts][3]
+        # δ de roll: escalón cada ~13 semanas (−100, −400, −700, …)
+        delta_roll = -100.0 - 300.0 * (w // 13)
+        trades.append(Trade(number=w + 1, side="long",
+                            entry_ts=bar_ts - timedelta(minutes=60),  # off +60
+                            exit_ts=None, entry_price=c + delta_roll,
+                            exit_price=None, pnl_usd=0, pnl_pct=0,
+                            mfe_pct=0, mae_pct=0))
+    off, sanity, detail = detect_tz_offset(trades, bars, sample=40)
+    assert off == 60, f"offset {off} (esperado +60); detalle={detail}"
+    assert sanity >= 0.85, detail
 
 
 # ---------------------------------------------------------------------------
