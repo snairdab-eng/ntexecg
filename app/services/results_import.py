@@ -16,7 +16,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
-from datetime import datetime, timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -164,6 +165,12 @@ async def import_results(db: AsyncSession, rows: list[dict]) -> dict:
         db.add(er)
     await db.flush()
 
+    # NX-18 Fase A — cerrar el lazo del estado estimado con los trades
+    # conciliados EXACTO (nada especulativo).
+    positions_reconciled = await _reconcile_positions(
+        db, [er for _, er in parsed]
+    )
+
     matched_signal = sum(1 for _, er in parsed if er.match_method == "signal_id")
     matched_heur = sum(1 for _, er in parsed if er.match_method == "heuristic")
     return {
@@ -173,6 +180,7 @@ async def import_results(db: AsyncSession, rows: list[dict]) -> dict:
         "matched_signal_id": matched_signal,
         "matched_heuristic": matched_heur,
         "unmatched": len(parsed) - matched_signal - matched_heur,
+        "positions_reconciled": positions_reconciled,
     }
 
 
@@ -236,6 +244,65 @@ async def _reconcile(db: AsyncSession, results: list[ExecutionResult]) -> None:
             best["used"] = True
             r.matched_decision_id = best["decision_id"]
             r.match_method = "heuristic"
+
+
+_RECONCILABLE_STATES = ("PENDING_LONG", "PENDING_SHORT", "LONG", "SHORT",
+                        "EXITING")
+
+
+async def _reconcile_positions(db: AsyncSession, results: list) -> int:
+    """NX-18 Fase A — pone FLAT el estado estimado SOLO con certeza total:
+
+      1. el trade concilió EXACTO por signal_id (match_method == "signal_id"),
+      2. el trade está CERRADO (exit_time presente), y
+      3. la posición fue abierta por ESA señal (entry_signal_id == signal_id).
+
+    Match heurístico, trades abiertos, o posiciones reabiertas por otra señal
+    NO se tocan — nada especulativo. Audit RECONCILE por posición cerrada.
+    """
+    from app.models.position_state import PositionState
+    from app.services.audit_service import AuditService
+
+    n = 0
+    for r in results:
+        if r.match_method != "signal_id" or r.exit_time is None or not r.signal_id:
+            continue
+        try:
+            sig_uuid = uuid.UUID(str(r.signal_id))
+        except (ValueError, AttributeError):
+            continue
+        pos = (await db.execute(
+            select(PositionState).where(
+                PositionState.entry_signal_id == sig_uuid)
+        )).scalar_one_or_none()
+        if pos is None or pos.state not in _RECONCILABLE_STATES:
+            continue
+
+        old_state = pos.state
+        pos.state = "FLAT"
+        pos.quantity = 0
+        pos.direction = None
+        pos.entry_price = None
+        pos.entry_signal_id = None
+        plan = dict(pos.risk_plan_json or {})
+        plan["reconciled"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "signal_id": str(sig_uuid),
+            "exit_time": str(r.exit_time),
+            "source": "results_import",
+        }
+        pos.risk_plan_json = plan
+        await db.flush()
+        await AuditService().log(
+            db, actor="results_import", action="RECONCILE",
+            object_type="PositionState",
+            object_id=f"{pos.account_id}:{pos.symbol}",
+            old_value={"state": old_state},
+            new_value={"state": "FLAT", "signal_id": str(sig_uuid),
+                       "exit_time": str(r.exit_time)},
+        )
+        n += 1
+    return n
 
 
 async def compute_real_metrics(db: AsyncSession, strategy_id: str | None = None) -> dict:
