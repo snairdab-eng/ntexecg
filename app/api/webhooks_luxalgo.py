@@ -354,6 +354,7 @@ async def _dispatch_approved(
     any_sent = False
     any_failed = False
     primary_qty = 0
+    primary_all_limit = False
     for di, dest in enumerate(destinations):
         dest_config = dprof.make_dest_config(config, dest)
 
@@ -388,6 +389,13 @@ async def _dispatch_approved(
         tag = dprof.delivery_tag(dest["name"])
         n_legs = len(payloads)
         dest_qty = 0
+        if di == 0 and not is_exit:
+            # NX-28 — estilo de entrada del destino primario: todas las piernas
+            # límite (diseño pullback) vs al menos una a mercado. Gobierna si la
+            # reserva de symbol_busy puede liberarse por timeout sin fill.
+            primary_all_limit = bool(payloads) and all(
+                p.get("orderType") == "limit" for p in payloads
+            )
         for leg_idx, payload in enumerate(payloads, start=1):
             result = await client.send(
                 webhook_url or "",
@@ -395,6 +403,10 @@ async def _dispatch_approved(
                 signal_role=norm.signal_role or "",
                 dry_run=dry_run,
                 signal_ts=norm.signal_ts,
+                # NX-15 — reintentos/backoff/timeout desde GlobalProfile.
+                retry_attempts=config.get("retry_attempts"),
+                backoff_seconds=config.get("retry_backoff_seconds"),
+                entry_timeout_secs=config.get("entry_signal_timeout_secs"),
             )
             db.add(WebhookDelivery(
                 decision_id=decision.id,
@@ -444,6 +456,7 @@ async def _dispatch_approved(
             direction, qty,
             float(norm.price) if norm.price is not None else None,
             norm.id,
+            entry_style="limit_only" if primary_all_limit else "market",
         )
 
     # SENT (not DRY_RUN) → count as dispatched, confirm estimated position

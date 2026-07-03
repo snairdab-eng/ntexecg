@@ -58,6 +58,9 @@ class TradersPostClient:
         signal_role: str,
         dry_run: bool,
         signal_ts: datetime | None = None,
+        retry_attempts: int | None = None,
+        backoff_seconds: float | None = None,
+        entry_timeout_secs: float | None = None,
     ) -> WebhookDeliveryResult:
         """Send payload to TradersPost. Never raises.
 
@@ -67,6 +70,12 @@ class TradersPostClient:
             signal_role: Used to classify exit vs entry retry policy.
             dry_run: If True, no HTTP call is made.
             signal_ts: Signal timestamp, used for entry staleness check.
+            retry_attempts: NX-15 — max attempts for ENTRIES (default 3).
+                EXITS always keep 10 attempts (critical, config can't lower).
+            backoff_seconds: NX-15 — backoff base (default 1 → 1s/2s/4s,
+                capped at 4×base).
+            entry_timeout_secs: NX-15 — entry staleness threshold (default 30,
+                era el env inexistente ENTRY_SIGNAL_TIMEOUT_SECS).
         """
         url_masked = mask_token(webhook_url)
         is_exit = signal_role in _EXIT_ROLES
@@ -90,9 +99,14 @@ class TradersPostClient:
                 error_message="no_webhook_url_configured",
             )
 
-        max_attempts = 10 if is_exit else 3
-        timeout_secs = getattr(self.settings, "entry_signal_timeout_secs", None) \
+        if is_exit:
+            max_attempts = 10   # exits are critical — config can't lower this
+        else:
+            max_attempts = max(1, int(retry_attempts)) if retry_attempts else 3
+        timeout_secs = entry_timeout_secs \
+            or getattr(self.settings, "entry_signal_timeout_secs", None) \
             or getattr(self.settings, "ENTRY_SIGNAL_TIMEOUT_SECS", 30)
+        backoff_base = float(backoff_seconds) if backoff_seconds else 1.0
 
         # Entry staleness: if too old, allow a single attempt but no retries.
         if not is_exit and signal_ts is not None:
@@ -141,9 +155,10 @@ class TradersPostClient:
                         signal_role, attempt, exc,
                     )
 
-                # Backoff before next attempt (capped at 4s; exits keep retrying at 4s)
+                # Backoff before next attempt (capped at 4×base; exits keep
+                # retrying at the cap)
                 if attempt < max_attempts:
-                    await asyncio.sleep(self._backoff(attempt))
+                    await asyncio.sleep(self._backoff(attempt, backoff_base))
 
         latency_ms = int((time.monotonic() - start) * 1000)
         logger.error(
@@ -162,9 +177,12 @@ class TradersPostClient:
         )
 
     @staticmethod
-    def _backoff(attempt: int) -> float:
-        """Exponential backoff capped at 4s: 1s, 2s, 4s, 4s, ..."""
-        return float(min(2 ** (attempt - 1), 4))
+    def _backoff(attempt: int, base: float = 1.0) -> float:
+        """Exponential backoff: base·2^(n−1), capped at 4×base.
+
+        Con base=1 (default): 1s, 2s, 4s, 4s, ... (comportamiento histórico).
+        """
+        return float(min(base * (2 ** (attempt - 1)), 4 * base))
 
 
 def _as_utc(dt: datetime) -> datetime:

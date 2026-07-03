@@ -254,8 +254,11 @@ class FilterPipeline:
             execution["level_5"] = {"skipped": True, "reason": "exit_signal"}
         else:
             # Read ATR from the resolved data symbol (micro reuses parent data).
+            # NX-14: el timeframe del ATR es el calibrado (atr_timeframe) si la
+            # estrategia/activo lo define; si no, el timeframe de la señal.
+            atr_tf = config.get("atr_timeframe") or signal.timeframe or "5m"
             atr_value = await self.market_data.get_atr(
-                data_symbol, signal.timeframe or "5m",
+                data_symbol, atr_tf,
                 period=config.get("atr_period", 14),
             )
             # NX-05: pasar None (no 0.0) si falta el precio — el calculador
@@ -267,6 +270,7 @@ class FilterPipeline:
             )
             execution["level_5"] = {
                 "atr": atr_value,
+                "atr_timeframe": atr_tf,
                 "passed": calc["passed"],
                 "reason": calc["reason"],
                 "sl_price": calc["sl_price"],

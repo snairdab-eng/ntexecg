@@ -183,7 +183,7 @@ async def test_forced_exit_per_profile_gate(db: AsyncSession, monkeypatch):
     calls: list[dict] = []
 
     async def _fake_send(self, webhook_url, payload, signal_role,
-                         dry_run, signal_ts=None):
+                         dry_run, signal_ts=None, **kw):
         calls.append({"url": webhook_url, "dry_run": dry_run})
         return WebhookDeliveryResult(
             status="DRY_RUN" if dry_run else "SENT",
@@ -264,7 +264,7 @@ async def test_reversal_paused_still_closes_only(db: AsyncSession):
 
 async def _patch_send_failed(monkeypatch):
     async def _fail(self, webhook_url, payload, signal_role, dry_run,
-                    signal_ts=None):
+                    signal_ts=None, **kw):
         return WebhookDeliveryResult(
             status="FAILED", payload_json=payload, url_masked=webhook_url,
             attempts=10, error_message="http_500")

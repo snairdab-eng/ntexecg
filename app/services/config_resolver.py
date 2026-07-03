@@ -51,7 +51,9 @@ class ConfigResolver:
             "max_quantity": 1,
             "max_open_positions_symbol": 1,
             "atr_period": 14,
-            "atr_timeframe": "5m",
+            # NX-14: None = sin calibración explícita → el L5 usa el timeframe
+            # de la señal. Un default "5m" forzaba ATR de 5m en estrategias 15m.
+            "atr_timeframe": None,
             "allow_exits_outside_window": True,
             "allow_overnight": False,
             "force_flat_time": None,
@@ -62,6 +64,14 @@ class ConfigResolver:
             "news_filter_enabled": True,
             "news_window_minutes": 30,
             "timezone": "America/New_York",
+            # NX-15 — reintentos TradersPost (GlobalProfile los sobreescribe).
+            # Entradas: retry_attempts; los EXITS siempre reintentan 10 veces.
+            "retry_attempts": 3,
+            "retry_backoff_seconds": 1,
+            "entry_signal_timeout_secs": 30,
+            # NX-28 — timeout para liberar reservas de entrada sin fill
+            # (≈ cancel_after de TradersPost; override por estrategia).
+            "entry_reserve_timeout_seconds": 3600,
             # Per-strategy guardrails (Anexo 08) - opt-in, disabled by default.
             "expected_symbol": None,
             "expected_timeframe": None,
@@ -114,6 +124,11 @@ class ConfigResolver:
                 "news_filter_enabled": global_profile.news_filter_enabled,
                 "news_window_minutes": global_profile.news_window_minutes,
                 "timezone": global_profile.timezone,
+                # NX-15 — antes se guardaban en Settings/DB y nadie los leía.
+                "retry_attempts": global_profile.retry_attempts or 3,
+                "retry_backoff_seconds": global_profile.retry_backoff_seconds or 1,
+                "entry_signal_timeout_secs":
+                    global_profile.entry_signal_timeout_secs or 30,
             })
 
         # Merge AssetProfile (overrides global)
@@ -126,7 +141,10 @@ class ConfigResolver:
                     "tp_atr_multiplier": float(asset_profile.tp_atr_multiplier)
                         if asset_profile.tp_atr_multiplier else None,
                     "atr_period": asset_profile.atr_period,
-                    "atr_timeframe": asset_profile.atr_timeframe or "5m",
+                    # NX-14: solo override si el activo lo define; None se
+                    # queda None (→ timeframe de la señal en L5).
+                    "atr_timeframe": asset_profile.atr_timeframe
+                        or config["atr_timeframe"],
                     "max_trades_day": asset_profile.max_trades_day,
                     "daily_loss_stop": float(asset_profile.daily_loss_stop)
                         if asset_profile.daily_loss_stop else config["daily_loss_stop"],
@@ -224,6 +242,11 @@ class ConfigResolver:
                     "allow_stacking")
                 if isinstance(_stack, bool):
                     config["allow_stacking"] = _stack
+                # NX-28 — timeout de reserva por estrategia (≈ cancel_after).
+                _rt = (strategy_profile.pipeline_config_json or {}).get(
+                    "entry_reserve_timeout_seconds")
+                if isinstance(_rt, (int, float)) and _rt > 0:
+                    config["entry_reserve_timeout_seconds"] = int(_rt)
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run
@@ -275,5 +298,13 @@ class ConfigResolver:
                     updates["allow_reversal"] = strategy_profile.allow_reversal
 
                 config.update(updates)
+
+                # NX-13 — "sin cierre EOD" explícito por estrategia: gana
+                # sobre cualquier force_flat_time heredado (global/columna).
+                # None en la columna sigue significando "heredar".
+                if (strategy_profile.pipeline_config_json or {}).get(
+                    "force_flat_off"
+                ) is True:
+                    config["force_flat_time"] = None
 
         return config

@@ -767,16 +767,25 @@ async def update_ficha(
 
     # EOD / exits-always scalars
     profile.allow_exits_outside_window = True if form.get("allow_exits_outside_window") else None
-    _eod = _s("force_flat_time")
-    if _eod:
-        from datetime import time as _time
-        try:
-            _hh, _mm = _eod.split(":")[:2]
-            profile.force_flat_time = _time(int(_hh), int(_mm))
-        except (ValueError, IndexError):
-            pass
-    else:
+    # NX-13 — tri-estado del cierre EOD: "sin EOD" explícito (checkbox) gana;
+    # HH:MM fija la hora; vacío = heredar (global/columna).
+    if form.get("force_flat_off"):
+        cfg["force_flat_off"] = True
         profile.force_flat_time = None
+        profile.pipeline_config_json = cfg or None
+    else:
+        cfg.pop("force_flat_off", None)
+        profile.pipeline_config_json = cfg or None
+        _eod = _s("force_flat_time")
+        if _eod:
+            from datetime import time as _time
+            try:
+                _hh, _mm = _eod.split(":")[:2]
+                profile.force_flat_time = _time(int(_hh), int(_mm))
+            except (ValueError, IndexError):
+                pass
+        else:
+            profile.force_flat_time = None
 
     await AuditService().log(
         db, actor="admin", action="UPDATE", object_type="Strategy",

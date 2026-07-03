@@ -55,8 +55,13 @@ class PositionService:
         qty: int,
         price: float | None,
         signal_id,
+        entry_style: str | None = None,
     ) -> PositionState:
-        """FLAT → PENDING_LONG / PENDING_SHORT."""
+        """FLAT → PENDING_LONG / PENDING_SHORT.
+
+        entry_style (NX-28): "market" | "limit_only" — cómo se despachó la
+        entrada. Las reservas limit_only sin fill se liberan por timeout.
+        """
         position = await self.get_state(db, strategy_id, account_id, symbol)
         position.state = "PENDING_LONG" if direction == "long" else "PENDING_SHORT"
         position.direction = direction
@@ -67,6 +72,8 @@ class PositionService:
         from datetime import datetime, timezone
         plan = dict(position.risk_plan_json or {})
         plan["opened_at"] = datetime.now(timezone.utc).isoformat()
+        if entry_style is not None:
+            plan["entry_style"] = entry_style
         position.risk_plan_json = plan
         await db.flush()
         return position

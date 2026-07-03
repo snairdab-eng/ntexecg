@@ -607,7 +607,13 @@
             <div class="text-xs uppercase text-gray-500 mb-2">Ruteo / EOD</div>
             <div class="grid grid-cols-2 gap-2">
                 <div><label class="block text-xs text-gray-500 mb-1">Cuenta objetivo</label><input name="target_account" value="{{ rt.get('target_account','') }}" class="{{ ip }}"></div>
-                <div><label class="block text-xs text-gray-500 mb-1">Cierre EOD (HH:MM)</label><input name="force_flat_time" value="{{ profile.force_flat_time.strftime('%H:%M') if profile and profile.force_flat_time else '' }}" placeholder="15:55" class="{{ ip }}"></div>
+                <div><label class="block text-xs text-gray-500 mb-1">Cierre EOD (HH:MM)</label><input name="force_flat_time" value="{{ profile.force_flat_time.strftime('%H:%M') if profile and profile.force_flat_time else '' }}" placeholder="vacío = hereda global" class="{{ ip }}">
+                    <label class="flex items-center gap-1 mt-1 text-xs text-gray-400">
+                        <input type="checkbox" name="force_flat_off" value="1" class="rounded bg-gray-800 border-gray-700"
+                               {% if profile and (profile.pipeline_config_json or {}).get('force_flat_off') %}checked{% endif %}>
+                        Sin cierre EOD (24h — ignora el global)
+                    </label>
+                </div>
                 <div class="col-span-2"><label class="block text-xs text-gray-500 mb-1">Notas de ruteo</label><input name="routing_notes" value="{{ rt.get('notes','') }}" class="{{ ip }}"></div>
             </div>
             <label class="flex items-center gap-2 text-gray-300 text-sm mt-2">

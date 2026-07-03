@@ -38,6 +38,36 @@ def _normalize_timeframe(interval: str) -> str:
     return _TF_MAP.get(str(interval), interval)
 
 
+def _parse_signal_time(raw: object) -> datetime | None:
+    """NX-16 — parsea el `time` del payload de TradingView a un datetime UTC.
+
+    Acepta ISO 8601 ("2026-07-02T14:30:00Z", con offset, o naive → UTC),
+    la forma con espacio ("2026-07-02 14:30:00") y epoch (s o ms).
+    Devuelve None si no es parseable (el caller cae a la hora de recepción).
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        try:
+            v = int(s)
+            if v > 10**12:      # epoch en milisegundos
+                v = v / 1000.0
+            return datetime.fromtimestamp(v, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    iso = s.replace("Z", "+00:00")
+    if " " in iso and "T" not in iso:
+        iso = iso.replace(" ", "T", 1)
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def make_dedupe_key(
     strategy_id: str,
     ticker_received: str,
@@ -120,6 +150,15 @@ class SignalNormalizer:
             price_raw_str, interval_raw,
         )
 
+        # NX-16 — signal_ts es la hora REAL de la señal (payload["time"] de
+        # TradingView); solo si falta o no parsea se usa la recepción. Así la
+        # frescura (L2) y el timeout de entrada del cliente miden la edad
+        # verdadera, no la latencia interna. normalized_at conserva la
+        # recepción para diagnóstico.
+        signal_ts = _parse_signal_time(payload.get("time")) or datetime.now(
+            timezone.utc
+        )
+
         return NormalizedSignal(
             raw_signal_id=raw_signal_id,
             source="luxalgo",
@@ -131,7 +170,7 @@ class SignalNormalizer:
             quantity=quantity,
             price=price,
             timeframe=timeframe,
-            signal_ts=datetime.now(timezone.utc),
+            signal_ts=signal_ts,
             signal_role=signal_role,
             dedupe_key=dedupe_key,
             status="pending",

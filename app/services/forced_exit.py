@@ -92,6 +92,8 @@ async def dispatch_forced_exit(
         result = await client.send(
             dest["webhook_url"] or "", payload,
             signal_role=role, dry_run=dry_run, signal_ts=now,
+            # NX-15 — backoff configurable; los exits conservan 10 intentos.
+            backoff_seconds=config.get("retry_backoff_seconds"),
         )
         db.add(WebhookDelivery(
             decision_id=decision.id, strategy_id=position.strategy_id,
@@ -162,6 +164,87 @@ async def find_stale_positions(
         )
     )
     return list(rows.scalars().all())
+
+
+_RELEASABLE_OPEN = ("LONG", "SHORT")
+_RELEASABLE_PENDING = ("PENDING_LONG", "PENDING_SHORT")
+
+
+async def release_unfilled_reservations(
+    db: AsyncSession, now: datetime | None = None
+) -> int:
+    """NX-28 — libera reservas de symbol_busy sin fill tras el timeout.
+
+    Requisito del diseño multi-estrategia-por-símbolo con entradas pullback:
+    si todas las piernas eran LÍMITE y no hubo pullback, TradersPost canceló
+    las órdenes tras cancel_after y el estimado LONG/SHORT es un fantasma que
+    bloquea el símbolo. Reglas (conservadoras):
+      - PENDING_* más viejos que el timeout → FLAT (nunca hubo envío confirmado).
+      - LONG/SHORT con entry_style == "limit_only" más viejos que el timeout
+        → FLAT (si alguna límite sí llenó, el exit de LuxAlgo cierra igual y
+        un exit sobre cuenta plana es inofensivo).
+      - LONG/SHORT a mercado, sin marca (legacy) o EXITING → NO se tocan.
+    Timeout: entry_reserve_timeout_seconds (default 3600 ≈ cancel_after),
+    resuelto por estrategia. Audit RESERVE_RELEASED por posición.
+    """
+    from app.services.audit_service import AuditService
+    from app.services.config_resolver import ConfigResolver
+    from app.services.repositories import get_strategy_by_id
+
+    now = now or _utcnow()
+    resolver = ConfigResolver()
+    rows = await db.execute(
+        select(PositionState).where(
+            PositionState.state.in_(
+                list(_RELEASABLE_PENDING) + list(_RELEASABLE_OPEN)
+            )
+        )
+    )
+    released = 0
+    for pos in rows.scalars().all():
+        plan = dict(pos.risk_plan_json or {})
+        opened = ExitManager._opened_at(pos)
+        if opened is None:
+            continue
+        if pos.state in _RELEASABLE_OPEN and plan.get("entry_style") != "limit_only":
+            continue  # mercado / legacy: fill casi seguro → no liberar
+
+        timeout = 3600
+        if pos.strategy_id:
+            strategy = await get_strategy_by_id(db, pos.strategy_id)
+            if strategy is not None:
+                config = await resolver.resolve(
+                    db, pos.strategy_id, strategy.asset_symbol
+                )
+                timeout = config.get("entry_reserve_timeout_seconds") or 3600
+        if (now - opened).total_seconds() <= float(timeout):
+            continue
+
+        old_state = pos.state
+        pos.state = "FLAT"
+        pos.quantity = 0
+        pos.direction = None
+        pos.entry_price = None
+        pos.entry_signal_id = None
+        plan["reserve_released"] = {
+            "at": now.isoformat(), "from_state": old_state,
+            "timeout_seconds": int(timeout),
+        }
+        pos.risk_plan_json = plan
+        await db.flush()
+        await AuditService().log(
+            db, actor="exit_manager", action="RESERVE_RELEASED",
+            object_type="PositionState",
+            object_id=f"{pos.account_id}:{pos.symbol}",
+            old_value={"state": old_state},
+            new_value={"state": "FLAT", "timeout_seconds": int(timeout)},
+        )
+        logger.warning(
+            "reserve_released symbol={} strategy={} from_state={} timeout={}s",
+            pos.symbol, pos.strategy_id, old_state, timeout,
+        )
+        released += 1
+    return released
 
 
 async def exit_manager_sweep(db: AsyncSession, settings, now: datetime | None = None) -> int:

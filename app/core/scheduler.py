@@ -137,13 +137,22 @@ class ExitManagerJob:
 
     async def _run(self) -> None:
         from app.db.session import AsyncSessionLocal
-        from app.services.forced_exit import exit_manager_sweep, find_stale_positions
+        from app.services.forced_exit import (
+            exit_manager_sweep,
+            find_stale_positions,
+            release_unfilled_reservations,
+        )
 
         async with AsyncSessionLocal() as db:
             try:
                 n = await exit_manager_sweep(db, self._settings)
                 if n:
                     logger.info("exit_manager_sweep dispatched={}", n)
+                # NX-28 — liberar reservas de entrada sin fill (pullback que
+                # nunca llegó → TradersPost ya canceló las límite).
+                r = await release_unfilled_reservations(db)
+                if r:
+                    logger.info("reservations_released count={}", r)
                 # NX-08 — posiciones en estado transitorio (PENDING_*/EXITING)
                 # sin actualizar hace >15 min: algo se perdió, el operador debe
                 # revisar (el banner de FAILED del dashboard da el detalle).
