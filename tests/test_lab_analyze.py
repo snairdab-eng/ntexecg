@@ -288,6 +288,66 @@ def test_pullback_short_side():
     assert res[1.5]["n_filled"] == 0
 
 
+def test_pullback_atr_zero_skipped():
+    """Caso 6J real: sesión de rango verdadero nulo → ATR(14)=0. El guard
+    `is None` no cubre 0 y dividía por cero; un trade sin ATR útil debe
+    SALTARSE (mismo trato que atr_entry=None) sin tumbar el estudio ni
+    contaminar filled/unfilled del resto."""
+    from scripts.lab_analyze import pullback_study
+
+    start = datetime(2026, 3, 16, 9, 0)
+    seq = [(100.5, 99.9), (100.0, 98.9), (101.0, 99.5)]
+    bars = _flat_bars(start, seq)
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+
+    sano = _trade(0.8, 1.2, 1.0)
+    sano.aligned_ts = start
+    sano.bar_close = 100.0
+    sano.atr_entry = 1.0
+    degenerado = _trade(-0.2, 0.0, 0.0)
+    degenerado.aligned_ts = start
+    degenerado.bar_close = 100.0
+    degenerado.atr_entry = 0.0        # NO es None — burlaba el guard
+
+    res = pullback_study([sano, degenerado], keys, idx, bars, window_min=60)
+    # el degenerado queda FUERA del universo (ni filled ni unfilled)…
+    assert res[1.0]["n_filled"] == 1
+    assert res[1.0]["fill_rate"] == 100.0
+    assert res[1.0]["unfilled_outcome"]["n"] == 0
+    # …y el sano intacto (low 98.9 en el minuto 5 → 1.1×ATR ≥ 1.0)
+    assert res[1.0]["t_med"] == 5
+
+
+# ---------------------------------------------------------------------------
+# HOLC_DIR por env (server: los datos viven fuera del repo)
+# ---------------------------------------------------------------------------
+
+def test_load_holc_env_override(tmp_path, monkeypatch):
+    """Con HOLC_DIR en el env, load_holc lee de esa ruta absoluta (server:
+    /home/cadmin/holc_data, sin symlink); el contenido debe ser el del CSV
+    apuntado, no el del repo."""
+    from scripts.lab_analyze import load_holc
+
+    (tmp_path / "6J_5m.csv").write_text(
+        "DateTime,Open,High,Low,Close,Volume\n"
+        "2026-03-16 09:00:00,100,101,99,100.5,10\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOLC_DIR", str(tmp_path))
+    bars = load_holc("6J")
+    assert bars == {datetime(2026, 3, 16, 9, 0): (100.0, 101.0, 99.0, 100.5, 10.0)}
+
+
+def test_holc_dir_default_relative(monkeypatch):
+    """Sin env, el default sigue siendo la ruta relativa histórica (NTDEV
+    intacto, sin cambios de comportamiento)."""
+    from scripts.lab_analyze import _holc_dir
+
+    monkeypatch.delenv("HOLC_DIR", raising=False)
+    assert _holc_dir() == Path("NINJATRADER/HOLC")
+
+
 def test_oos_survivors_selection():
     from scripts.lab_analyze import oos_survivors
 

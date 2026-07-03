@@ -16,6 +16,12 @@ Uso:
                                 [--stitch-db] [--sample 60]
 Escribe REPORTES/LAB_<instrumento>_<fecha>.md y cachea la matriz de features
 en REPORTES/lab_features_<instrumento>.json.
+
+Env:
+  HOLC_DIR  directorio de los CSV HOLC ({SYM}_{tf}.csv). Default:
+            NINJATRADER/HOLC relativo al cwd (NTDEV); en el server apuntar
+            a la ruta absoluta de los datos (/home/cadmin/holc_data), igual
+            que la app parametriza NTBRIDGE_PATH/DATABASE_URL por env.
 """
 from __future__ import annotations
 
@@ -24,6 +30,7 @@ import asyncio
 import csv
 import glob
 import json
+import os
 import statistics
 import sys
 
@@ -61,7 +68,13 @@ from scripts.pullback_timing import pctl, suggest_cancel_after
 
 _NY = ZoneInfo("America/New_York")
 
-HOLC_DIR = Path("NINJATRADER/HOLC")
+def _holc_dir() -> Path:
+    """Directorio de los export HOLC — override por env HOLC_DIR (en el server
+    los datos viven fuera del repo: /home/cadmin/holc_data); sin env, la ruta
+    relativa histórica (NTDEV, depende del cwd = raíz del repo)."""
+    return Path(os.environ.get("HOLC_DIR") or "NINJATRADER/HOLC")
+
+
 TRADES_DIR = Path("ListaDeOperaciones")
 REPORTES = Path("REPORTES")
 
@@ -192,7 +205,7 @@ def find_trades_csv(instrument: str) -> Path:
 
 def load_holc(sym: str, tf: str = "5m") -> dict[datetime, tuple]:
     """{DateTime: (open, high, low, close, volume)} del export estático."""
-    path = HOLC_DIR / f"{sym}_{tf}.csv"
+    path = _holc_dir() / f"{sym}_{tf}.csv"
     out: dict[datetime, tuple] = {}
     with open(path, encoding="utf-8-sig", newline="") as fh:
         for r in csv.DictReader(fh):
@@ -641,7 +654,9 @@ def pullback_study(
         for L in PULLBACK_LEVELS
     }
     for t in trades:
-        if t.aligned_ts is None or t.atr_entry is None:
+        # `not atr_entry` cubre None Y 0.0 (sesión de rango verdadero nulo,
+        # p. ej. 6J): sin ATR útil no hay escala — mismo trato que "sin ATR".
+        if t.aligned_ts is None or not t.atr_entry:
             continue
         i = idx5[t.aligned_ts]
         end = t.aligned_ts + timedelta(minutes=window_min)
