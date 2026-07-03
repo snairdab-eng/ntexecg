@@ -228,6 +228,93 @@ def test_phase2_features_time_of_day_tz(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Fase 3 — pullback (profundidad × desenlace, cancel_after RECONCILIADO)
+# ---------------------------------------------------------------------------
+
+def test_pullback_study_known_answer():
+    from scripts.lab_analyze import pullback_study
+    from scripts.pullback_timing import suggest_cancel_after as live_suggest
+
+    start = datetime(2026, 3, 16, 9, 0)
+    # long @close 100, ATR=1.0: baja a 98.9 (profundidad 1.1×ATR) en la barra
+    # del minuto 25; nunca llega a 1.5×ATR dentro de la ventana.
+    seq = [(100.5, 99.9), (100.3, 99.7), (100.2, 99.4), (100.1, 99.2),
+           (100.0, 99.1), (100.0, 98.9), (101.0, 99.5), (102.0, 100.0)]
+    bars = _flat_bars(start, seq)
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+
+    t = _trade(0.8, 1.2, 1.0)
+    t.aligned_ts = start
+    t.bar_close = 100.0
+    t.atr_entry = 1.0
+
+    res = pullback_study([t], keys, idx, bars, window_min=60)
+    # 0.25×ATR: low 99.7 en minuto 5 → tocado en 5m... primera barra ya baja
+    # a 99.9 (0.1) no; minuto 5 low 99.7 → 0.3 ≥ 0.25 ✓
+    assert res[0.25]["n_filled"] == 1 and res[0.25]["t_med"] == 5
+    # 1.0×ATR: primer toque en la barra del minuto 25 (low 98.9 → 1.1)
+    assert res[1.0]["n_filled"] == 1
+    assert res[1.0]["t_med"] == 25
+    assert res[1.0]["fill_rate"] == 100.0
+    # cancel_after = MISMO estimador que el estudio vivo (reconciliación)
+    assert res[1.0]["cancel_after"] == live_suggest([25.0])
+    assert res[1.0]["cancel_after"] == min(3600, int(25 * 60) + 60)  # 1560
+    # 1.5×ATR: nunca llena dentro de la ventana
+    assert res[1.5]["n_filled"] == 0
+    assert res[1.5]["fill_rate"] == 0.0
+    assert res[1.5]["cancel_after"] is None
+    assert res[1.5]["unfilled_outcome"]["n"] == 1
+    # desenlace condicionado: el trade nativo (+0.8) cae en "llenó" para 1.0
+    assert res[1.0]["filled_outcome"]["expectancy_pct"] == 0.8
+
+
+def test_pullback_short_side():
+    from scripts.lab_analyze import pullback_study
+
+    start = datetime(2026, 3, 16, 9, 0)
+    # short @100: el pullback adverso es HACIA ARRIBA; high 101.2 → 1.2×ATR
+    seq = [(100.4, 99.5), (101.2, 99.8), (100.0, 99.0)]
+    bars = _flat_bars(start, seq)
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    t = _trade(-0.5, 1.2, 1.0)
+    t.side = "short"
+    t.aligned_ts = start
+    t.bar_close = 100.0
+    t.atr_entry = 1.0
+    res = pullback_study([t], keys, idx, bars, window_min=60)
+    assert res[1.0]["n_filled"] == 1 and res[1.0]["t_med"] == 5
+    assert res[1.5]["n_filled"] == 0
+
+
+def test_oos_survivors_selection():
+    from scripts.lab_analyze import oos_survivors
+
+    base = {"in": {"pf": 2.0}, "out": {"pf": 1.0}}
+
+    def _d(pf_in, pf_out, n_out=20, kept=50.0):
+        return {"in": {"pf": pf_in, "n": 30, "kept_pct": kept},
+                "out": {"pf": pf_out, "n": n_out, "kept_pct": kept}}
+
+    phase2 = {
+        "subs": {"volume_relative": {
+            60: _d(2.5, 1.3),          # sobrevive (Δ+0.5 / Δ+0.3)
+            80: _d(3.0, 0.8),          # espejismo: mejora in, empeora out
+        }},
+        "regime_gates": {"1h·trend": _d(2.1, 1.6, n_out=5)},  # sobrevive, n bajo
+        "ema_gates": {"1h20": _d(1.5, 1.2)},                  # no mejora in
+    }
+    surv = oos_survivors(base, phase2)
+    labels = [s["label"] for s in surv]
+    assert "volume_relative ≥ 60" in labels
+    assert "regime solo 1h·trend" in labels
+    assert all("≥ 80" not in x for x in labels)      # el espejismo fuera
+    assert all("EMA" not in x for x in labels)       # no mejora in-sample
+    assert surv[0]["d_out"] >= surv[-1]["d_out"]     # ordenado por Δ out
+
+
+# ---------------------------------------------------------------------------
 # Detección de TZ (bloqueante) — barras sintéticas con offset conocido
 # ---------------------------------------------------------------------------
 

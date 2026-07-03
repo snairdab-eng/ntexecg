@@ -44,6 +44,9 @@ from zoneinfo import ZoneInfo
 from app.services.hmm_service import classify_regime      # lógica viva (Kaufman ER)
 from app.services.market_data_service import _calc_atr    # lógica viva de ATR
 from app.services.quality_scorer import _SUBSCORES        # lógica viva (4 subscores)
+# Fase 3 — MISMO estimador de cancel_after que el estudio vivo (reconciliados:
+# min(3600, int(p90_min*60)+60)); no se inventa un segundo p90.
+from scripts.pullback_timing import pctl, suggest_cancel_after
 
 _NY = ZoneInfo("America/New_York")
 
@@ -634,6 +637,116 @@ def resim_sl_tp(
 
 
 # ---------------------------------------------------------------------------
+# Fase 3 — pullback: profundidad (fill-rate por nivel ×ATR) × desenlace y
+# tiempo al pullback (p90 → cancel_after, MISMO estimador que pullback_timing)
+# ---------------------------------------------------------------------------
+
+PULLBACK_LEVELS = (0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0)
+
+
+def pullback_study(
+    trades: list[Trade], keys5: list[datetime], idx5: dict, bars5: dict,
+    window_min: int = 180,
+) -> dict[float, dict]:
+    """Para cada nivel L×ATR: qué trades lo TOCARON dentro de la ventana de
+    entrada (una límite a L habría llenado), a los cuántos minutos, y el
+    desenlace NATIVO condicionado a llenó/no-llenó. Referencia de precio =
+    close de la barra de entrada (escala HOLC, igual que el ATR); la barra de
+    entrada se incluye, como en el estudio vivo (pullback_timing)."""
+    per: dict[float, dict] = {
+        L: {"touch_min": [], "filled": [], "unfilled": []}
+        for L in PULLBACK_LEVELS
+    }
+    for t in trades:
+        if t.aligned_ts is None or t.atr_entry is None:
+            continue
+        i = idx5[t.aligned_ts]
+        end = t.aligned_ts + timedelta(minutes=window_min)
+        pending = set(PULLBACK_LEVELS)
+        touched: dict[float, float] = {}
+        for k in keys5[i:]:
+            if k > end or not pending:
+                break
+            _o, high, low, _c, _v = bars5[k]
+            if t.side == "long":
+                adverse_atr = (t.bar_close - low) / t.atr_entry
+            else:
+                adverse_atr = (high - t.bar_close) / t.atr_entry
+            mins = (k - t.aligned_ts).total_seconds() / 60.0
+            for L in sorted(pending):
+                if adverse_atr >= L:
+                    touched[L] = mins
+                    pending.discard(L)
+        for L in PULLBACK_LEVELS:
+            if L in touched:
+                per[L]["touch_min"].append(touched[L])
+                per[L]["filled"].append(t)
+            else:
+                per[L]["unfilled"].append(t)
+
+    out: dict[float, dict] = {}
+    for L in PULLBACK_LEVELS:
+        filled, unfilled = per[L]["filled"], per[L]["unfilled"]
+        tm = per[L]["touch_min"]
+        total = len(filled) + len(unfilled)
+        out[L] = {
+            "n_filled": len(filled),
+            "fill_rate": round(100 * len(filled) / total, 1) if total else None,
+            "t_med": round(pctl(tm, 0.5), 0) if tm else None,
+            "t_p90": round(pctl(tm, 0.9), 0) if tm else None,
+            # MISMO estimador que el estudio vivo (reconciliación NX-17/NX-28)
+            "cancel_after": suggest_cancel_after(tm),
+            "filled_outcome": aggregate([t.pnl_pct for t in filled]),
+            "unfilled_outcome": aggregate([t.pnl_pct for t in unfilled]),
+            "filled_out_exp": aggregate(
+                [t.pnl_pct for t in filled if not t.in_sample]
+            )["expectancy_pct"],
+        }
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Fase 2 (cierre) — sobrevivientes out-of-sample entre todos los filtros
+# ---------------------------------------------------------------------------
+
+def oos_survivors(base: dict, phase2: dict) -> list[dict]:
+    """Filtros×umbral con ΔPF > 0 DENTRO y FUERA de muestra (el criterio del
+    Anexo 25: solo confiar en lo que aguanta out-of-sample), ordenados por
+    ΔPF out. n_out chico se marca aparte (no descarta, advierte)."""
+    rows: list[tuple[str, dict]] = []
+    for name, by_thr in phase2["subs"].items():
+        for thr, d in by_thr.items():
+            rows.append((f"{name} ≥ {thr}", d))
+    rows += [(f"regime solo {k}", d) for k, d in phase2["regime_gates"].items()]
+    rows += [(f"EMA {k[:2]}·{k[2:]} con-tendencia", d)
+             for k, d in phase2["ema_gates"].items()]
+
+    out: list[dict] = []
+    for label, d in rows:
+        i, o = d["in"], d["out"]
+        if None in (i["pf"], o["pf"], base["in"]["pf"], base["out"]["pf"]):
+            continue
+        d_in = i["pf"] - base["in"]["pf"]
+        d_out = o["pf"] - base["out"]["pf"]
+        if d_in > 0 and d_out > 0:
+            out.append({"label": label, "d_in": round(d_in, 2),
+                        "d_out": round(d_out, 2),
+                        "kept_in": i.get("kept_pct"),
+                        "n_out": o["n"]})
+    out.sort(key=lambda r: r["d_out"], reverse=True)
+    return out
+
+
+def joint_ambiguity_total(phase2: dict) -> int:
+    """Barras con SL y TP en la misma barra 5m (conteo del grid conjunto)."""
+    total = 0
+    for s in phase2["joint"].values():
+        for blk in ("in", "out"):
+            total += s[blk].get("ambiguous", 0) or 0
+    return total
+
+
+# ---------------------------------------------------------------------------
 # SL sweep (re-sim sustractivo del desenlace: Anexo 25 §8.1 punto 5)
 # ---------------------------------------------------------------------------
 
@@ -705,7 +818,9 @@ _LIFT_HDR = ("| filtro | in n (kept) | in PF (Δ) | in WR% | in exp% | "
 def render_report(instrument: str, csv_path: Path, tz_detail: dict,
                   uncovered: int, base: dict, sweeps: dict[float, dict],
                   hours: dict[int, dict], oos: float, holc_range: tuple,
-                  phase2: dict | None = None) -> str:
+                  phase2: dict | None = None,
+                  pullback: dict | None = None,
+                  window_min: int = 180) -> str:
     L: list[str] = []
     L.append(f"# LAB — {instrument} (LuxAlgo nativo vs re-simulación) · "
              f"{datetime.now():%Y-%m-%d %H:%M}")
@@ -824,6 +939,25 @@ def render_report(instrument: str, csv_path: Path, tz_detail: dict,
                      f"{_fmt(i['expectancy_pct'],3)} | {_fmt(i.get('sl_pct'),1)} | "
                      f"{_fmt(i.get('tp_pct'),1)} | {i.get('ambiguous', 0)} | "
                      f"{_fmt(o['pf'])} ({dpo}) | {_fmt(o['expectancy_pct'],3)} |")
+    if pullback:
+        L.append("")
+        L.append(f"## 10. Pullback (ventana de entrada {window_min} min; "
+                 f"cancel_after = MISMO estimador que pullback_timing: "
+                 f"min(3600, p90·60+60))")
+        L.append("| L×ATR | fill% (n) | t med | t p90 | cancel_after s | "
+                 "llenó: WR% / PF / avg% | llenó out exp% | no llenó: n / avg% |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for lvl, d in pullback.items():
+            fo, uo = d["filled_outcome"], d["unfilled_outcome"]
+            mark = " ⚠" if d["n_filled"] < _LOW_N else ""
+            L.append(
+                f"| {lvl}{mark} | {_fmt(d['fill_rate'],1)}% ({d['n_filled']}) | "
+                f"{_fmt(d['t_med'],0)}m | {_fmt(d['t_p90'],0)}m | "
+                f"{d['cancel_after'] if d['cancel_after'] is not None else '—'} | "
+                f"{_fmt(fo['wr'],1)} / {_fmt(fo['pf'])} / "
+                f"{_fmt(fo['expectancy_pct'],3)} | "
+                f"{_fmt(d['filled_out_exp'],3)} | "
+                f"{uo['n']} / {_fmt(uo['expectancy_pct'],3)} |")
     L.append("")
     L.append("## Notas metodológicas")
     L.append("- Filtros = sustractivos (re-agregar); SL/TP = cambian el desenlace (re-sim).")
@@ -860,7 +994,7 @@ def dump_features(instrument: str, trades: list[Trade]) -> Path:
 # ---------------------------------------------------------------------------
 
 async def run(instrument: str, csv_path: Path | None, oos: float,
-              stitch: bool, sample: int) -> Path:
+              stitch: bool, sample: int, window_min: int = 180) -> dict:
     csv_path = csv_path or find_trades_csv(instrument)
     trades = parse_luxalgo_csv(csv_path)
     if not trades:
@@ -926,29 +1060,96 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     phase2 = {"subs": subs, "regimes": regimes, "regime_gates": regime_gates,
               "ema_gates": ema_gates, "tp": tp_sweeps, "joint": joint}
 
+    # ── Fase 3 — pullback ──
+    pullback = pullback_study(trades, keys5, idx5, bars, window_min)
+
     report = render_report(instrument, csv_path, tz_detail, uncovered, base,
-                           sweeps, hours, oos, holc_range, phase2)
+                           sweeps, hours, oos, holc_range, phase2,
+                           pullback, window_min)
     REPORTES.mkdir(exist_ok=True)
     out = REPORTES / f"LAB_{instrument}_{datetime.now():%Y-%m-%d}.md"
     out.write_text(report, encoding="utf-8")
     feat = dump_features(instrument, trades)
     print(f"✅ {out}\n· features: {feat}")
+    return {
+        "instrument": instrument, "report": out, "base": base,
+        "phase2": phase2, "pullback": pullback, "tz": tz_detail,
+        "survivors": oos_survivors(base, phase2),
+        "ambiguous": joint_ambiguity_total(phase2),
+    }
+
+
+_INSTRUMENTS = ["ES", "NQ", "RTY", "GC", "CL", "6E", "6J", "YM"]
+
+
+async def run_all_summary(oos: float, stitch: bool, sample: int,
+                          window_min: int) -> Path:
+    """Corre los 8 instrumentos y escribe el resumen ejecutivo: sobreviviente
+    out-of-sample por instrumento (o "nativo domina") + ambigüedad intrabar."""
+    results = []
+    for instr in _INSTRUMENTS:
+        print(f"\n===== {instr} =====")
+        results.append(await run(instr, None, oos, stitch, sample, window_min))
+
+    L = [f"# LAB — RESUMEN 8 instrumentos · {datetime.now():%Y-%m-%d %H:%M}",
+         "",
+         "## Sobrevivientes out-of-sample (ΔPF > 0 dentro Y fuera; "
+         "criterio Anexo 25; ⚠ = n_out < 15)",
+         "| instr | mejor filtro OOS | ΔPF in | ΔPF out | kept% in | n_out | "
+         "otros OOS+ | ambigüedad intrabar |",
+         "|---|---|---|---|---|---|---|---|"]
+    for r in results:
+        surv = r["survivors"]
+        if surv:
+            s = surv[0]
+            mark = " ⚠" if s["n_out"] < 15 else ""
+            L.append(f"| {r['instrument']} | {s['label']}{mark} | "
+                     f"{s['d_in']:+.2f} | {s['d_out']:+.2f} | "
+                     f"{_fmt(s['kept_in'],0)} | {s['n_out']} | "
+                     f"{len(surv) - 1} | {r['ambiguous']} |")
+        else:
+            L.append(f"| {r['instrument']} | **ninguno → nativo domina** | — | "
+                     f"— | — | {r['base']['out']['n']} | 0 | {r['ambiguous']} |")
+    L.append("")
+    L.append("## cancel_after sugerido por instrumento (nivel de diseño más "
+             "cercano; estimador de pullback_timing)")
+    L.append("| instr | fill% @0.75×ATR | cancel_after @0.75 | fill% @1.5×ATR "
+             "| cancel_after @1.5 |")
+    L.append("|---|---|---|---|---|")
+    for r in results:
+        p75, p15 = r["pullback"][0.75], r["pullback"][1.5]
+        L.append(f"| {r['instrument']} | {_fmt(p75['fill_rate'],1)}% | "
+                 f"{p75['cancel_after'] or '—'} | {_fmt(p15['fill_rate'],1)}% | "
+                 f"{p15['cancel_after'] or '—'} |")
+    out = REPORTES / f"LAB_RESUMEN_{datetime.now():%Y-%m-%d}.md"
+    out.write_text("\n".join(L) + "\n", encoding="utf-8")
+    print(f"\n✅ Resumen: {out}")
     return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--instrument", required=True,
-                    choices=["ES", "NQ", "RTY", "GC", "CL", "6E", "6J", "YM"])
+    ap.add_argument("--instrument", choices=_INSTRUMENTS, default=None)
+    ap.add_argument("--all-summary", action="store_true",
+                    help="corre los 8 instrumentos + resumen ejecutivo")
     ap.add_argument("--csv", type=Path, default=None)
     ap.add_argument("--oos", type=float, default=0.3)
     ap.add_argument("--stitch-db", action="store_true",
                     help="coser la cola reciente desde OhlcvBar (solo lectura)")
     ap.add_argument("--sample", type=int, default=60,
                     help="muestra para la validación TZ")
+    ap.add_argument("--pullback-window-min", type=int, default=180,
+                    help="ventana de entrada para el estudio de pullback (min)")
     args = ap.parse_args()
-    asyncio.run(run(args.instrument, args.csv, args.oos,
-                    args.stitch_db, args.sample))
+    if args.all_summary:
+        asyncio.run(run_all_summary(args.oos, args.stitch_db, args.sample,
+                                    args.pullback_window_min))
+    elif args.instrument:
+        asyncio.run(run(args.instrument, args.csv, args.oos,
+                        args.stitch_db, args.sample,
+                        args.pullback_window_min))
+    else:
+        ap.error("usa --instrument <SYM> o --all-summary")
 
 
 if __name__ == "__main__":
