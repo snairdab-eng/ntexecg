@@ -28,6 +28,8 @@ class StrategyPerformance(Base):
 
     filter_pass_rate: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
     avg_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
+    # NX-26: cuántas señales aportaron score (avg_score promedia SOLO medidas).
+    scored_signals: Mapped[int] = mapped_column(Integer, default=0)
 
     blocks_level_1: Mapped[int] = mapped_column(Integer, default=0)
     blocks_level_2: Mapped[int] = mapped_column(Integer, default=0)

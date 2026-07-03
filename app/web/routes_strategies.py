@@ -22,7 +22,38 @@ from app.models.strategy_template import StrategyTemplate
 from app.models.symbol_map import SymbolMap
 from app.services.audit_service import AuditService
 from app.core.config import settings as app_settings
+from app.core.security import hash_token
 from app.web.common import render, redirect, flash_messages, templates
+
+
+# NX-26 — parsers compartidos de listas "0, 1, 4" (antes duplicados 4 veces
+# entre update_scale_entry y update_profiles).
+def _parse_floats(raw: str) -> list:
+    out = []
+    for tok in (raw or "").replace(";", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            f = float(tok)
+        except ValueError:
+            continue
+        if f > 0:
+            out.append(f)
+    return out
+
+
+def _parse_ints(raw: str) -> list:
+    out = []
+    for tok in (raw or "").replace(";", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.append(max(0, int(float(tok))))
+        except ValueError:
+            continue
+    return out
 
 router = APIRouter()
 
@@ -147,6 +178,8 @@ async def create_strategy_ui(
             flash=f"strategy_id '{strategy_id}' ya existe", category="error",
         )
 
+    # NX-22 — el token en claro se muestra UNA vez (flash); la DB guarda hash.
+    new_token = secrets.token_urlsafe(24)
     strategy = Strategy(
         strategy_id=strategy_id,
         name=name,
@@ -155,8 +188,8 @@ async def create_strategy_ui(
         status="candidate",
         enabled=False,
         traderspost_webhook_url=traderspost_webhook_url or None,
-        # Anexo 08 — per-strategy webhook token for the LuxAlgo URL.
-        webhook_token=secrets.token_urlsafe(24),
+        webhook_token=None,
+        webhook_token_hash=hash_token(new_token, app_settings.WEBHOOK_TOKEN_SALT),
     )
     db.add(strategy)
 
@@ -289,7 +322,8 @@ async def create_strategy_ui(
     await db.commit()
     return redirect(
         f"/ui/strategies/{strategy_id}",
-        flash=f"Estrategia '{strategy_id}' creada en estado CANDIDATE",
+        flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — token webhook "
+              f"(cópialo YA, no se volverá a mostrar): {new_token}",
     )
 
 
@@ -335,16 +369,20 @@ async def strategy_detail(
     ]
 
     base = str(request.base_url).rstrip("/")
+    # NX-22: la URL completa solo puede mostrarse con token legacy en claro;
+    # con hash el token ya no es recuperable (token_hashed → hint en la UI).
     webhook_url = (
         f"{base}/webhooks/luxalgo/{strategy.strategy_id}?token={strategy.webhook_token}"
         if strategy.webhook_token else None
     )
+    token_hashed = bool(strategy.webhook_token_hash) and not strategy.webhook_token
 
     return await render(
         request, "strategy_detail.html",
         {
             "strategy": strategy, "profile": profile, "perf": perf,
             "decisions": decisions, "webhook_url": webhook_url,
+            "token_hashed": token_hashed,
             "tp_env_enabled": app_settings.TRADERSPOST_ENABLED,
             "messages": flash_messages(request),
         }, db=db,
@@ -412,15 +450,21 @@ async def regenerate_token(
     if strategy is None:
         return redirect("/ui/strategies", flash="Estrategia no encontrada",
                         category="error")
-    strategy.webhook_token = secrets.token_urlsafe(24)
+    # NX-22 — hash-only; el token en claro solo viaja en este flash.
+    new_token = secrets.token_urlsafe(24)
+    strategy.webhook_token = None
+    strategy.webhook_token_hash = hash_token(
+        new_token, app_settings.WEBHOOK_TOKEN_SALT
+    )
     await AuditService().log(
         db, actor="admin", action="UPDATE", object_type="Strategy",
-        object_id=strategy_id, reason="webhook token regenerated via UI",
+        object_id=strategy_id, reason="webhook token regenerated via UI (hashed)",
     )
     await db.commit()
     return redirect(
         f"/ui/strategies/{strategy_id}",
-        flash="Token de webhook regenerado — actualiza la URL en LuxAlgo",
+        flash="Token regenerado — actualiza la alerta en LuxAlgo con "
+              f"?token={new_token} (no se volverá a mostrar)",
     )
 
 
@@ -933,32 +977,6 @@ async def update_scale_entry(
         profile = StrategyProfile(strategy_id=strategy_id)
         db.add(profile)
 
-    def _floats(raw: str) -> list:
-        out = []
-        for tok in (raw or "").replace(";", ",").split(","):
-            tok = tok.strip()
-            if not tok:
-                continue
-            try:
-                f = float(tok)
-            except ValueError:
-                continue
-            if f > 0:
-                out.append(f)
-        return out
-
-    def _ints(raw: str) -> list:
-        out = []
-        for tok in (raw or "").replace(";", ",").split(","):
-            tok = tok.strip()
-            if not tok:
-                continue
-            try:
-                out.append(max(0, int(float(tok))))
-            except ValueError:
-                continue
-        return out
-
     cfg = dict(profile.pipeline_config_json or {})
     before = cfg.get("scale_entry")
     if scale_entry_mode == "off":
@@ -974,8 +992,8 @@ async def update_scale_entry(
         prev_mode = (before or {}).get("mode")
         se = {
             "mode": prev_mode if prev_mode in ("execute", "live") else "design_only",
-            "levels": _floats(levels),
-            "quantities": _ints(quantities),
+            "levels": _parse_floats(levels),
+            "quantities": _parse_ints(quantities),
             "max_micro_contracts": maxm,
             "stop_mode": "common_position_stop",
         }
@@ -1016,32 +1034,6 @@ async def update_profiles(
         profile = StrategyProfile(strategy_id=strategy_id)
         db.add(profile)
 
-    def _ints(raw: str) -> list:
-        out = []
-        for tok in (raw or "").replace(";", ",").split(","):
-            tok = tok.strip()
-            if tok == "":
-                continue
-            try:
-                out.append(max(0, int(float(tok))))
-            except ValueError:
-                continue
-        return out
-
-    def _floats(raw: str) -> list:
-        out = []
-        for tok in (raw or "").replace(";", ",").split(","):
-            tok = tok.strip()
-            if not tok:
-                continue
-            try:
-                f = float(tok)
-            except ValueError:
-                continue
-            if f > 0:
-                out.append(f)
-        return out
-
     def _num(raw):
         raw = (raw or "").strip()
         if not raw:
@@ -1071,7 +1063,7 @@ async def update_profiles(
         if webhook:
             p["webhook_url"] = webhook
         if (qty_raw or "").strip():
-            p["quantities"] = _ints(qty_raw)
+            p["quantities"] = _parse_ints(qty_raw)
         if max_raw:
             try:
                 p["max_contracts"] = max(0, int(float(max_raw)))
@@ -1082,7 +1074,7 @@ async def update_profiles(
         if dry:
             p["dry_run"] = True
         if (levels_raw or "").strip():
-            p["levels"] = _floats(levels_raw)
+            p["levels"] = _parse_floats(levels_raw)
         sl = _num(sl_raw)
         if sl:
             p["sl_atr_multiplier"] = sl
@@ -1222,8 +1214,11 @@ async def clone_strategy(
         enabled=False,
         traderspost_webhook_url=traderspost_webhook_url or None,
         template_id=source.template_id,
-        # NX-20: token propio desde el nacimiento (no el secret global).
-        webhook_token=secrets.token_urlsafe(24),
+    )
+    # NX-20/NX-22: token propio desde el nacimiento, guardado como hash.
+    clone_token = secrets.token_urlsafe(24)
+    clone.webhook_token_hash = hash_token(
+        clone_token, app_settings.WEBHOOK_TOKEN_SALT
     )
     db.add(clone)
 
@@ -1266,7 +1261,8 @@ async def clone_strategy(
     await db.commit()
     return redirect(
         f"/ui/strategies/{new_strategy_id}",
-        flash=f"Clonada desde '{strategy_id}' → '{new_strategy_id}'",
+        flash=f"Clonada desde '{strategy_id}' → '{new_strategy_id}' — token "
+              f"webhook (cópialo YA): {clone_token}",
     )
 
 

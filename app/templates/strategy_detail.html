@@ -127,7 +127,10 @@
             {% endif %}
             <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/regenerate-token" class="mt-2"
                   onsubmit="return confirm('Regenerar el token invalidará la URL anterior en LuxAlgo. ¿Continuar?');">
-                <button class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded">{{ 'Regenerar token' if webhook_url else 'Generar token' }}</button>
+                <button class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded">{{ 'Regenerar token' if (webhook_url or token_hashed) else 'Generar token' }}</button>
+                {% if token_hashed %}
+                <p class="text-xs text-gray-500 mt-1">🔒 Token configurado (hasheado — no recuperable). La alerta de LuxAlgo existente sigue funcionando; regenera solo si necesitas uno nuevo.</p>
+                {% endif %}
             </form>
         </div>
     </div>

@@ -22,15 +22,11 @@ class StrategyProfile(Base):
     strategy_id: Mapped[str] = mapped_column(
         ForeignKey("strategies.strategy_id"), nullable=False, unique=True
     )
-    profile_name: Mapped[Optional[str]] = mapped_column(String(100))
 
     # TradersPost dispatch
     traderspost_webhook_url: Mapped[Optional[str]] = mapped_column(Text)
     traderspost_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
-    routing_mode: Mapped[str] = mapped_column(String(30), default="specific_accounts")
-    allowed_accounts_json: Mapped[Optional[dict]] = mapped_column(JSON)
-    allowed_symbols_json: Mapped[Optional[dict]] = mapped_column(JSON)
     mode: Mapped[str] = mapped_column(String(20), default="paper")
     # paper, micro, limited_live, live
 
@@ -51,20 +47,16 @@ class StrategyProfile(Base):
     atr_timeframe: Mapped[Optional[str]] = mapped_column(String(10))
 
     # Schedule overrides (only define what differs from asset_profile)
-    timezone: Mapped[Optional[str]] = mapped_column(String(50))
-    days_enabled_json: Mapped[Optional[dict]] = mapped_column(JSON)
-    entry_start_time: Mapped[Optional[time]] = mapped_column(Time)
-    entry_end_time: Mapped[Optional[time]] = mapped_column(Time)
+    # NX-23: columnas muertas eliminadas (profile_name/routing/allowed_*/
+    # timezone/days/entry_*_time/cooldown/daily_profit_lock)
     allow_exits_outside_window: Mapped[Optional[bool]] = mapped_column(Boolean)
     allow_overnight: Mapped[Optional[bool]] = mapped_column(Boolean)
     force_flat_time: Mapped[Optional[time]] = mapped_column(Time)
     max_holding_minutes: Mapped[Optional[int]] = mapped_column(Integer)
-    cooldown_minutes: Mapped[Optional[int]] = mapped_column(Integer)
 
     # Risk overrides
     max_trades_day: Mapped[Optional[int]] = mapped_column(Integer)
     daily_loss_stop: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
-    daily_profit_lock: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
     max_quantity: Mapped[Optional[int]] = mapped_column(Integer)
     max_open_positions_symbol: Mapped[Optional[int]] = mapped_column(Integer)
     allow_reversal: Mapped[Optional[bool]] = mapped_column(Boolean)

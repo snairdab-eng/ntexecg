@@ -23,9 +23,6 @@ class GlobalProfile(Base):
 
     # Schedule defaults
     timezone: Mapped[str] = mapped_column(String(50), default="America/New_York")
-    days_enabled_json: Mapped[dict] = mapped_column(JSON, default=lambda: [1, 2, 3, 4, 5])
-    entry_start_time: Mapped[Optional[time]] = mapped_column(Time, default=time(9, 30))
-    entry_end_time: Mapped[Optional[time]] = mapped_column(Time, default=time(15, 45))
     allow_exits_outside_window: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_overnight: Mapped[bool] = mapped_column(Boolean, default=False)
     force_flat_time: Mapped[Optional[time]] = mapped_column(Time, default=time(15, 55))
@@ -33,13 +30,10 @@ class GlobalProfile(Base):
     # News filter
     news_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     news_window_minutes: Mapped[int] = mapped_column(Integer, default=30)
-    news_impact_levels_json: Mapped[dict] = mapped_column(JSON, default=lambda: ["high"])
 
     # Risk
     max_open_positions: Mapped[int] = mapped_column(Integer, default=5)
     daily_loss_stop: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
-    global_daily_profit_lock: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
-    entry_cutoff_time: Mapped[Optional[time]] = mapped_column(Time)
     max_holding_minutes: Mapped[Optional[int]] = mapped_column(Integer)
 
     # Score
@@ -50,7 +44,6 @@ class GlobalProfile(Base):
     # normal, defensive, flatten_only, paused
     traderspost_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
-    default_quantity: Mapped[int] = mapped_column(Integer, default=1)
 
     # TradersPost retry
     retry_attempts: Mapped[int] = mapped_column(Integer, default=3)

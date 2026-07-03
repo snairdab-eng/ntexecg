@@ -137,8 +137,30 @@ async def process_signal(
 
     strategy = await get_strategy_by_id(db, strategy_id)
 
-    # Auto-create strategy if unknown
+    # Auto-create strategy if unknown. NX-21: en producción se apaga con
+    # ALLOW_STRATEGY_AUTOCREATE=false — un id desconocido queda BLOCK
+    # (RawSignal + NormalizedSignal + decisión quedan auditados igual).
     if strategy is None:
+        if not getattr(settings, "ALLOW_STRATEGY_AUTOCREATE", True):
+            norm.status = "processed"
+            decision = StrategyDecision(
+                normalized_signal_id=norm.id,
+                strategy_id=strategy_id,
+                outcome="BLOCK",
+                block_reason="unknown_strategy",
+                block_level=1,
+                pipeline_execution_json={"level_1": {
+                    "outcome": "BLOCK", "reason": "unknown_strategy",
+                    "check": "1.2_strategy_status",
+                }},
+            )
+            db.add(decision)
+            await db.flush()
+            logger.warning(
+                "unknown_strategy_blocked strategy_id={} (autocreate off)",
+                strategy_id,
+            )
+            return decision
         strategy = await create_strategy(db, strategy_id, strategy_id, None)
         await create_audit_log(
             db,
@@ -529,16 +551,21 @@ async def receive_luxalgo_webhook(
     body = await request.json()
     client_ip = request.client.host if request.client else None
 
-    # Token validation — raw token never appears in logs
+    # Token validation — raw token never appears in logs.
+    # NX-22 dual-read: (1) hash por estrategia (fuente preferida), (2) token
+    # legacy en claro (filas aún no migradas por scripts/hash_webhook_tokens),
+    # (3) secret global (ids sin token propio). Siempre tiempo constante.
     strategy = await get_strategy_by_id(db, strategy_id)
-    # Per-strategy token if set (Anexo 08 — generated in the UI), else the global
-    # secret. Constant-time compare; the raw token never appears in logs.
-    expected = (
-        strategy.webhook_token
-        if (strategy and strategy.webhook_token)
-        else settings.LUXALGO_WEBHOOK_SECRET
-    )
-    token_valid = hmac.compare_digest(token, expected or "")
+    token_hash = getattr(strategy, "webhook_token_hash", None) if strategy else None
+    if token_hash:
+        from app.core.security import verify_token
+        token_valid = verify_token(token, settings.WEBHOOK_TOKEN_SALT, token_hash)
+    elif strategy and strategy.webhook_token:
+        token_valid = hmac.compare_digest(token, strategy.webhook_token)
+    else:
+        token_valid = hmac.compare_digest(
+            token, settings.LUXALGO_WEBHOOK_SECRET or ""
+        )
 
     # Save RawSignal ALWAYS (audit trail even for invalid tokens)
     raw_signal = RawSignal(

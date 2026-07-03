@@ -208,6 +208,10 @@ class FilterPipeline:
                 execution["regime"] = {
                     "regime": regime, "timeframe": rtf, "allowed": allowed,
                 }
+                # NX-26 (P2-12): enabled sin regímenes permitidos = no-op — el
+                # gate corre y nunca bloquea. Se deja rastro para el operador.
+                if not allowed:
+                    execution["regime"]["warning"] = "no_allowed_regimes"
                 if allowed and regime != "unknown" and regime not in allowed:
                     return PipelineResult(
                         outcome="BLOCK",

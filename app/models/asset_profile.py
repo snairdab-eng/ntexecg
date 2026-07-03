@@ -58,7 +58,6 @@ class AssetProfile(Base):
     max_open_positions_symbol: Mapped[int] = mapped_column(Integer, default=1)
     score_minimum: Mapped[Optional[int]] = mapped_column(Integer)
     allow_reversal: Mapped[bool] = mapped_column(Boolean, default=False)
-    cooldown_minutes: Mapped[Optional[int]] = mapped_column(Integer)
 
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)

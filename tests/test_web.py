@@ -759,29 +759,33 @@ async def test_config_resolver_injects_strategy_windows(
 async def test_create_generates_webhook_url_and_regenerate(
     client: AsyncClient, db: AsyncSession
 ) -> None:
-    """Anexo 08 — creation generates a token; detail shows the NTEXECG URL."""
+    """Anexo 08 + NX-22 — el alta genera token (guardado como HASH, mostrado
+    una vez en el flash); el detalle indica que hay token sin exponerlo."""
     resp = await client.post("/ui/strategies/new", data={
         "strategy_id": "wh_strat", "name": "WH",
         "asset_symbol": "MES", "timeframe": "5m", "initial_mode": "paper",
     })
     assert resp.status_code == 303
+    assert "token" in resp.headers.get("location", "")   # flash con el token
     row = (await db.execute(select(Strategy).where(
         Strategy.strategy_id == "wh_strat"))).scalar_one()
-    assert row.webhook_token
+    assert row.webhook_token is None          # nunca en claro en la DB
+    assert row.webhook_token_hash
 
     page = await client.get("/ui/strategies/wh_strat")
     assert page.status_code == 200
-    assert "/webhooks/luxalgo/wh_strat?token=" in page.text
-    assert row.webhook_token in page.text
+    assert "hasheado" in page.text            # hint de token configurado
+    assert row.webhook_token_hash not in page.text
 
-    # Regenerate produces a different token
-    old = row.webhook_token
+    # Regenerate produces a different hash (token nuevo)
+    old_hash = row.webhook_token_hash
     resp = await client.post("/ui/strategies/wh_strat/regenerate-token")
     assert resp.status_code == 303
+    db.expire_all()
     row2 = (await db.execute(select(Strategy).where(
         Strategy.strategy_id == "wh_strat"))).scalar_one()
-    await db.refresh(row2)
-    assert row2.webhook_token and row2.webhook_token != old
+    assert row2.webhook_token is None
+    assert row2.webhook_token_hash and row2.webhook_token_hash != old_hash
 
 
 @pytest.mark.asyncio

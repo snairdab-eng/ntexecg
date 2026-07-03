@@ -34,12 +34,13 @@ class Strategy(Base):
     # paused, quarantined, retired
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # NX-22: legacy en claro (se vacía al hashear); el hash es la fuente.
     webhook_token: Mapped[Optional[str]] = mapped_column(String(128))
+    webhook_token_hash: Mapped[Optional[str]] = mapped_column(String(64))
     traderspost_webhook_url: Mapped[Optional[str]] = mapped_column(Text)
     template_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("strategy_templates.id"), nullable=True
     )
-    pine_script_ticker_note: Mapped[Optional[str]] = mapped_column(Text)
     luxalgo_metrics_json: Mapped[Optional[dict]] = mapped_column(JSON)
     notes: Mapped[Optional[str]] = mapped_column(Text)
 

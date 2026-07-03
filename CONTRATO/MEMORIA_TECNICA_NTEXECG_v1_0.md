@@ -434,6 +434,12 @@ resultados reales (§§4–6, §12, Apéndice C), decisiones tomadas (§5.D, §1
 
 ## 12. TABLA COMPARATIVA FINAL (DECISIÓN)
 
+> **⚠ HISTÓRICO (nota 2026-07-03, NX-25):** esta tabla corresponde a la
+> generación ANTERIOR de estrategias (`ES5m`, `NQ5m_ConfirmationAny`, …). La
+> generación vigente (7 estrategias `*_Conf*_*`) está en **Anexo 23**
+> (calibración) y **Anexo 24** (playbook); la config efectiva real se consulta
+> con `scripts/show_strategy_configs.py`.
+
 > PF/WR/MaxDD = backtest LuxAlgo (MaxDD en **micro $**, escenario nativo/elegido). SL/TF/ventana/
 > escalado = config **efectiva en vivo** (verificada con `show_strategy_configs.py`, coincide con
 > Anexo 20 §4.4). `Status` = estado actual; `Decisión` = estado recomendado (Anexo 20). Todas

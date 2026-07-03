@@ -170,7 +170,7 @@ async def test_clone_copies_sanitized_config(client: AsyncClient, db: AsyncSessi
     assert prof.dry_run is True
     assert prof.traderspost_enabled is False
     assert strat.status == "candidate"
-    assert strat.webhook_token            # token propio, no el secret global
+    assert strat.webhook_token_hash       # token propio (hasheado, NX-22)
 
 
 # ---------------------------------------------------------------------------

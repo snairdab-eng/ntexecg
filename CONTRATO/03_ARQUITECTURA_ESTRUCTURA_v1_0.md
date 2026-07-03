@@ -45,6 +45,14 @@
 
 ## 2. Flujo de procesamiento de una señal
 
+> **Actualización 2026-07-03 (NX-25):** el diagrama de abajo es el diseño
+> original. Diferencias con el código real: el **dedupe** corre en
+> `process_signal` ANTES del pipeline (no es el check 1.3); **no existe** el
+> check "1.5 allowed_symbols"; el filtro de **noticias (2.3) es stub**; L3
+> incluye **3.4 symbol_busy** (NX-09); L4 emite **quality UNKNOWN/LOW/MEDIUM/
+> HIGH** (NX-04); L5 usa `atr_timeframe` calibrado (NX-14) y bloquea sin precio
+> (NX-05); el dispatch es **multi-perfil** con kill-switch por capas.
+
 ```text
 POST /webhooks/luxalgo/{strategy_id}?token={secret}
   payload: {"ticker": "MJY", "action": "sell", "sentiment": "short", ...}
@@ -114,216 +122,61 @@ POST /webhooks/luxalgo/{strategy_id}?token={secret}
 
 ---
 
-## 3. Estructura de carpetas completa
+## 3. Estructura de carpetas (ACTUALIZADA 2026-07-03 — árbol real)
+
+> NX-25: el árbol original (build prompt) quedó archivado en `A REVISAR/`.
+> Diferencias clave vs el diseño: `app/schemas/` y `app/api/internal/` quedaron
+> vacíos (la validación vive en las rutas/Pydantic inline); no existen
+> `news_filter.py` (stub L2.3 dentro del pipeline), `strategy_registry.py`
+> (lógica en L1.2) ni `timezones.py`; los tests viven en `tests/` (raíz).
 
 ```text
-ntexecg/
-│
+NTEXECG/
 ├── app/
-│   ├── main.py                              # FastAPI app factory + lifespan
-│   │
+│   ├── main.py                    # app factory + lifespan (scheduler jobs)
 │   ├── api/
-│   │   ├── __init__.py
-│   │   ├── health.py                        # GET /health
-│   │   ├── webhooks_luxalgo.py              # POST /webhooks/luxalgo/{strategy_id}
-│   │   ├── webhooks_tradingview.py          # Futuro
-│   │   └── internal/
-│   │       ├── __init__.py
-│   │       ├── strategies.py               # REST API estrategias
-│   │       ├── signals.py                  # REST API señales
-│   │       ├── positions.py                # REST API posiciones
-│   │       ├── assets.py                   # REST API asset profiles
-│   │       ├── symbol_map.py               # REST API symbol mapper
-│   │       ├── settings.py                 # REST API settings
-│   │       └── actions.py                  # flatten, pause, resume, etc.
-│   │
+│   │   ├── health.py              # GET /health
+│   │   ├── auth_routes.py         # login/logout UI
+│   │   └── webhooks_luxalgo.py    # webhook + process_signal + dispatch multi-perfil
 │   ├── core/
-│   │   ├── __init__.py
-│   │   ├── config.py                       # Pydantic Settings (env vars)
-│   │   ├── security.py                     # hash_token, verify_token
-│   │   ├── timezones.py                    # utilidades de timezone
-│   │   ├── logging.py                      # configuración loguru
-│   │   └── scheduler.py                    # APScheduler (heartbeat, cron)
-│   │
-│   ├── db/
-│   │   ├── __init__.py
-│   │   ├── base.py                         # Base declarativa SQLAlchemy
-│   │   ├── session.py                      # Async session factory
-│   │   └── migrations/                     # Alembic
-│   │       ├── env.py
-│   │       ├── script.py.mako
-│   │       └── versions/
-│   │
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── raw_signal.py
-│   │   ├── normalized_signal.py
-│   │   ├── strategy.py
-│   │   ├── strategy_profile.py
-│   │   ├── asset_profile.py
-│   │   ├── global_profile.py
-│   │   ├── symbol_map.py
-│   │   ├── decision.py
-│   │   ├── position_state.py
-│   │   ├── webhook_delivery.py
-│   │   ├── conflict_log.py
-│   │   ├── audit_log.py
-│   │   ├── strategy_performance.py
-│   │   ├── strategy_template.py
-│   │   ├── market_data_status.py
-│   │   ├── economic_event.py
-│   │   └── ohlcv_bar.py                    # Fase 5
-│   │
-│   ├── schemas/
-│   │   ├── __init__.py
-│   │   ├── webhooks.py
-│   │   ├── strategies.py
-│   │   ├── signals.py
-│   │   ├── decisions.py
-│   │   ├── positions.py
-│   │   ├── symbol_map.py
-│   │   ├── assets.py
-│   │   ├── templates.py
-│   │   └── settings.py
-│   │
+│   │   ├── config.py              # Settings (env)
+│   │   ├── security.py            # hash/verify de tokens de webhook (NX-22)
+│   │   ├── auth.py / auth_middleware.py
+│   │   ├── logging.py
+│   │   └── scheduler.py           # Heartbeat, ExitManager (+stale/reservas), Bars, HMM
+│   ├── db/                        # base, session, migrations/ (Alembic)
+│   ├── models/                    # strategy, strategy_profile, asset_profile,
+│   │                              # global_profile, symbol_map, raw/normalized_signal,
+│   │                              # decision, position_state, webhook_delivery,
+│   │                              # audit_log, conflict_log (reservado NX-18C),
+│   │                              # strategy_performance, strategy_template,
+│   │                              # market_data_status, ohlcv_bar, execution_result
 │   ├── services/
-│   │   ├── __init__.py
-│   │   │
-│   │   # Recepción y normalización
-│   │   ├── signal_normalizer.py
-│   │   ├── symbol_mapper.py                # Búsqueda directa, sin prefijos
-│   │   ├── deduplicator.py
-│   │   │
-│   │   # Configuración
-│   │   ├── config_resolver.py              # Herencia global→asset→strategy
-│   │   ├── strategy_registry.py
-│   │   │
-│   │   # Pipeline de filtros
-│   │   ├── filter_pipeline.py              # Orquesta 5 niveles (fail-fast)
-│   │   ├── session_validator.py            # Nivel 2: horario por activo
-│   │   ├── news_filter.py                  # Nivel 2: noticias
-│   │   ├── quality_scorer.py               # Nivel 4: score (placeholder Fase 1)
-│   │   ├── sl_tp_calculator.py             # Nivel 5: SL obligatorio por ATR
-│   │   │
-│   │   # Datos de mercado
-│   │   ├── market_data_service.py          # Abstracción + providers
-│   │   │   # NinjaTraderBridgeProvider (producción)
-│   │   │   # YfinanceProvider (desarrollo)
-│   │   │   # TradovateAPIProvider (stub, Fase 5+)
-│   │   │   # DatabentoProvider (stub, Fase 5+)
-│   │   │
-│   │   # Dispatch
-│   │   ├── traderspost_client.py           # Cliente HTTP hacia TradersPost
-│   │   ├── payload_builder.py              # Construir payload con SL
-│   │   │
-│   │   # Estado y métricas
-│   │   ├── position_service.py
-│   │   ├── performance_tracker.py
-│   │   │
-│   │   # Fases futuras (stubs en Fase 1)
-│   │   ├── signal_conflict_resolver.py     # Fase 7
-│   │   ├── account_risk_engine.py          # Fase 7
-│   │   ├── portfolio_risk_engine.py        # Fase 7
-│   │   ├── exit_manager.py                 # Fase 4
-│   │   ├── hmm_service.py                  # Fase 6 (stub: retorna "unknown")
-│   │   │
-│   │   └── audit_service.py
-│   │
-│   ├── web/
-│   │   ├── __init__.py
-│   │   ├── routes_dashboard.py
-│   │   ├── routes_strategies.py
-│   │   ├── routes_signals.py
-│   │   ├── routes_positions.py
-│   │   ├── routes_symbol_map.py
-│   │   ├── routes_assets.py
-│   │   ├── routes_strategy_templates.py
-│   │   ├── routes_settings.py
-│   │   └── routes_audit.py
-│   │
-│   ├── templates/
-│   │   ├── base.html
-│   │   ├── dashboard.html
-│   │   ├── strategies.html
-│   │   ├── strategy_detail.html
-│   │   ├── strategy_form.html
-│   │   ├── strategy_clone_form.html
-│   │   ├── signals.html
-│   │   ├── signal_detail.html
-│   │   ├── positions.html
-│   │   ├── symbol_map.html
-│   │   ├── assets.html
-│   │   ├── asset_form.html
-│   │   ├── strategy_templates.html
-│   │   ├── strategy_template_form.html
-│   │   ├── settings.html
-│   │   ├── audit.html
-│   │   └── partials/
-│   │       ├── events_feed.html
-│   │       ├── bridge_status.html
-│   │       ├── pipeline_breakdown.html
-│   │       ├── performance_comparison.html
-│   │       ├── strategy_row.html
-│   │       ├── signal_row.html
-│   │       ├── position_row.html
-│   │       └── alert_banner.html
-│   │
-│   ├── static/
-│   │   ├── css/app.css
-│   │   └── js/app.js
-│   │
-│   └── tests/
-│       ├── __init__.py
-│       ├── conftest.py                     # Fixtures: DB SQLite, MockProvider
-│       ├── fixtures/
-│       │   └── bridge/                     # JSON de ejemplo para tests del bridge
-│       │       ├── bars_MES_5m.json
-│       │       └── heartbeat_MES.json
-│       ├── test_health.py
-│       ├── test_webhooks_luxalgo.py
-│       ├── test_normalizer.py
-│       ├── test_symbol_mapper.py
-│       ├── test_config_resolver.py
-│       ├── test_filter_pipeline.py
-│       ├── test_session_validator.py
-│       ├── test_news_filter.py
-│       ├── test_sl_tp_calculator.py
-│       ├── test_market_data_service.py
-│       ├── test_payload_builder.py
-│       ├── test_dispatcher.py
-│       ├── test_position_service.py
-│       ├── test_performance_tracker.py
-│       ├── test_audit.py
-│       └── test_ui.py
-│
-├── docs/                                   # Documentación del proyecto
-│   ├── 00_CONTRATO_TECNICO_v1_0.md
-│   ├── 01_REQUERIMIENTOS_ACCIONABLES_v1_0.md
-│   ├── 02_REQUERIMIENTOS_INTERFACE_WEB_v1_0.md
-│   ├── 03_ARQUITECTURA_ESTRUCTURA_v1_0.md
-│   ├── 04_MODELO_DATOS_v1_0.md
-│   ├── 05_BACKLOG_ROADMAP_v1_0.md
-│   ├── 06_PROMPTS_CLAUDE_CODE_v1_0.md
-│   └── 07_INFRAESTRUCTURA_ENTORNOS_v1_0.md
-│
-├── scripts/
-│   ├── seed_dev_data.py
-│   ├── simulate_webhook.py
-│   ├── rollover_alert.py
-│   ├── backup_db.py
-│   └── mount_ntbridge.sh                   # Montar \\NTRADER\bridge en Ubuntu
-│
-├── nginx/
-│   └── nginx.conf
-│
-├── docker-compose.yml                      # Producción (NTEXECG)
-├── docker-compose.dev.yml                  # Desarrollo (NTDEV)
-├── Dockerfile
-├── .env.example
-├── .gitattributes                          # Forzar LF
-├── pyproject.toml
-├── alembic.ini
-└── README.md
+│   │   ├── signal_normalizer.py   # + time real del payload (NX-16)
+│   │   ├── symbol_mapper.py / deduplicator.py
+│   │   ├── config_resolver.py     # global < asset < strategy (kill-switch OR/AND)
+│   │   ├── filter_pipeline.py     # 5 niveles + symbol_busy (NX-09) + quality (NX-04)
+│   │   ├── session_validator.py / quality_scorer.py / sl_tp_calculator.py
+│   │   ├── hmm_service.py / hmm_trainer.py / regime_features.py
+│   │   ├── market_data_service.py / bar_store.py
+│   │   ├── payload_builder.py     # + build_scaled (multi-leg)
+│   │   ├── dispatch_profiles.py   # perfiles de riesgo (tiers)
+│   │   ├── traderspost_client.py  # retries configurables (NX-15)
+│   │   ├── position_service.py / exit_manager.py / forced_exit.py
+│   │   ├── results_import.py      # Fase 8 + reconciliación Fase A (NX-18)
+│   │   ├── strategy_aliases.py    # alias de renames para Analytics (NX-24)
+│   │   ├── performance_tracker.py / audit_service.py / repositories.py
+│   ├── web/                       # routes_{dashboard,strategies,signals,analytics,
+│   │                              # positions,assets,symbol_map,api,strategy_templates,
+│   │                              # settings,audit}.py + common.py
+│   ├── templates/                 # base, dashboard, strategies, strategy_detail,
+│   │                              # signals, signal_detail, analytics, positions,
+│   │                              # assets, settings, audit, partials/
+│   └── static/
+├── tests/                         # suite completa (pytest, SQLite in-memory)
+├── scripts/                       # calibración/diagnóstico/estudios (dry-run+backup+audit)
+├── alembic.ini · pyproject.toml · docker-compose*.yml · nginx/
+└── CONTRATO/ · DOCS/ · REPORTES/ · NINJATRADER/ · A REVISAR/ (archivo histórico)
 ```
 
 ---
@@ -520,9 +373,9 @@ MarketDataService es la única puerta a datos de mercado.
        async def get_atr(self, ...): return 8.0
        async def is_active(self, ...): return True
 
-4. QualityScorer en Fase 1: retorna score=100 siempre.
-   HMMService en Fase 1: retorna "unknown" siempre.
-   Stubs explícitos con docstring indicando la fase de implementación.
+4. [OBSOLETO 2026-07-03] QualityScorer/HMM ya están implementados (Fase 5/6):
+   score ponderado 0-100 con etiqueta de calidad (UNKNOWN sin filtros, NX-04)
+   y régimen Kaufman ER / HMM entrenado.
 
 5. MarketDataService se inyecta en startup, no se instancia en servicios.
    El provider se selecciona según MARKET_DATA_PROVIDER en .env.

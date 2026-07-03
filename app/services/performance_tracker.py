@@ -51,11 +51,15 @@ class PerformanceTracker:
                 perf.total_approved / perf.total_signals_received, 4
             )
 
-        # Running average of score over received signals
-        score = decision.score if decision.score is not None else 0
-        old_avg = float(perf.avg_score) if perf.avg_score is not None else 0.0
-        new_avg = (old_avg * prev_total + score) / perf.total_signals_received
-        perf.avg_score = round(new_avg, 2)
+        # NX-26 — avg_score promedia SOLO señales con score medido (el N4
+        # corrió). Salidas y blocks tempranos (score None) no diluyen la media.
+        if decision.score is not None:
+            prev_scored = perf.scored_signals or 0
+            old_avg = float(perf.avg_score) if perf.avg_score is not None else 0.0
+            perf.avg_score = round(
+                (old_avg * prev_scored + decision.score) / (prev_scored + 1), 2
+            )
+            perf.scored_signals = prev_scored + 1
 
         perf.updated_at = _utcnow()
         await db.flush()
