@@ -281,14 +281,17 @@ def resolve_effective_dry_run(settings_obj: object, config: dict) -> bool:
 
     A real HTTP send to TradersPost happens ONLY when ALL locks are open:
       1. env ``TRADERSPOST_ENABLED`` (server-level master kill-switch),
-      2. ``traderspost_enabled`` (merged global AND strategy, from ConfigResolver),
-      3. ``dry_run`` is False (merged: any level on -> dry_run).
+      2. env ``DRY_RUN`` is False (NX-03: the .env flag the UI badge shows —
+         badge and gate must never diverge; absent attr does not force dry),
+      3. ``traderspost_enabled`` (merged global AND strategy, from ConfigResolver),
+      4. ``dry_run`` is False (merged: any level on -> dry_run).
     In every other case returns True (dry-run, no HTTP) -- safe by default.
     """
     env_enabled = bool(getattr(settings_obj, "TRADERSPOST_ENABLED", False))
+    env_dry = bool(getattr(settings_obj, "DRY_RUN", False))
     tp_enabled = bool(config.get("traderspost_enabled", False))
     cfg_dry_run = bool(config.get("dry_run", True))
-    real_send = env_enabled and tp_enabled and not cfg_dry_run
+    real_send = env_enabled and not env_dry and tp_enabled and not cfg_dry_run
     return not real_send
 
 
