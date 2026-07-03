@@ -116,6 +116,33 @@ Herramienta: harness offline (score+régimen por trade); baseline Kaufman ER.
 - **RG-3 baseline vs entrenado:** Kaufman ER vs modelo `hmmlearn` entrenado (cuando exista).
 - **Criterio:** activar gate solo si excluir un régimen mejora PF sin perder demasiados trades buenos.
 
+**Regímenes disponibles** (`hmm_service.py`): `trending_bull`, `trending_bear`, `ranging`,
+`unknown`. El régimen se lee en un **TF más alto** (default **1h**), independiente del TF de la
+señal. `unknown` **siempre pasa** (fail-open). El gate **bloquea** una entrada solo si el
+régimen es conocido y **no** está en `allowed_regimes`. ⚠ `enabled` con `allowed_regimes`
+vacío = no-op (bug P2-12 del backlog).
+
+**Hipótesis inicial de `allowed_regimes` por estrategia** (según su indicador/tipo — es una
+HIPÓTESIS a validar con RG-1, no config final):
+
+| Estrategia | Indicador base | Tipo | Hipótesis `allowed_regimes` |
+|---|---|---|---|
+| 6E5m_ConfStrong_NC_WeakConf | Neo Cloud | Tendencia | `["trending_bull","trending_bear"]` |
+| ES5m_ConfNormal_TC_TSR | Trend Catcher | Tendencia | `["trending_bull","trending_bear"]` |
+| NQ5m_ConfAny_ST_TC | Trend Catcher + Smart Trail | Tendencia | `["trending_bull","trending_bear"]` |
+| RTY15m_ConfNormal_NC_TST | Neo Cloud + Trend Strength Trending | Tendencia (doble) | `["trending_bull","trending_bear"]` |
+| GC5m_ContraNormal_ST_WeakConf | Contrarian + Smart Trail | Reversión/rango | `["ranging"]` |
+| 6J5m_ConfNormal_TSR_MF50 | Trend Strength Ranging + Money Flow | Mixto/momentum | probar 3: sin gate · `["trending_*"]` · `["ranging"]` |
+| ES5m_ConfStrong_TSR_WeakConf | Trend Strength Ranging | Mixto | probar 2: sin gate · `["trending_*"]` |
+
+Notas de calibración:
+- Estas hipótesis salen del **nombre/indicador**; la **RG-1 (lift por régimen)** decide el
+  `allowed_regimes` final. Los "Mixto" (TSR-based) son ambiguos a propósito → se prueban varias.
+- **Afinar por dirección** después si aporta: p. ej. una estrategia solo-largos podría permitir
+  únicamente `["trending_bull"]` para no entrar largo en tendencia bajista.
+- Empezar con el gate en **1h** (RG-2 prueba 4h). El HMM entrenado (RG-3) puede reetiquetar,
+  pero conserva las mismas 4 clases.
+
 ### 4.3 SL por ATR
 Herramienta: `eval_strategy_battery.py` (test SL×ATR + SL catastrófico).
 
