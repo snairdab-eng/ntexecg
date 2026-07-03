@@ -305,7 +305,15 @@ async def test_template_create(client: AsyncClient, db: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_position_flatten_lock_unlock(client: AsyncClient, db: AsyncSession) -> None:
     from app.models.position_state import PositionState
+    from app.models.strategy import Strategy
+    from app.models.strategy_profile import StrategyProfile
 
+    # NX-06: flatten ahora DESPACHA el cierre (gate Fase-2) — necesita la
+    # estrategia para resolver el webhook; sin ella redirige con error.
+    db.add(Strategy(strategy_id="p_strat", name="P", asset_symbol="MES",
+                    timeframe="5m", status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="p_strat", mode="paper",
+                           traderspost_webhook_url="https://tp/base"))
     pos = PositionState(
         strategy_id="p_strat", account_id="paper_1", symbol="MESU2025",
         state="LONG", state_source="estimated", quantity=1,
@@ -314,7 +322,7 @@ async def test_position_flatten_lock_unlock(client: AsyncClient, db: AsyncSessio
     await db.commit()
     await db.refresh(pos)
 
-    # Flatten → EXITING
+    # Flatten → despacha (DRY_RUN en tests, kill-switch cerrado) y queda EXITING
     resp = await client.post(f"/ui/positions/{pos.id}/flatten")
     assert resp.status_code == 303
     result = await db.execute(select(PositionState).where(PositionState.id == pos.id))
