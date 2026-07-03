@@ -47,14 +47,20 @@ def suggest_cancel_after(
     return min(cap_seconds, int(p90 * 60) + cushion_seconds)
 
 
-async def apply_suggestion(db, strategy_id: str, seconds: int):
+async def apply_suggestion(
+    db, strategy_id: str, seconds: int,
+    actor: str = "pullback_timing",
+    reason: str = "cancel_after por estrategia (p90 pullback + colchon, NX-17)",
+):
     """NX-17 — escribe `entry_reserve_timeout_seconds` (= cancel_after) en el
     StrategyProfile. UNA sola caducidad: pierna límite (TradersPost), reserva
     de símbolo (NX-28) y cancel_after comparten este valor.
 
     ⚠ TradersPost no tiene API para esto: tras aplicar aquí, fija el MISMO
     valor a mano en TradersPost → Strategy → Settings → "Cancel entry after".
-    Devuelve el valor anterior (None si no había). Merge, no reemplazo; audit.
+    Devuelve el valor anterior (None si no había). Merge, no reemplazo; audit
+    (actor/reason parametrizables para que otros CLI auditen honesto, p. ej.
+    apply_cancel_after con el valor de DISEÑO del Laboratorio).
     """
     from app.models.strategy_profile import StrategyProfile
     from app.services.audit_service import AuditService
@@ -71,11 +77,11 @@ async def apply_suggestion(db, strategy_id: str, seconds: int):
     prof.pipeline_config_json = cfg
     await db.flush()
     await AuditService().log(
-        db, actor="pullback_timing", action="UPDATE",
+        db, actor=actor, action="UPDATE",
         object_type="StrategyProfile", object_id=strategy_id,
         old_value={"entry_reserve_timeout_seconds": old},
         new_value={"entry_reserve_timeout_seconds": int(seconds)},
-        reason="cancel_after por estrategia (p90 pullback + colchon, NX-17)",
+        reason=reason,
     )
     return old
 
