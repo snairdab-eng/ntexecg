@@ -73,9 +73,22 @@ async def process_signal(
     norm = await normalizer.normalize(db, raw_signal_id, strategy_id, body)
     original_dedupe_key = norm.dedupe_key
 
-    # Deduplicate BEFORE saving
+    # Deduplicate BEFORE saving. NX-10: la ventana viene del perfil de la
+    # estrategia (pipeline_config_json["dedup_seconds"], guardado en la ficha);
+    # sin valor → 60 s (comportamiento histórico).
+    from app.services.repositories import get_strategy_profile
+
+    window_seconds = 60
+    _profile = await get_strategy_profile(db, strategy_id)
+    if _profile is not None:
+        _ds = (_profile.pipeline_config_json or {}).get("dedup_seconds")
+        if isinstance(_ds, (int, float)) and _ds > 0:
+            window_seconds = int(_ds)
+
     deduplicator = Deduplicator()
-    if await deduplicator.is_duplicate(db, original_dedupe_key):
+    if await deduplicator.is_duplicate(
+        db, original_dedupe_key, window_seconds=window_seconds
+    ):
         norm.dedupe_key = f"dup:{uuid.uuid4().hex}"
         norm.status = "duplicate"
         db.add(norm)

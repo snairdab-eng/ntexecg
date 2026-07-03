@@ -6,10 +6,12 @@ Endpoints:
   PATCH  /api/strategies/{id}/status
   GET    /api/strategies/{id}/config               → inherited (asset) / override (strategy) / effective (resolver) / scale_entry
   PATCH  /api/strategies/{id}/calibration          → sl_atr_multiplier, atr_timeframe, tp_atr_multiplier, windows (StrategyProfile)
-  PATCH  /api/strategies/{id}/scale-entry          → diseño escalonado (pipeline_config_json["scale_entry"]) — NO ejecución
+  PATCH  /api/strategies/{id}/scale-entry          → edita niveles/cantidades (pipeline_config_json["scale_entry"]) preservando el mode vigente
 
 La calibración vive en StrategyProfile (ConfigResolver lo prioriza sobre asset_profiles).
-NO se implementa ejecución escalonada: scale_entry es solo diseño; mode=enabled se rechaza.
+El motor escalonado existe (PayloadBuilder.build_scaled); la EJECUCIÓN (mode
+execute/design_only) se activa con scripts/set_scale_execution.py — esta API solo
+edita el diseño y PRESERVA el mode (NX-11). 'enabled' no es un modo válido.
 """
 from __future__ import annotations
 
@@ -284,11 +286,12 @@ class ScaleEntryPatch(BaseModel):
 @router.patch("/strategies/{strategy_id}/scale-entry")
 async def patch_scale_entry(strategy_id: str, body: ScaleEntryPatch,
                             db: AsyncSession = Depends(get_db)) -> dict:
-    # Rechazo explícito: el motor escalonado NO existe (solo diseño).
+    # 'enabled' no es un modo válido (vocabulario: design_only/execute/live/off).
+    # La EJECUCIÓN se activa con scripts/set_scale_execution.py, no por esta API.
     if body.mode == "enabled":
         raise HTTPException(
-            422, "scale_entry_mode=enabled rechazado: el motor de ejecución escalonada aún no "
-                 "existe. Solo se permite 'design_only' (diseño). NTEXECG opera 1 entrada + bracket.")
+            422, "mode=enabled inválido: usa 'design_only'/'off' aquí; la ejecución "
+                 "escalonada se activa con scripts/set_scale_execution.py (execute).")
     if body.mode not in SCALE_MODES:
         raise HTTPException(422, f"mode inválido (válidos: {', '.join(sorted(SCALE_MODES))})")
     if body.stop_mode not in SCALE_STOP_MODES:
@@ -305,8 +308,11 @@ async def patch_scale_entry(strategy_id: str, body: ScaleEntryPatch,
             raise HTTPException(422, "levels deben ser > 0 (múltiplos de ATR)")
         if body.quantities is not None and any(q < 0 for q in body.quantities):
             raise HTTPException(422, "quantities no pueden ser negativas")
+        # NX-11: preservar el mode vigente — editar niveles/cantidades por API
+        # no debe apagar una ejecución activada por script.
+        prev_mode = (before or {}).get("mode")
         se = {
-            "mode": "design_only",  # forzado: nunca enabled
+            "mode": prev_mode if prev_mode in ("execute", "live") else "design_only",
             "levels": body.levels or [],
             "quantities": body.quantities or [],
             "max_micro_contracts": body.max_micro_contracts,
@@ -317,7 +323,9 @@ async def patch_scale_entry(strategy_id: str, body: ScaleEntryPatch,
     p.updated_by = "api"
     await AuditService().log(db, actor="api", action="UPDATE", object_type="StrategyProfile",
                              object_id=strategy_id, old_value={"scale_entry": before},
-                             new_value={"scale_entry": se}, reason="scale_entry design (no execution)")
+                             new_value={"scale_entry": se}, reason="scale_entry edit (mode preserved)")
     await db.commit()
-    return {"strategy_id": s.strategy_id, "scale_entry": se,
-            "note": "Diseño solamente — sin ejecución escalonada (1 entrada + bracket)."}
+    note = ("mode=" + se["mode"] + " preservado — EJECUTA ⚠"
+            if se and se["mode"] in ("execute", "live")
+            else "Diseño (design_only); la ejecución se activa con set_scale_execution.py.")
+    return {"strategy_id": s.strategy_id, "scale_entry": se, "note": note}

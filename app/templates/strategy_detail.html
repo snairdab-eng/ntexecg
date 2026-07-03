@@ -275,8 +275,14 @@
 
         {% set se = (profile.pipeline_config_json or {}).get('scale_entry') if profile else None %}
         <div class="border-t border-gray-800 mt-3 pt-3">
-            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Compras escalonadas / Scale Entry — <span class="text-amber-400">DISEÑO (no ejecuta)</span></div>
-            <p class="text-xs text-gray-500 mb-2">NTEXECG opera <b>1 entrada + bracket</b>. Esto se guarda solo como diseño en la estrategia; <code>enabled</code> se rechaza (motor no existe).</p>
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Compras escalonadas / Scale Entry —
+                {% if se and se.mode in ('execute', 'live') %}
+                <span class="text-red-400 font-bold">EJECUTA ⚠ (mode={{ se.mode }})</span>
+                {% else %}
+                <span class="text-amber-400">DISEÑO (no ejecuta)</span>
+                {% endif %}
+            </div>
+            <p class="text-xs text-gray-500 mb-2">Guardar aquí edita niveles/cantidades y <b>preserva el modo actual</b>. La ejecución escalonada (C1 mercado + C2/C3 límite, stop común) se activa/desactiva con <code>scripts/set_scale_execution.py</code>, no desde este formulario.</p>
             <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/scale-entry" class="space-y-2">
                 <input type="hidden" name="scale_entry_mode" value="design_only">
                 <div class="grid grid-cols-2 gap-3">
@@ -438,6 +444,17 @@
                     </div>
                 </div>
                 {% endfor %}
+                {% set pc_smin = (profile.pipeline_config_json or {}).get('score_minimum') if profile else None %}
+                <div class="flex items-center gap-3 pt-2 border-t border-gray-800">
+                    <label class="text-gray-300 flex-1 text-sm">Score mínimo (override de esta estrategia)
+                        <span class="text-gray-600 text-xs">— 1..100; vacío = hereda del global/activo</span>
+                    </label>
+                    <div class="w-24">
+                        <input name="score_minimum" type="number" min="1" max="100" placeholder="hereda"
+                               value="{{ pc_smin if pc_smin is not none else '' }}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-sm">
+                    </div>
+                </div>
                 <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm mt-1">Guardar filtros</button>
             </form>
         </div>

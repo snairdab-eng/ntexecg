@@ -69,6 +69,10 @@ class ConfigResolver:
             "enforce_timeframe_match": False,
             "signal_max_age_entry_seconds": None,
             "signal_max_age_exit_seconds": None,
+            # NX-10 — ventana de dedupe por estrategia (la consume el webhook
+            # ANTES de resolver esta config; aquí solo para visibilidad en la
+            # config efectiva: UI/show_strategy_configs).
+            "dedup_seconds": 60,
             # Instrument catalog (Anexo 08 #4) - reference data for the UI ficha
             # (e.g. show tick value when registering a strategy). NOT a risk gate:
             # NTEXECG's only monetary-risk responsibility is the ATR SL (Level 5).
@@ -206,6 +210,11 @@ class ConfigResolver:
                     "profiles")
                 if isinstance(_profiles, list):
                     config["profiles"] = _profiles
+                # NX-10 — dedup_seconds de la ficha (ver default arriba).
+                _dedup = (strategy_profile.pipeline_config_json or {}).get(
+                    "dedup_seconds")
+                if isinstance(_dedup, (int, float)) and _dedup > 0:
+                    config["dedup_seconds"] = int(_dedup)
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run

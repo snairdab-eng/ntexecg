@@ -233,6 +233,14 @@ async def create_strategy_ui(
     cfg: dict = {}
     if guardrails:
         cfg["guardrails"] = guardrails
+    # NX-12 — score_minimum del form de alta (antes se recibía y se descartaba).
+    if score_minimum.strip():
+        try:
+            _smin = int(float(score_minimum))
+            if 1 <= _smin <= 100:
+                cfg["score_minimum"] = _smin
+        except (ValueError, TypeError):
+            pass
     risk_ref: dict = {}
     if form.get("stop_required"):
         risk_ref["stop_required"] = True
@@ -543,6 +551,10 @@ async def update_filters(
     Stored in pipeline_config_json["filters"] as {name: {enabled, weight}}.
     If no filter is enabled (with weight > 0) the key is removed, so the scorer
     returns 100 (pass-through). Weights are preserved while any filter is active.
+
+    NX-12: also persists the per-strategy score_minimum override
+    (pipeline_config_json["score_minimum"], 1..100; empty removes the override
+    so the global/asset default applies). ConfigResolver already reads it.
     """
     prof_res = await db.execute(
         select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
@@ -574,12 +586,26 @@ async def update_filters(
         cfg["filters"] = filters
     else:
         cfg.pop("filters", None)
+
+    # NX-12 — per-strategy score_minimum (1..100). Empty → inherit; out of
+    # range is discarded (score max is 100 — a 150 would block everything).
+    raw_smin = (form.get("score_minimum") or "").strip()
+    if raw_smin:
+        try:
+            _smin = int(float(raw_smin))
+        except (ValueError, TypeError):
+            _smin = None
+        if _smin is not None and 1 <= _smin <= 100:
+            cfg["score_minimum"] = _smin
+    else:
+        cfg.pop("score_minimum", None)
     profile.pipeline_config_json = cfg or None
 
     await AuditService().log(
         db, actor="admin", action="UPDATE", object_type="StrategyProfile",
         object_id=strategy_id,
-        new_value={"filters": filters if any_enabled else {}},
+        new_value={"filters": filters if any_enabled else {},
+                   "score_minimum": cfg.get("score_minimum")},
         reason="quality filters updated via UI",
     )
     await db.commit()
@@ -867,13 +893,19 @@ async def update_scale_entry(
     max_micro_contracts: str = Form(""),
     scale_stop_mode: str = Form("common_position_stop"),
 ) -> RedirectResponse:
-    """Diseño de compras escalonadas (NO ejecucion). Guarda en
-    pipeline_config_json['scale_entry']. mode=enabled se rechaza: el motor
-    escalonado no existe; NTEXECG opera 1 entrada + bracket."""
+    """Compras escalonadas — edita niveles/cantidades/max en
+    pipeline_config_json['scale_entry'] PRESERVANDO el mode vigente (NX-11).
+
+    El motor escalonado SÍ existe (PayloadBuilder.build_scaled + dispatch
+    multi-leg); la EJECUCIÓN se activa/desactiva con
+    scripts/set_scale_execution.py (mode execute/design_only), nunca desde
+    este form. 'enabled' no es un modo válido del vocabulario
+    (design_only/execute/live/off) y se rechaza."""
     if scale_entry_mode == "enabled":
         return redirect(
             f"/ui/strategies/{strategy_id}",
-            flash="scale_entry_mode=enabled rechazado: el motor escalonado no existe (solo diseno).",
+            flash="'enabled' no es un modo valido (usa design_only/off aqui; "
+                  "la ejecucion se activa con scripts/set_scale_execution.py).",
             category="error",
         )
     prof_res = await db.execute(
@@ -920,8 +952,11 @@ async def update_scale_entry(
             maxm = int(max_micro_contracts) if str(max_micro_contracts).strip() else None
         except ValueError:
             maxm = None
+        # NX-11: preservar el mode vigente — guardar niveles/cantidades desde
+        # la UI NO debe apagar una ejecucion activada por script.
+        prev_mode = (before or {}).get("mode")
         se = {
-            "mode": "design_only",
+            "mode": prev_mode if prev_mode in ("execute", "live") else "design_only",
             "levels": _floats(levels),
             "quantities": _ints(quantities),
             "max_micro_contracts": maxm,
@@ -933,13 +968,16 @@ async def update_scale_entry(
     await AuditService().log(
         db, actor="admin", action="UPDATE", object_type="StrategyProfile",
         object_id=strategy_id, old_value={"scale_entry": before},
-        new_value={"scale_entry": se}, reason="scale_entry design (no execution)",
+        new_value={"scale_entry": se}, reason="scale_entry edit (mode preserved)",
     )
     await db.commit()
-    return redirect(
-        f"/ui/strategies/{strategy_id}",
-        flash="Scale Entry (diseno) " + ("quitado" if se is None else "guardado"),
-    )
+    if se is None:
+        msg = "Scale Entry quitado"
+    elif se["mode"] in ("execute", "live"):
+        msg = f"Scale Entry guardado — mode={se['mode']} PRESERVADO (EJECUTA ⚠)"
+    else:
+        msg = "Scale Entry (diseno) guardado"
+    return redirect(f"/ui/strategies/{strategy_id}", flash=msg)
 
 
 @router.post("/ui/strategies/{strategy_id}/profiles")
