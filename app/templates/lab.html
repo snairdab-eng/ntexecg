@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Laboratorio{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-4">
+
+    <div class="flex items-center justify-between flex-wrap gap-2">
+        <div>
+            <h1 class="text-xl font-semibold text-gray-100">Laboratorio <span class="text-xs text-gray-500">(visor read-only del camino A — no aplica nada a producción)</span></h1>
+            <p class="text-xs text-gray-500 mt-1">Los números salen del MISMO núcleo de agregación que el reporte offline (<code>lab_metrics</code>): lo que ves = lo que dice <code>REPORTES/LAB_*.md</code>.</p>
+        </div>
+        <div class="flex items-center gap-1 flex-wrap text-sm">
+            {% for i in instruments %}
+            <a href="/ui/lab?instrument={{ i }}"
+               class="px-3 py-1 rounded transition {% if i == instrument %}bg-blue-700 text-white{% else %}bg-gray-800 text-gray-300 hover:bg-gray-700{% endif %}">{{ i }}</a>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if meta is none %}
+    <div class="bg-amber-900/30 border border-amber-700 rounded p-4 text-sm text-amber-200">
+        <b>Sin caché del Laboratorio para {{ instrument }}.</b> Este visor no recomputa el backtest en la petición web — genera la matriz de features primero (en el servidor, con la cola cosida):
+        <pre class="mt-2 bg-gray-950 rounded p-2 text-xs text-amber-100">{{ regen_cmd }}</pre>
+    </div>
+    {% else %}
+
+    {% if meta.stale %}
+    <div class="bg-amber-900/30 border border-amber-700 rounded p-3 text-xs text-amber-200">
+        ⚠ <b>Caché desactualizada:</b> el CSV de trades es más nuevo que la matriz ({{ meta.cache_mtime }}). Regenera con: <code>{{ regen_cmd }}</code>
+    </div>
+    {% endif %}
+
+    <div class="text-xs text-gray-500">
+        Matriz: <b class="text-gray-300">{{ meta.n_trades }}</b> trades
+        (in {{ meta.n_in }} / out {{ meta.n_out }})
+        {% if meta.coverage %}· cobertura {{ meta.coverage[0][:10] }} → {{ meta.coverage[1][:10] }}{% endif %}
+        · generada {{ meta.cache_mtime }}
+        {% if meta.get('uncovered') %}· ⚠ {{ meta.uncovered }} sin barras (usa --stitch-db en el server){% endif %}
+        {% if meta.get('tz') and meta.tz.get('offset_minutes') is not none %}· TZ {{ '%+d'|format(meta.tz.offset_minutes) }} min (sanity {{ (meta.tz.sanity * 100)|round(0)|int }}%){% endif %}
+    </div>
+
+    <!-- Línea base (SIEMPRE visible: la referencia de todo what-if) -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-3">Línea base — LuxAlgo nativo</h2>
+        <table class="w-full text-sm">
+            <thead><tr class="text-gray-500 text-xs border-b border-gray-800">
+                <th class="text-left px-3 py-2">bloque</th><th class="text-right px-3 py-2">n</th>
+                <th class="text-right px-3 py-2">WR%</th><th class="text-right px-3 py-2">PF</th>
+                <th class="text-right px-3 py-2">expectancy%</th><th class="text-right px-3 py-2">net%</th>
+                <th class="text-right px-3 py-2">net USD</th><th class="text-right px-3 py-2">maxDD%</th>
+                <th class="text-right px-3 py-2">peor%</th><th class="text-right px-3 py-2">p95|MAE|%</th>
+                <th class="text-right px-3 py-2">p95 MAE×ATR</th>
+            </tr></thead>
+            <tbody>
+            {% for name in ['in', 'out', 'total'] %}
+            {% set b = base[name] %}
+            <tr class="border-b border-gray-800 last:border-0 {% if name == 'out' and b.n < meta.low_n_threshold %}text-gray-500{% else %}text-gray-300{% endif %}">
+                <td class="px-3 py-2 font-mono">{{ name }}{% if name == 'out' and b.n < meta.low_n_threshold %} ⚠ n bajo{% endif %}</td>
+                <td class="px-3 py-2 text-right">{{ b.n }}</td>
+                <td class="px-3 py-2 text-right">{{ b.wr if b.wr is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.pf if b.pf is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.expectancy_pct if b.expectancy_pct is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.net_pct if b.net_pct is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.net_usd if b.net_usd is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.max_dd_pct if b.max_dd_pct is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.worst_pct if b.worst_pct is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.mae_p95_pct if b.mae_p95_pct is not none else '—' }}</td>
+                <td class="px-3 py-2 text-right">{{ b.mae_p95_atr if b.mae_p95_atr is not none else '—' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 text-xs text-gray-600">
+        Próximas fases del visor: <b>B2</b> filtros interactivos (subscores/régimen/EMA con lift vs base y guarda n&lt;{{ meta.low_n_threshold }}) · <b>B3</b> SL/TP re-sim + pullback (una sola caducidad: <code>cancel_after = entry_reserve_timeout_seconds</code>).
+        El endpoint <code>POST /ui/lab/aggregate</code> ya sirve el what-if con el núcleo compartido.
+    </div>
+
+    {% endif %}
+</div>
+{% endblock %}

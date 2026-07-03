@@ -42,6 +42,13 @@ from datetime import timezone as _utc_tz
 from zoneinfo import ZoneInfo
 
 from app.services.hmm_service import classify_regime      # lógica viva (Kaufman ER)
+# Núcleo de agregación COMPARTIDO con el visor (camino B): una sola fuente de
+# verdad — el reporte offline y el endpoint del UI llaman a estas funciones.
+from app.services.lab_metrics import (
+    aggregate,
+    baseline_from_rows,
+    lift_from_rows,
+)
 from app.services.market_data_service import _calc_atr    # lógica viva de ATR
 from app.services.quality_scorer import _SUBSCORES        # lógica viva (4 subscores)
 # Fase 3 — MISMO estimador de cancel_after que el estudio vivo (reconciliados:
@@ -369,50 +376,26 @@ def split_in_out(trades: list[Trade], oos: float) -> None:
 # Métricas (línea base y agregación de cualquier lista de desenlaces)
 # ---------------------------------------------------------------------------
 
-def aggregate(pnls_pct: list[float], pnls_usd: list[float] | None = None) -> dict:
-    n = len(pnls_pct)
-    if n == 0:
-        return {"n": 0, "wr": None, "pf": None, "expectancy_pct": None,
-                "net_pct": None, "net_usd": None, "max_dd_pct": None,
-                "worst_pct": None}
-    wins = [p for p in pnls_pct if p > 0]
-    losses = [p for p in pnls_pct if p < 0]
-    gp, gl = sum(wins), abs(sum(losses))
-    cum = peak = dd = 0.0
-    for p in pnls_pct:
-        cum += p
-        peak = max(peak, cum)
-        dd = min(dd, cum - peak)
-    return {
-        "n": n,
-        "wr": round(100 * len(wins) / n, 1),
-        "pf": round(gp / gl, 2) if gl > 0 else None,
-        "expectancy_pct": round(sum(pnls_pct) / n, 4),
-        "net_pct": round(sum(pnls_pct), 2),
-        "net_usd": round(sum(pnls_usd), 2) if pnls_usd else None,
-        "max_dd_pct": round(dd, 2),
-        "worst_pct": round(min(pnls_pct), 2),
-    }
+def feature_rows(trades: list[Trade]) -> list[dict]:
+    """Matriz de features por trade — el formato del cache y del núcleo
+    compartido (lab_metrics). UNA construcción para reporte, cache y visor."""
+    return [{
+        "number": t.number, "entry_ts": t.entry_ts.isoformat(),
+        "side": t.side, "pnl_pct": t.pnl_pct, "pnl_usd": t.pnl_usd,
+        "mae_pct": t.mae_pct, "mfe_pct": t.mfe_pct,
+        "atr_entry": t.atr_entry, "atr_pct": t.atr_pct,
+        "mae_atr": t.mae_atr, "mfe_atr": t.mfe_atr,
+        "hour": t.hour, "in_sample": t.in_sample,
+        "sub_volume": t.sub_volume, "sub_atr": t.sub_atr,
+        "sub_vwap": t.sub_vwap, "sub_time": t.sub_time,
+        "regime_1h": t.regime_1h, "regime_4h": t.regime_4h,
+        "ema_with": t.ema_with or None,
+    } for t in trades]
 
 
 def baseline(trades: list[Trade]) -> dict:
-    def block(sel: list[Trade]) -> dict:
-        m = aggregate([t.pnl_pct for t in sel], [t.pnl_usd for t in sel])
-        maes = sorted(t.mae_pct for t in sel)
-        if maes:
-            k = max(0, int(round(0.95 * (len(maes) - 1))))
-            m["mae_p95_pct"] = round(maes[k], 2)
-        maes_atr = sorted(t.mae_atr for t in sel if t.mae_atr is not None)
-        if maes_atr:
-            k = max(0, int(round(0.95 * (len(maes_atr) - 1))))
-            m["mae_p95_atr"] = round(maes_atr[k], 2)
-        return m
-
-    return {
-        "total": block(trades),
-        "in": block([t for t in trades if t.in_sample]),
-        "out": block([t for t in trades if not t.in_sample]),
-    }
+    """Línea base vía el núcleo compartido (paridad reporte ↔ visor)."""
+    return baseline_from_rows(feature_rows(trades))
 
 
 # ---------------------------------------------------------------------------
@@ -970,22 +953,22 @@ def render_report(instrument: str, csv_path: Path, tz_detail: dict,
     return "\n".join(L) + "\n"
 
 
-def dump_features(instrument: str, trades: list[Trade]) -> Path:
-    rows = [{
-        "number": t.number, "entry_ts": t.entry_ts.isoformat(),
-        "side": t.side, "pnl_pct": t.pnl_pct, "pnl_usd": t.pnl_usd,
-        "mae_pct": t.mae_pct, "mfe_pct": t.mfe_pct,
-        "atr_entry": t.atr_entry, "atr_pct": t.atr_pct,
-        "mae_atr": t.mae_atr, "mfe_atr": t.mfe_atr,
-        "hour": t.hour, "in_sample": t.in_sample,
-        "sub_volume": t.sub_volume, "sub_atr": t.sub_atr,
-        "sub_vwap": t.sub_vwap, "sub_time": t.sub_time,
-        "regime_1h": t.regime_1h, "regime_4h": t.regime_4h,
-        "ema_with": t.ema_with or None,
-    } for t in trades]
+def dump_features(instrument: str, trades: list[Trade],
+                  tz_detail: dict | None = None, uncovered: int = 0) -> Path:
+    rows = feature_rows(trades)
     REPORTES.mkdir(exist_ok=True)
     p = REPORTES / f"lab_features_{instrument}.json"
-    p.write_text(json.dumps(rows, indent=1), encoding="utf-8")
+    payload = {
+        "meta": {
+            "instrument": instrument,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "n_trades": len(rows),
+            "uncovered": uncovered,
+            "tz": tz_detail or {},
+        },
+        "rows": rows,
+    }
+    p.write_text(json.dumps(payload, indent=1), encoding="utf-8")
     return p
 
 
@@ -1024,34 +1007,27 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     sweeps = {k: resim_sl(trades, k) for k in SL_KS}
     hours = hourly_edge(trades)
 
-    # ── Fase 2 ──
+    # ── Fase 2 (todas las tablas de lift salen del núcleo COMPARTIDO con el
+    # visor — lift_from_rows — para que UI y reporte sean idénticos) ──
     compute_phase2_features(trades, bars, instrument)
+    rows = feature_rows(trades)
     keys5 = sorted(bars)
     idx5 = {k: i for i, k in enumerate(keys5)}
-    subs = {}
-    for name, attr in (("volume_relative", "sub_volume"),
-                       ("atr_normalized", "sub_atr"),
-                       ("vwap_position", "sub_vwap"),
-                       ("time_of_day", "sub_time")):
-        subs[name] = {
-            thr: filter_lift(
-                trades,
-                lambda t, a=attr, x=thr: (getattr(t, a) or 0) * 100 >= x)
-            for thr in (50, 60, 70, 80)
-        }
+    subs = {
+        name: {thr: lift_from_rows(rows, {"subs": {name: thr}})
+               for thr in (50, 60, 70, 80)}
+        for name in ("volume_relative", "atr_normalized",
+                     "vwap_position", "time_of_day")
+    }
     regimes = {tf: regime_breakdown(trades, tf) for tf in ("1h", "4h")}
     regime_gates = {}
     for tf in ("1h", "4h"):
-        for label, allowed in (("trend", ("trending_bull", "trending_bear")),
-                               ("ranging", ("ranging",))):
-            regime_gates[f"{tf}·{label}"] = filter_lift(
-                trades,
-                lambda t, tf=tf, al=allowed:
-                    getattr(t, f"regime_{tf}") in al
-                    or getattr(t, f"regime_{tf}") == "unknown")  # fail-open vivo
+        for label, allowed in (("trend", ["trending_bull", "trending_bear"]),
+                               ("ranging", ["ranging"])):
+            regime_gates[f"{tf}·{label}"] = lift_from_rows(
+                rows, {"regime": {"tf": tf, "allowed": allowed}})
     ema_gates = {
-        key: filter_lift(trades,
-                         lambda t, k=key: t.ema_with.get(k) is True)
+        key: lift_from_rows(rows, {"ema": [key]})
         for key in ("1h20", "1h50", "4h20", "4h50")
     }
     tp_sweeps = {tp: resim_tp(trades, tp) for tp in TP_KS}
@@ -1069,7 +1045,7 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     REPORTES.mkdir(exist_ok=True)
     out = REPORTES / f"LAB_{instrument}_{datetime.now():%Y-%m-%d}.md"
     out.write_text(report, encoding="utf-8")
-    feat = dump_features(instrument, trades)
+    feat = dump_features(instrument, trades, tz_detail, uncovered)
     print(f"✅ {out}\n· features: {feat}")
     return {
         "instrument": instrument, "report": out, "base": base,
