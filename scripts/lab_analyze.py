@@ -45,9 +45,13 @@ from app.services.hmm_service import classify_regime      # lógica viva (Kaufma
 # Núcleo de agregación COMPARTIDO con el visor (camino B): una sola fuente de
 # verdad — el reporte offline y el endpoint del UI llaman a estas funciones.
 from app.services.lab_metrics import (
+    SL_GRID,
+    TP_GRID,
     aggregate,
     baseline_from_rows,
+    hourly_from_rows,
     lift_from_rows,
+    resim_rows,
 )
 from app.services.market_data_service import _calc_atr    # lógica viva de ATR
 from app.services.quality_scorer import _SUBSCORES        # lógica viva (4 subscores)
@@ -102,6 +106,10 @@ class Trade:
     regime_1h: str | None = None
     regime_4h: str | None = None
     ema_with: dict = field(default_factory=dict)  # "1h20"→bool with-trend
+    # Fase B3 — minutos al primer toque por nivel de la grilla (estadístico
+    # suficiente para que el visor resuelva el orden SL/TP sin caminar barras):
+    t_sl_touch: dict = field(default_factory=dict)  # "2.5" → min | None
+    t_tp_touch: dict = field(default_factory=dict)  # "6.0" → min | None
 
     @property
     def mae_atr(self) -> float | None:
@@ -390,6 +398,8 @@ def feature_rows(trades: list[Trade]) -> list[dict]:
         "sub_vwap": t.sub_vwap, "sub_time": t.sub_time,
         "regime_1h": t.regime_1h, "regime_4h": t.regime_4h,
         "ema_with": t.ema_with or None,
+        "t_sl_touch": t.t_sl_touch or None,
+        "t_tp_touch": t.t_tp_touch or None,
     } for t in trades]
 
 
@@ -524,99 +534,89 @@ JOINT_SL_KS = (2.0, 2.5, 4.0, 8.0)
 
 
 def resim_tp(trades: list[Trade], tp: float) -> dict:
-    """TP activa ⟺ mfe% ≥ tp·atr% → desenlace +tp·atr% (sin SL)."""
-    def block(sel: list[Trade]) -> dict:
-        pnls, hit = [], 0
-        for t in sel:
-            if t.atr_pct is None:
-                continue
-            thr = tp * t.atr_pct
-            if t.mfe_pct >= thr:
-                pnls.append(thr)
-                hit += 1
-            else:
-                pnls.append(t.pnl_pct)
-        m = aggregate(pnls)
-        m["tp_pct"] = round(100 * hit / len(pnls), 1) if pnls else None
-        return m
+    """TP-only vía el núcleo compartido (paridad reporte ↔ visor)."""
+    r = resim_rows(feature_rows(trades), tp=tp)
+    return {"in": r["in"], "out": r["out"]}
 
-    return {"in": block([t for t in trades if t.in_sample]),
-            "out": block([t for t in trades if not t.in_sample])}
+
+def touch_minutes(
+    t: Trade, keys5: list[datetime], idx5: dict, bars5: dict,
+    adverse_lvls: tuple = SL_GRID, favor_lvls: tuple = TP_GRID,
+) -> tuple[dict, dict]:
+    """UNA caminata por las barras 5m (entrada → salida) registrando el minuto
+    del primer toque de cada umbral adverso (SL k·ATR) y favorable (TP tp·ATR).
+    Es el estadístico suficiente para el orden de toques: mismo minuto = misma
+    barra = ambiguo. Devuelve ({str(k): min|None}, {str(tp): min|None})."""
+    adv: dict = {str(float(k)): None for k in adverse_lvls}
+    fav: dict = {str(float(x)): None for x in favor_lvls}
+    if t.aligned_ts is None or t.bar_close is None or not t.atr_pct:
+        return adv, fav
+    end_ts = (t.exit_ts + (t.aligned_ts - t.entry_ts)) if t.exit_ts else None
+    i = idx5[t.aligned_ts]
+    pend_a = set(adv)
+    pend_f = set(fav)
+    for k5 in keys5[i:]:
+        if end_ts is not None and k5 > end_ts:
+            break
+        if not pend_a and not pend_f:
+            break
+        _o, high, low, _c, _v = bars5[k5]
+        if t.side == "long":
+            adverse = (t.bar_close - low) / t.bar_close * 100.0
+            favor = (high - t.bar_close) / t.bar_close * 100.0
+        else:
+            adverse = (high - t.bar_close) / t.bar_close * 100.0
+            favor = (t.bar_close - low) / t.bar_close * 100.0
+        mins = (k5 - t.aligned_ts).total_seconds() / 60.0
+        for key in sorted(pend_a):
+            if adverse >= float(key) * t.atr_pct:
+                adv[key] = mins
+                pend_a.discard(key)
+        for key in sorted(pend_f):
+            if favor >= float(key) * t.atr_pct:
+                fav[key] = mins
+                pend_f.discard(key)
+    return adv, fav
+
+
+def compute_touch_times(
+    trades: list[Trade], keys5: list[datetime], idx5: dict, bars5: dict,
+) -> None:
+    """Cachea los toques de la grilla en cada trade (van a la matriz de
+    features → el visor resuelve el orden SL/TP sin recompute pesado)."""
+    for t in trades:
+        t.t_sl_touch, t.t_tp_touch = touch_minutes(t, keys5, idx5, bars5)
 
 
 def _first_touch(
     t: Trade, k: float, tp: float,
     keys5: list[datetime], idx5: dict, bars5: dict,
 ) -> str:
-    """Orden de toques SL vs TP caminando las barras 5m entre entrada y salida.
-    Devuelve "sl" | "tp" | "ambiguous_sl" (ambos en la misma barra → SL,
-    conservador) | "none"."""
-    if t.aligned_ts is None or t.bar_close is None:
+    """Orden de toques SL vs TP ("sl"|"tp"|"ambiguous_sl"|"none") — derivado de
+    los minutos de toque (misma caminata que el cache del visor)."""
+    adv, fav = touch_minutes(t, keys5, idx5, bars5, (k,), (tp,))
+    t_sl, t_tp = adv[str(float(k))], fav[str(float(tp))]
+    if t_sl is None and t_tp is None:
         return "none"
-    sl_off = k * t.atr_pct / 100.0 * t.bar_close
-    tp_off = tp * t.atr_pct / 100.0 * t.bar_close
-    if t.side == "long":
-        sl_level, tp_level = t.bar_close - sl_off, t.bar_close + tp_off
-    else:
-        sl_level, tp_level = t.bar_close + sl_off, t.bar_close - tp_off
-    end_ts = (t.exit_ts + (t.aligned_ts - t.entry_ts)) if t.exit_ts else None
-    i = idx5[t.aligned_ts]
-    for k5 in keys5[i:]:
-        if end_ts is not None and k5 > end_ts:
-            break
-        _o, high, low, _c, _v = bars5[k5]
-        if t.side == "long":
-            sl_hit, tp_hit = low <= sl_level, high >= tp_level
-        else:
-            sl_hit, tp_hit = high >= sl_level, low <= tp_level
-        if sl_hit and tp_hit:
-            return "ambiguous_sl"
-        if sl_hit:
-            return "sl"
-        if tp_hit:
-            return "tp"
-    return "none"
+    if t_tp is None:
+        return "sl"
+    if t_sl is None:
+        return "tp"
+    if t_sl == t_tp:
+        return "ambiguous_sl"
+    return "sl" if t_sl < t_tp else "tp"
 
 
 def resim_sl_tp(
     trades: list[Trade], k: float, tp: float,
     keys5: list[datetime], idx5: dict, bars5: dict,
 ) -> dict:
-    """SL+TP conjunto. mae/mfe del CSV deciden QUÉ umbrales se alcanzaron; el
-    camino intrabar del 5m decide el ORDEN cuando se alcanzaron ambos."""
-    def block(sel: list[Trade]) -> dict:
-        pnls, n_sl, n_tp, n_amb = [], 0, 0, 0
-        for t in sel:
-            if t.atr_pct is None:
-                continue
-            sl_thr, tp_thr = k * t.atr_pct, tp * t.atr_pct
-            sl_reach, tp_reach = t.mae_pct >= sl_thr, t.mfe_pct >= tp_thr
-            if sl_reach and tp_reach:
-                order = _first_touch(t, k, tp, keys5, idx5, bars5)
-                if order in ("sl", "ambiguous_sl", "none"):
-                    pnls.append(-sl_thr)
-                    n_sl += 1
-                    n_amb += order == "ambiguous_sl"
-                else:
-                    pnls.append(tp_thr)
-                    n_tp += 1
-            elif sl_reach:
-                pnls.append(-sl_thr)
-                n_sl += 1
-            elif tp_reach:
-                pnls.append(tp_thr)
-                n_tp += 1
-            else:
-                pnls.append(t.pnl_pct)
-        m = aggregate(pnls)
-        if pnls:
-            m["sl_pct"] = round(100 * n_sl / len(pnls), 1)
-            m["tp_pct"] = round(100 * n_tp / len(pnls), 1)
-            m["ambiguous"] = n_amb
-        return m
-
-    return {"in": block([t for t in trades if t.in_sample]),
-            "out": block([t for t in trades if not t.in_sample])}
+    """SL+TP conjunto vía el núcleo COMPARTIDO (resim_rows): mae/mfe deciden
+    QUÉ umbrales se alcanzaron; los toques cacheados deciden el ORDEN."""
+    for t in trades:
+        if not t.t_sl_touch and t.atr_pct is not None:
+            t.t_sl_touch, t.t_tp_touch = touch_minutes(t, keys5, idx5, bars5)
+    return resim_rows(feature_rows(trades), sl_k=k, tp=tp)
 
 
 # ---------------------------------------------------------------------------
@@ -734,39 +734,16 @@ def joint_ambiguity_total(phase2: dict) -> int:
 # ---------------------------------------------------------------------------
 
 def resim_sl(trades: list[Trade], k: float) -> dict:
-    """SL activa ⟺ mae% ≥ k·atr% → desenlace = −k·atr%. Solo trades con ATR."""
-    def block(sel: list[Trade]) -> dict:
-        pnls, stopped = [], 0
-        for t in sel:
-            if t.atr_pct is None:
-                continue
-            thr = k * t.atr_pct
-            if t.mae_pct >= thr:
-                pnls.append(-thr)
-                stopped += 1
-            else:
-                pnls.append(t.pnl_pct)
-        m = aggregate(pnls)
-        m["stopped_pct"] = round(100 * stopped / len(pnls), 1) if pnls else None
-        return m
-
-    return {
-        "in": block([t for t in trades if t.in_sample]),
-        "out": block([t for t in trades if not t.in_sample]),
-    }
+    """SL-only vía el núcleo compartido (paridad reporte ↔ visor)."""
+    r = resim_rows(feature_rows(trades), sl_k=k)
+    for blk in ("in", "out"):
+        r[blk]["stopped_pct"] = r[blk].get("sl_pct")   # nombre histórico §2
+    return {"in": r["in"], "out": r["out"]}
 
 
 def hourly_edge(trades: list[Trade]) -> dict[int, dict]:
-    out: dict[int, dict] = {}
-    covered = [t for t in trades if t.hour is not None]
-    for h in sorted({t.hour for t in covered}):
-        sel = [t for t in covered if t.hour == h]
-        out[h] = {
-            "in": aggregate([t.pnl_pct for t in sel if t.in_sample]),
-            "out": aggregate([t.pnl_pct for t in sel if not t.in_sample]),
-            "n": len(sel),
-        }
-    return out
+    """Edge por hora vía el núcleo compartido (paridad reporte ↔ visor)."""
+    return hourly_from_rows(feature_rows(trades))
 
 
 # ---------------------------------------------------------------------------
@@ -954,7 +931,9 @@ def render_report(instrument: str, csv_path: Path, tz_detail: dict,
 
 
 def dump_features(instrument: str, trades: list[Trade],
-                  tz_detail: dict | None = None, uncovered: int = 0) -> Path:
+                  tz_detail: dict | None = None, uncovered: int = 0,
+                  pullback: dict | None = None,
+                  window_min: int = 180) -> Path:
     rows = feature_rows(trades)
     REPORTES.mkdir(exist_ok=True)
     p = REPORTES / f"lab_features_{instrument}.json"
@@ -965,6 +944,11 @@ def dump_features(instrument: str, trades: list[Trade],
             "n_trades": len(rows),
             "uncovered": uncovered,
             "tz": tz_detail or {},
+            # Fase B3 — el panel de pullback del visor lee este agregado
+            # (calculado offline; el visor no camina barras).
+            "pullback": ({str(lvl): d for lvl, d in pullback.items()}
+                         if pullback else None),
+            "pullback_window_min": window_min,
         },
         "rows": rows,
     }
@@ -1010,9 +994,12 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     # ── Fase 2 (todas las tablas de lift salen del núcleo COMPARTIDO con el
     # visor — lift_from_rows — para que UI y reporte sean idénticos) ──
     compute_phase2_features(trades, bars, instrument)
-    rows = feature_rows(trades)
     keys5 = sorted(bars)
     idx5 = {k: i for i, k in enumerate(keys5)}
+    # Toques de la grilla SL/TP (una caminata por trade) — van al cache para
+    # que el visor re-simule el orden intrabar sin tocar las barras.
+    compute_touch_times(trades, keys5, idx5, bars)
+    rows = feature_rows(trades)
     subs = {
         name: {thr: lift_from_rows(rows, {"subs": {name: thr}})
                for thr in (50, 60, 70, 80)}
@@ -1045,7 +1032,8 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     REPORTES.mkdir(exist_ok=True)
     out = REPORTES / f"LAB_{instrument}_{datetime.now():%Y-%m-%d}.md"
     out.write_text(report, encoding="utf-8")
-    feat = dump_features(instrument, trades, tz_detail, uncovered)
+    feat = dump_features(instrument, trades, tz_detail, uncovered,
+                         pullback, window_min)
     print(f"✅ {out}\n· features: {feat}")
     return {
         "instrument": instrument, "report": out, "base": base,

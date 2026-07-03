@@ -241,6 +241,127 @@ async def test_hourly_parity_with_offline(client: AsyncClient, lab_dirs: Path):
     assert hourly_from_rows(rows) == hourly_edge(trades)
 
 
+# ---------------------------------------------------------------------------
+# Fase B3 — cambia-desenlace (re-sim) + pullback
+# ---------------------------------------------------------------------------
+
+def _with_touch(rows: list[dict]) -> list[dict]:
+    """Toques cacheados: SL toca a los 10 min con k≤2.5; TP a los 5 min con
+    tp=3 (TP primero); grillas completas con None en lo no tocado."""
+    for r in rows:
+        r["t_sl_touch"] = {str(k): (10.0 if k <= 2.5 else None)
+                           for k in (1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0)}
+        r["t_tp_touch"] = {str(t): (5.0 if t == 3.0 else None)
+                           for t in (3.0, 4.0, 6.0)}
+        r["mae_pct"] = 2.0     # alcanza SL hasta k=4 (atr_pct=0.5)
+        r["mfe_pct"] = 1.6     # alcanza TP 3.0 (1.5) pero no 4.0 (2.0)
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_resim_endpoint_parity_and_curves(client: AsyncClient, lab_dirs: Path):
+    """El endpoint devuelve EXACTAMENTE resim_rows (núcleo del §2/§8/§9) y las
+    curvas cuadran con los desenlaces."""
+    from app.services.lab_metrics import equity_curve, resim_rows
+
+    rows = _with_touch(feature_rows(_mk_trades(20)))
+    _write_cache(lab_dirs, rows)
+
+    r = await client.post("/ui/lab/resim",
+                          json={"instrument": "ES", "sl_k": 2.5, "tp": 3.0})
+    assert r.status_code == 200, r.text
+    j = r.json()
+
+    offline = resim_rows(rows, sl_k=2.5, tp=3.0)
+    outcomes = offline.pop("outcomes")
+    assert j["result"]["in"] == json.loads(json.dumps(offline["in"]))
+    assert j["result"]["out"] == json.loads(json.dumps(offline["out"]))
+    assert j["curves"]["resim"] == json.loads(json.dumps(equity_curve(outcomes)))
+    assert len(j["curves"]["base"]) == len(j["curves"]["resim"]) == 20
+    assert j["curves"]["split_idx"] == 14
+    # ambos umbrales alcanzados y TP tocó primero (5m < 10m) → todo TP +1.5
+    assert j["result"]["in"]["tp_pct"] == 100.0
+    assert j["result"]["in"]["expectancy_pct"] == 1.5
+    assert j["legacy_cache"] is False
+
+
+@pytest.mark.asyncio
+async def test_resim_ambiguous_same_bar_goes_sl(client: AsyncClient, lab_dirs: Path):
+    rows = _with_touch(feature_rows(_mk_trades(20)))
+    for r in rows:                      # mismo minuto = misma barra → SL
+        r["t_tp_touch"]["3.0"] = 10.0
+    _write_cache(lab_dirs, rows)
+    r = await client.post("/ui/lab/resim",
+                          json={"instrument": "ES", "sl_k": 2.5, "tp": 3.0})
+    j = r.json()
+    assert j["result"]["in"]["sl_pct"] == 100.0
+    assert j["result"]["in"]["ambiguous"] == 14
+    assert j["result"]["in"]["expectancy_pct"] == -1.25      # −k·atr% = −2.5·0.5
+
+
+@pytest.mark.asyncio
+async def test_resim_legacy_cache_flag_and_conservative(client: AsyncClient, lab_dirs: Path):
+    """Cache sin toques (previo a B3): ambos alcanzados → SL (conservador) y
+    se avisa legacy_cache para regenerar."""
+    rows = feature_rows(_mk_trades(20))
+    for r in rows:
+        r["mae_pct"], r["mfe_pct"] = 2.0, 1.6
+        r["t_sl_touch"] = r["t_tp_touch"] = None
+    _write_cache(lab_dirs, rows)
+    r = await client.post("/ui/lab/resim",
+                          json={"instrument": "ES", "sl_k": 2.5, "tp": 3.0})
+    j = r.json()
+    assert j["legacy_cache"] is True
+    assert j["result"]["in"]["sl_pct"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_resim_grid_validation(client: AsyncClient, lab_dirs: Path):
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)
+    assert (await client.post("/ui/lab/resim", json={
+        "instrument": "ES", "sl_k": 2.7})).status_code == 400
+    assert (await client.post("/ui/lab/resim", json={
+        "instrument": "ES", "tp": 5.0})).status_code == 400
+    assert (await client.post("/ui/lab/resim", json={
+        "instrument": "ES"})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_page_has_resim_and_pullback_panels(client: AsyncClient, lab_dirs: Path):
+    rows = feature_rows(_mk_trades(20))
+    p = lab_dirs / "REPORTES" / "lab_features_ES.json"
+    payload = {
+        "meta": {"instrument": "ES", "n_trades": len(rows),
+                 "pullback_window_min": 180,
+                 "pullback": {"0.75": {
+                     "n_filled": 15, "fill_rate": 75.0, "t_med": 10.0,
+                     "t_p90": 25.0, "cancel_after": 1560,
+                     "filled_outcome": {"n": 15, "wr": 80.0, "pf": 1.7,
+                                        "expectancy_pct": 0.07},
+                     "unfilled_outcome": {"n": 5, "expectancy_pct": 0.1},
+                     "filled_out_exp": -0.04}}},
+        "rows": rows,
+    }
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    r = await client.get("/ui/lab?instrument=ES")
+    assert r.status_code == 200
+    assert "labResim(" in r.text and "/ui/lab/resim" in r.text
+    assert "orden de toques intrabar" in r.text
+    assert "una sola caducidad" in r.text                 # nota NX-17/NX-28
+    assert "entry_reserve_timeout_seconds" in r.text
+    assert "Cancel entry after" in r.text
+    assert "1560" in r.text                               # cancel_after @0.75
+
+
+@pytest.mark.asyncio
+async def test_page_pullback_missing_hint(client: AsyncClient, lab_dirs: Path):
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)      # cache sin agregado de pullback
+    r = await client.get("/ui/lab?instrument=ES")
+    assert "no trae el agregado de pullback" in r.text
+
+
 @pytest.mark.asyncio
 async def test_page_has_interactive_panels_and_hourly(client: AsyncClient, lab_dirs: Path):
     rows = feature_rows(_mk_trades(20))

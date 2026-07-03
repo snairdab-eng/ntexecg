@@ -129,6 +129,99 @@ def lift_from_rows(rows: list[dict], selection: dict) -> dict:
     return out
 
 
+# Grillas del cambia-desenlace (las mismas del reporte offline; el visor las
+# valida — el orden intrabar solo está cacheado para estos valores).
+SL_GRID = (1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0)
+TP_GRID = (3.0, 4.0, 6.0)
+
+
+def _joint_order(row: dict, k: float, tp: float) -> str:
+    """Orden SL vs TP cuando el MAE y el MFE alcanzaron AMBOS umbrales.
+
+    Usa los minutos al primer toque cacheados por el camino A (que caminó el
+    5m intrabar): mismo minuto = misma barra → ambiguo → SL (conservador);
+    sin datos de toque (cache legado) → SL (conservador, "none" del camino A).
+    """
+    t_sl = (row.get("t_sl_touch") or {}).get(str(k))
+    t_tp = (row.get("t_tp_touch") or {}).get(str(tp))
+    if t_sl is None and t_tp is None:
+        return "none"
+    if t_tp is None:
+        return "sl"
+    if t_sl is None:
+        return "tp"
+    if t_sl == t_tp:
+        return "ambiguous_sl"
+    return "sl" if t_sl < t_tp else "tp"
+
+
+def resim_rows(rows: list[dict], sl_k: float | None = None,
+               tp: float | None = None) -> dict:
+    """Re-sim del desenlace (Anexo 25 §8.1.5) sobre la matriz — la MISMA
+    lógica para el reporte offline (§2/§8/§9) y el endpoint del visor.
+
+      SL activa ⟺ |mae%| ≥ k·atr% → −k·atr%
+      TP activa ⟺ mfe% ≥ tp·atr% → +tp·atr%
+      Ambos alcanzados → decide el orden de toques intrabar (cacheado).
+
+    Devuelve bloques in/out (con sl_pct/tp_pct/ambiguous) y `outcomes`
+    (desenlace por fila del universo, para la curva de equity del visor).
+    """
+    universe = [r for r in rows if r.get("atr_pct") is not None]
+    outcomes: list[tuple[dict, float]] = []
+    tags: list[str] = []
+    for r in universe:
+        pnl = r["pnl_pct"]
+        sl_thr = sl_k * r["atr_pct"] if sl_k else None
+        tp_thr = tp * r["atr_pct"] if tp else None
+        sl_reach = sl_thr is not None and r["mae_pct"] >= sl_thr
+        tp_reach = tp_thr is not None and r["mfe_pct"] >= tp_thr
+        if sl_reach and tp_reach:
+            order = _joint_order(r, sl_k, tp)
+            if order == "tp":
+                outcomes.append((r, tp_thr))
+                tags.append("tp")
+            else:
+                outcomes.append((r, -sl_thr))
+                tags.append("ambiguous_sl" if order == "ambiguous_sl" else "sl")
+        elif sl_reach:
+            outcomes.append((r, -sl_thr))
+            tags.append("sl")
+        elif tp_reach:
+            outcomes.append((r, tp_thr))
+            tags.append("tp")
+        else:
+            outcomes.append((r, pnl))
+            tags.append("native")
+
+    def block(in_sample: bool) -> dict:
+        sel = [(r, p, t) for (r, p), t in zip(outcomes, tags)
+               if r["in_sample"] == in_sample]
+        m = aggregate([p for _, p, _ in sel])
+        n = len(sel)
+        if n:
+            n_sl = sum(1 for *_, t in sel if t in ("sl", "ambiguous_sl"))
+            n_tp = sum(1 for *_, t in sel if t == "tp")
+            m["sl_pct"] = round(100 * n_sl / n, 1)
+            m["tp_pct"] = round(100 * n_tp / n, 1)
+            m["ambiguous"] = sum(1 for *_, t in sel if t == "ambiguous_sl")
+        return m
+
+    out = {"in": block(True), "out": block(False),
+           "outcomes": [p for _, p in outcomes]}
+    out["low_n_out"] = out["out"]["n"] < LOW_N_OUT
+    return out
+
+
+def equity_curve(pnls: list[float]) -> list[float]:
+    """P&L% acumulado (curva de equity) en el orden dado (cronológico)."""
+    out, cum = [], 0.0
+    for p in pnls:
+        cum += p
+        out.append(round(cum, 4))
+    return out
+
+
 def hourly_from_rows(rows: list[dict]) -> dict[int, dict]:
     """Edge por hora (ET) sobre las filas con hora — misma función para el §3
     del reporte offline y el panel del visor."""

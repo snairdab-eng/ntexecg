@@ -21,10 +21,14 @@ from pydantic import BaseModel
 
 from app.services.lab_metrics import (
     LOW_N_OUT,
+    SL_GRID,
+    TP_GRID,
     baseline_from_rows,
     deltas_vs_base,
+    equity_curve,
     hourly_from_rows,
     lift_from_rows,
+    resim_rows,
 )
 
 # Buckets horarios con n < 10 se marcan como poco poblados (igual que el §3
@@ -98,6 +102,13 @@ async def lab_page(request: Request, instrument: str = "ES") -> HTMLResponse:
         # Línea base y edge-por-hora con las MISMAS funciones que el reporte.
         ctx["base"] = baseline_from_rows(rows)
         ctx["hours"] = hourly_from_rows(rows)
+        # B3 — pullback agregado offline por el camino A (el visor no camina
+        # barras); ordenado por nivel numérico.
+        pb = meta.get("pullback") or None
+        ctx["pullback"] = (sorted(pb.items(), key=lambda kv: float(kv[0]))
+                           if pb else None)
+        ctx["sl_grid"] = list(SL_GRID)
+        ctx["tp_grid"] = list(TP_GRID)
     return await render(request, "lab.html", ctx)
 
 
@@ -147,5 +158,61 @@ async def lab_aggregate(sel: Selection) -> JSONResponse:
         "result": result,
         "deltas": deltas_vs_base(result, base),
         "low_n_out": result["low_n_out"],
+        "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
+    })
+
+
+class ResimSel(BaseModel):
+    instrument: str = "ES"
+    sl_k: float | None = None    # grilla {1.5..8} — como el §2 del reporte
+    tp: float | None = None      # grilla {3,4,6} — como el §8/§9
+
+
+@router.post("/ui/lab/resim")
+async def lab_resim(sel: ResimSel) -> JSONResponse:
+    """Cambia-desenlace (SL/TP re-sim) — MISMA función que §2/§8/§9 del
+    reporte (lab_metrics.resim_rows); el orden intrabar sale de los toques
+    cacheados por el camino A. Devuelve además las curvas de equity."""
+    if sel.instrument not in INSTRUMENTS:
+        return JSONResponse({"error": "instrumento inválido"}, status_code=400)
+    if sel.sl_k is None and sel.tp is None:
+        return JSONResponse({"error": "elige SL y/o TP"}, status_code=400)
+    if sel.sl_k is not None and sel.sl_k not in SL_GRID:
+        return JSONResponse(
+            {"error": f"sl_k fuera de la grilla {list(SL_GRID)}"},
+            status_code=400)
+    if sel.tp is not None and sel.tp not in TP_GRID:
+        return JSONResponse(
+            {"error": f"tp fuera de la grilla {list(TP_GRID)}"},
+            status_code=400)
+
+    cached = load_cache(sel.instrument)
+    if cached is None:
+        return JSONResponse(
+            {"error": "cache_missing", "regen_cmd": REGEN_CMD},
+            status_code=409)
+    rows, meta = cached
+
+    base = baseline_from_rows(rows)
+    r = resim_rows(rows, sl_k=sel.sl_k, tp=sel.tp)
+    outcomes = r.pop("outcomes")
+    universe = [row for row in rows if row.get("atr_pct") is not None]
+    native = [row["pnl_pct"] for row in universe]
+    split_idx = sum(1 for row in universe if row["in_sample"])
+    # Cache legado (sin toques): el conjunto SL+TP degrada a "ambos → SL"
+    # (conservador) — avisar para regenerar.
+    legacy = (sel.sl_k is not None and sel.tp is not None
+              and not any(row.get("t_sl_touch") for row in universe))
+    return JSONResponse({
+        "instrument": sel.instrument,
+        "sl_k": sel.sl_k, "tp": sel.tp,
+        "base": base,
+        "result": {"in": r["in"], "out": r["out"]},
+        "deltas": deltas_vs_base(r, base),
+        "low_n_out": r["low_n_out"],
+        "curves": {"base": equity_curve(native),
+                   "resim": equity_curve(outcomes),
+                   "split_idx": split_idx},
+        "legacy_cache": legacy,
         "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
     })

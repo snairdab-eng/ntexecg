@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Laboratorio{% endblock %}
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
 {% block content %}
 <div class="max-w-6xl mx-auto space-y-4">
 
@@ -191,8 +194,101 @@
         </div>
     </div>
 
+    <!-- B3 — CAMBIA-DESENLACE: SL/TP re-sim (sección aparte de los filtros
+         sustractivos; misma resim_rows que §2/§8/§9 del reporte) -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4"
+         x-data="labResim('{{ instrument }}')">
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">SL / TP re-simulados (cambian el desenlace — no son filtros)</h2>
+        <p class="text-xs text-gray-600 mb-3">SL ⟺ |mae%| ≥ k·ATR% → −k·ATR% · TP ⟺ mfe% ≥ tp·ATR% → +tp·ATR% · ambos → decide el <b>orden de toques intrabar del 5m</b> (cacheado por el camino A; misma barra → SL, conservador).</p>
+        <div class="flex items-center gap-4 text-sm flex-wrap">
+            <label class="text-gray-400 text-xs">SL k×ATR
+                <select class="ml-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200"
+                        x-model="slk" @change="refresh()">
+                    <option value="">OFF</option>
+                    {% for k in sl_grid %}<option value="{{ k }}">{{ k }}×</option>{% endfor %}
+                </select>
+            </label>
+            <label class="text-gray-400 text-xs">TP tp×ATR
+                <select class="ml-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200"
+                        x-model="tp" @change="refresh()">
+                    <option value="">OFF</option>
+                    {% for t in tp_grid %}<option value="{{ t }}">{{ t }}×</option>{% endfor %}
+                </select>
+            </label>
+            <span x-show="loading" class="text-gray-600 text-xs">…</span>
+            <span x-show="res && res.low_n_out" class="px-1.5 py-0.5 rounded bg-amber-900 text-amber-300 text-xs">⚠ out n &lt; {{ meta.low_n_threshold }} — no confiable</span>
+            <span x-show="res && res.legacy_cache" class="px-1.5 py-0.5 rounded bg-amber-900 text-amber-300 text-xs">⚠ caché sin toques (orden degradado a SL) — regenera la matriz</span>
+        </div>
+        <template x-if="res">
+            <div class="mt-3">
+                <table class="w-full text-sm mb-3">
+                    <thead><tr class="text-gray-500 text-xs border-b border-gray-800">
+                        <th class="text-left px-3 py-1">bloque</th><th class="text-right px-3 py-1">n</th>
+                        <th class="text-right px-3 py-1">PF (Δ)</th><th class="text-right px-3 py-1">WR% (Δ)</th>
+                        <th class="text-right px-3 py-1">exp% (Δ)</th><th class="text-right px-3 py-1">peor%</th>
+                        <th class="text-right px-3 py-1">%SL</th><th class="text-right px-3 py-1">%TP</th>
+                        <th class="text-right px-3 py-1">amb</th>
+                    </tr></thead>
+                    <tbody>
+                    <template x-for="blk in ['in', 'out']" :key="blk">
+                        <tr class="border-b border-gray-800 last:border-0"
+                            :class="(blk === 'out' && res.low_n_out) ? 'text-gray-500' : 'text-gray-300'">
+                            <td class="px-3 py-1 font-mono" x-text="blk"></td>
+                            <td class="px-3 py-1 text-right" x-text="res.result[blk].n"></td>
+                            <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].pf) + ' (' + delta(res.deltas[blk].pf) + ')'"></td>
+                            <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].wr, 1) + ' (' + delta(res.deltas[blk].wr, 1) + ')'"></td>
+                            <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].expectancy_pct, 3) + ' (' + delta(res.deltas[blk].expectancy_pct, 3) + ')'"></td>
+                            <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].worst_pct)"></td>
+                            <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].sl_pct, 1)"></td>
+                            <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].tp_pct, 1)"></td>
+                            <td class="px-3 py-1 text-right" x-text="res.result[blk].ambiguous ?? '—'"></td>
+                        </tr>
+                    </template>
+                    </tbody>
+                </table>
+                <div class="text-xs text-gray-600 mb-1">Curva de equity (P&amp;L% acumulado, universo con ATR) — <span class="text-sky-400">base</span> vs <span class="text-amber-400">re-sim</span>; el split in|out cae en el trade <span class="font-mono" x-text="res.curves.split_idx"></span>.</div>
+                <div class="h-56"><canvas x-ref="chart"></canvas></div>
+            </div>
+        </template>
+        <template x-if="error"><div class="text-xs text-red-400 mt-2" x-text="error"></div></template>
+    </div>
+
+    <!-- B3 — Pullback (agregado offline por el camino A; sin recompute) -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">Pullback — fill-rate por nivel ×ATR × desenlace {% if meta.get('pullback_window_min') %}(ventana {{ meta.pullback_window_min }} min){% endif %}</h2>
+        <p class="text-xs text-amber-300/90 mb-3">📌 El <b>cancel_after</b> sugerido = <code>entry_reserve_timeout_seconds</code> (NX-17/NX-28): <b>una sola caducidad</b> — pierna límite, reserva de símbolo y TradersPost comparten valor. Fija el MISMO número a mano en TradersPost → Strategy → Settings → <b>"Cancel entry after"</b> (estimador: min(3600, p90·60+60), el de <code>pullback_timing</code>).</p>
+        {% if pullback %}
+        <table class="w-full text-xs">
+            <thead><tr class="text-gray-500 border-b border-gray-800">
+                <th class="text-left px-2 py-1">L×ATR</th><th class="text-right px-2 py-1">fill% (n)</th>
+                <th class="text-right px-2 py-1">t med</th><th class="text-right px-2 py-1">t p90</th>
+                <th class="text-right px-2 py-1">cancel_after s</th>
+                <th class="text-right px-2 py-1">llenó: WR% / PF / avg%</th>
+                <th class="text-right px-2 py-1">llenó out exp%</th>
+                <th class="text-right px-2 py-1">no llenó: n / avg%</th>
+            </tr></thead>
+            <tbody>
+            {% for lvl, d in pullback %}
+            <tr class="border-b border-gray-800 last:border-0 {% if d.n_filled < low_n_bucket %}text-gray-600{% else %}text-gray-300{% endif %}">
+                <td class="px-2 py-1 font-mono">{{ lvl }}{% if d.n_filled < low_n_bucket %} ⚠{% endif %}</td>
+                <td class="px-2 py-1 text-right">{{ d.fill_rate if d.fill_rate is not none else '—' }}% ({{ d.n_filled }})</td>
+                <td class="px-2 py-1 text-right">{{ d.t_med if d.t_med is not none else '—' }}m</td>
+                <td class="px-2 py-1 text-right">{{ d.t_p90 if d.t_p90 is not none else '—' }}m</td>
+                <td class="px-2 py-1 text-right font-mono">{{ d.cancel_after if d.cancel_after is not none else '—' }}</td>
+                <td class="px-2 py-1 text-right">{{ d.filled_outcome.wr if d.filled_outcome.wr is not none else '—' }} / {{ d.filled_outcome.pf if d.filled_outcome.pf is not none else '—' }} / {{ d.filled_outcome.expectancy_pct if d.filled_outcome.expectancy_pct is not none else '—' }}</td>
+                <td class="px-2 py-1 text-right">{{ d.filled_out_exp if d.filled_out_exp is not none else '—' }}</td>
+                <td class="px-2 py-1 text-right">{{ d.unfilled_outcome.n }} / {{ d.unfilled_outcome.expectancy_pct if d.unfilled_outcome.expectancy_pct is not none else '—' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="text-xs text-amber-200 bg-amber-900/30 border border-amber-700 rounded p-3">Esta caché no trae el agregado de pullback (formato previo a B3). Regenera con: <code>{{ regen_cmd }}</code></div>
+        {% endif %}
+    </div>
+
     <div class="bg-gray-900 border border-gray-800 rounded p-4 text-xs text-gray-600">
-        <b>B3</b> (próxima fase): SL/TP re-sim sobre la curva de equity + pullback con <code>cancel_after = entry_reserve_timeout_seconds</code> (una sola caducidad). Este visor NO aplica nada a producción.
+        Este visor NO aplica nada a producción: aplicar filtros/<code>cancel_after</code> sigue en los CLI auditados (<code>apply_quality_filter</code>, <code>pullback_timing --apply</code>) con backup y auditoría.
     </div>
 
     <script>
@@ -226,6 +322,60 @@
                     else { this.res = await r.json(); }
                 } catch (e) { this.error = String(e); this.res = null; }
                 this.loading = false;
+            },
+        };
+    }
+
+    function labResim(instrument) {
+        return {
+            instrument, slk: '', tp: '', res: null, error: null,
+            loading: false, _chart: null, _t: null,
+            fmt(v, nd = 2) { return v === null || v === undefined ? '—' : Number(v).toFixed(nd); },
+            delta(v, nd = 2) { return v === null || v === undefined ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(nd); },
+            refresh() {
+                clearTimeout(this._t);
+                this._t = setTimeout(() => this._fetch(), 120);
+            },
+            async _fetch() {
+                if (!this.slk && !this.tp) { this.res = null; this.error = null; return; }
+                this.loading = true; this.error = null;
+                const body = { instrument: this.instrument };
+                if (this.slk) body.sl_k = Number(this.slk);
+                if (this.tp) body.tp = Number(this.tp);
+                try {
+                    const r = await fetch('/ui/lab/resim', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!r.ok) { this.error = 'Error ' + r.status + ' — ¿caché regenerada?'; this.res = null; }
+                    else { this.res = await r.json(); this.$nextTick(() => this._draw()); }
+                } catch (e) { this.error = String(e); this.res = null; }
+                this.loading = false;
+            },
+            _draw() {  // solo dibuja: los números vienen del servidor
+                const el = this.$refs.chart;
+                if (!el || !this.res) return;
+                const c = this.res.curves;
+                const labels = c.base.map((_, i) => i + 1);
+                if (this._chart) this._chart.destroy();
+                this._chart = new Chart(el, {
+                    type: 'line',
+                    data: { labels, datasets: [
+                        { label: 'base (nativo)', data: c.base, borderColor: '#38bdf8',
+                          pointRadius: 0, borderWidth: 1.5, tension: 0 },
+                        { label: 're-sim', data: c.resim, borderColor: '#fbbf24',
+                          pointRadius: 0, borderWidth: 1.5, tension: 0 },
+                    ]},
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: { legend: { labels: { color: '#9ca3af', boxWidth: 12 } } },
+                        scales: {
+                            x: { ticks: { color: '#6b7280', maxTicksLimit: 12 }, grid: { color: '#1f2937' } },
+                            y: { ticks: { color: '#6b7280' }, grid: { color: '#1f2937' } },
+                        },
+                    },
+                });
             },
         };
     }
