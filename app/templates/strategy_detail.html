@@ -600,6 +600,7 @@
                 <div><label class="block text-xs text-gray-500 mb-1">Riesgo $/op</label><input name="risk_usd_max_operation" type="number" step="0.01" value="{{ rr.get('risk_usd_max_operation','') }}" class="{{ ip }}"></div>
                 <div><label class="block text-xs text-gray-500 mb-1">Máx contratos</label><input name="max_contracts" type="number" value="{{ rr.get('max_contracts','') }}" class="{{ ip }}"></div>
                 <div><label class="block text-xs text-gray-500 mb-1">Dedup (seg)</label><input name="dedup_seconds" type="number" value="{{ pc.get('dedup_seconds','') }}" class="{{ ip }}"></div>
+                <div><label class="block text-xs text-gray-500 mb-1">Cancel after / reserva (s)</label><input name="entry_reserve_timeout_seconds" type="number" min="1" value="{{ pc.get('entry_reserve_timeout_seconds','') }}" placeholder="3600" class="{{ ip }}" title="Una sola caducidad: pierna límite, reserva de símbolo (NX-28) y el 'Cancel entry after' de TradersPost. Sugerencia: scripts/pullback_timing.py (p90 + colchón). ⚠ Fija el MISMO valor a mano en TradersPost."></div>
                 <div class="col-span-2"><label class="block text-xs text-gray-500 mb-1">Confirmaciones</label><input name="confirmaciones" value="{{ pc.get('confirmaciones','') }}" class="{{ ip }}"></div>
             </div>
         </div>

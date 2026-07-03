@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.decision import StrategyDecision
 from app.models.raw_signal import RawSignal
+from app.models.strategy import Strategy
 from app.models.webhook_delivery import WebhookDelivery
+from app.services.strategy_aliases import canonical_id, get_alias_map
 from app.web.common import flash_messages, render
 
 router = APIRouter()
@@ -84,13 +86,23 @@ async def analytics(
         .where(StrategyDecision.created_at >= since)
         .group_by(StrategyDecision.strategy_id, StrategyDecision.outcome)
     )
+    # NX-24 — agrupar por el id CANÓNICO (los renames no parten la serie) y
+    # marcar las estrategias retiradas/inexistentes.
+    alias_map = await get_alias_map(db)
     per_strat: dict[str, dict[str, int]] = {}
     for sid, outcome, c in rows.all():
-        d = per_strat.setdefault(sid or "—", {"APPROVE": 0, "BLOCK": 0, "OTHER": 0})
+        cid = canonical_id(sid, alias_map)
+        d = per_strat.setdefault(cid, {"APPROVE": 0, "BLOCK": 0, "OTHER": 0})
         if outcome in ("APPROVE", "BLOCK"):
             d[outcome] += c
         else:
             d["OTHER"] += c
+
+    status_rows = await db.execute(
+        select(Strategy.strategy_id, Strategy.status)
+    )
+    status_by_id = dict(status_rows.all())
+
     by_strategy = sorted(
         (
             {
@@ -99,6 +111,8 @@ async def analytics(
                 "block": v["BLOCK"],
                 "other": v["OTHER"],
                 "total": v["APPROVE"] + v["BLOCK"] + v["OTHER"],
+                "retired": status_by_id.get(sid) == "retired",
+                "missing": sid not in status_by_id,
             }
             for sid, v in per_strat.items()
         ),

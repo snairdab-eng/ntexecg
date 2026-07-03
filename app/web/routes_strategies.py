@@ -749,6 +749,14 @@ async def update_ficha(
         cfg["dedup_seconds"] = _d
     else:
         cfg.pop("dedup_seconds", None)
+    # NX-17 — cancel_after / caducidad de la entrada (= entry_reserve_timeout_
+    # seconds, la misma clave que libera la reserva de symbol_busy en NX-28).
+    # Recordatorio operativo: fijar el MISMO valor en TradersPost.
+    _ca = _num("entry_reserve_timeout_seconds", int)
+    if _ca is not None and _ca > 0:
+        cfg["entry_reserve_timeout_seconds"] = _ca
+    else:
+        cfg.pop("entry_reserve_timeout_seconds", None)
     _conf = _s("confirmaciones")
     if _conf:
         cfg["confirmaciones"] = _conf
@@ -1214,6 +1222,8 @@ async def clone_strategy(
         enabled=False,
         traderspost_webhook_url=traderspost_webhook_url or None,
         template_id=source.template_id,
+        # NX-20: token propio desde el nacimiento (no el secret global).
+        webhook_token=secrets.token_urlsafe(24),
     )
     db.add(clone)
 
@@ -1223,6 +1233,16 @@ async def clone_strategy(
     )
     sp = src_prof.scalar_one_or_none()
     if sp is not None:
+        # NX-20 — copiar pipeline_config_json SANEADO: la calibración viaja
+        # (windows/filters/regime/guardrails/score/scale/dedup/reserva), pero
+        # el clon no hereda cuentas ni ejecución armada.
+        cfg = dict(sp.pipeline_config_json or {})
+        cfg.pop("profiles", None)              # webhooks de cuentas: fuera
+        se = cfg.get("scale_entry")
+        if isinstance(se, dict) and se.get("mode") in ("execute", "live"):
+            se = dict(se)
+            se["mode"] = "design_only"         # nunca nace ejecutando
+            cfg["scale_entry"] = se
         db.add(StrategyProfile(
             strategy_id=new_strategy_id,
             mode=sp.mode,
@@ -1231,6 +1251,10 @@ async def clone_strategy(
             atr_period=sp.atr_period,
             atr_timeframe=sp.atr_timeframe,
             traderspost_webhook_url=traderspost_webhook_url or None,
+            # NX-20: el clon nace desarmado, herede lo que herede la fuente.
+            dry_run=True,
+            traderspost_enabled=False,
+            pipeline_config_json=cfg or None,
         ))
 
     await AuditService().log(

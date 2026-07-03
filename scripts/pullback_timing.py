@@ -31,6 +31,55 @@ from app.models.webhook_delivery import WebhookDelivery
 from app.services.symbol_mapper import SymbolMapper
 
 
+def suggest_cancel_after(
+    touch_min: list[float],
+    cushion_seconds: int = 60,
+    cap_seconds: int = 3600,
+) -> int | None:
+    """NX-17 — sugerencia de `Cancel entry after` (= entry_reserve_timeout_seconds).
+
+    p90 del tiempo al pullback (minutos) convertido a segundos + colchón,
+    topado a `cap_seconds`. None si no hay datos.
+    """
+    p90 = pctl(touch_min, 0.90)
+    if p90 is None:
+        return None
+    return min(cap_seconds, int(p90 * 60) + cushion_seconds)
+
+
+async def apply_suggestion(db, strategy_id: str, seconds: int):
+    """NX-17 — escribe `entry_reserve_timeout_seconds` (= cancel_after) en el
+    StrategyProfile. UNA sola caducidad: pierna límite (TradersPost), reserva
+    de símbolo (NX-28) y cancel_after comparten este valor.
+
+    ⚠ TradersPost no tiene API para esto: tras aplicar aquí, fija el MISMO
+    valor a mano en TradersPost → Strategy → Settings → "Cancel entry after".
+    Devuelve el valor anterior (None si no había). Merge, no reemplazo; audit.
+    """
+    from app.models.strategy_profile import StrategyProfile
+    from app.services.audit_service import AuditService
+
+    prof = (await db.execute(
+        select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
+    )).scalar_one_or_none()
+    if prof is None:
+        prof = StrategyProfile(strategy_id=strategy_id, mode="paper")
+        db.add(prof)
+    cfg = dict(prof.pipeline_config_json or {})
+    old = cfg.get("entry_reserve_timeout_seconds")
+    cfg["entry_reserve_timeout_seconds"] = int(seconds)
+    prof.pipeline_config_json = cfg
+    await db.flush()
+    await AuditService().log(
+        db, actor="pullback_timing", action="UPDATE",
+        object_type="StrategyProfile", object_id=strategy_id,
+        old_value={"entry_reserve_timeout_seconds": old},
+        new_value={"entry_reserve_timeout_seconds": int(seconds)},
+        reason="cancel_after por estrategia (p90 pullback + colchon, NX-17)",
+    )
+    return old
+
+
 def pctl(vals: list[float], p: float):
     if not vals:
         return None
@@ -136,9 +185,10 @@ def print_report(r, window_min):
     if r["touched"]:
         print(f"   tiempo al toque (min): mediana={med:.0f} p75={p75:.0f} "
               f"p90={p90:.0f} max={mx:.0f}")
-        rec = min(3600, int((p90 or 0) * 60) + 60)  # p90 en seg + 60s de colchón
+        rec = suggest_cancel_after(r["touch_min"])
         print(f"   → sugerencia Cancel entry after ≈ {rec} s "
-              f"(p90 {p90:.0f}m + colchón, tope 3600)")
+              f"(p90 {p90:.0f}m + colchón, tope 3600) "
+              f"[= entry_reserve_timeout_seconds, NX-17/NX-28]")
         for lvl in sorted(r["by_level"]):
             vals = r["by_level"][lvl]
             print(f"      nivel {lvl}×ATR: n={len(vals)} "
@@ -156,6 +206,9 @@ async def main() -> None:
     ap.add_argument("--lookback-days", type=int, default=30)
     ap.add_argument("--window-min", type=int, default=180,
                     help="ventana máx tras la señal para buscar el toque (min)")
+    ap.add_argument("--apply", action="store_true",
+                    help="NX-17: escribir la sugerencia como "
+                         "entry_reserve_timeout_seconds (dry-run sin esto)")
     args = ap.parse_args()
     since = datetime.now(timezone.utc) - timedelta(days=args.lookback_days)
 
@@ -173,10 +226,31 @@ async def main() -> None:
             strats = [args.strategy]
 
         print(f"=== Estudio de pullback (lookback {args.lookback_days}d, "
-              f"ventana {args.window_min}m) — {len(strats)} estrategia(s) ===")
+              f"ventana {args.window_min}m) — {len(strats)} estrategia(s) "
+              f"[{'APPLY' if args.apply else 'DRY-RUN'}] ===")
+        applied: dict = {}
         for s in strats:
             r = await study_strategy(db, mapper, s, since, args.window_min)
             print_report(r, args.window_min)
+            rec = suggest_cancel_after(r["touch_min"])
+            if args.apply and rec is not None:
+                old = await apply_suggestion(db, s, rec)
+                applied[s] = {"old": old, "new": rec}
+                print(f"   ✅ entry_reserve_timeout_seconds: {old} → {rec}")
+        if args.apply and applied:
+            import json
+            from pathlib import Path
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            Path("REPORTES").mkdir(exist_ok=True)
+            bp = Path("REPORTES") / f"cancel_after_backup_{ts}.json"
+            bp.write_text(json.dumps(applied, indent=2), encoding="utf-8")
+            await db.commit()
+            print(f"\n🗄️  {bp}")
+            print("⚠  RECUERDA: fijar el MISMO valor a mano en TradersPost "
+                  "(Strategy → Settings → 'Cancel entry after') por estrategia "
+                  "— una sola caducidad para pierna, reserva y orden.")
+        elif args.apply:
+            print("\n(nada que aplicar: sin sugerencias)")
 
 
 if __name__ == "__main__":
