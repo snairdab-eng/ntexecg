@@ -73,6 +73,10 @@ class ConfigResolver:
             # ANTES de resolver esta config; aquí solo para visibilidad en la
             # config efectiva: UI/show_strategy_configs).
             "dedup_seconds": 60,
+            # NX-09 — opt-out de la regla symbol_busy (L3.4): permitir apilar
+            # posiciones sobre un símbolo ocupado. Default: una posición por
+            # símbolo/cuenta.
+            "allow_stacking": False,
             # Instrument catalog (Anexo 08 #4) - reference data for the UI ficha
             # (e.g. show tick value when registering a strategy). NOT a risk gate:
             # NTEXECG's only monetary-risk responsibility is the ATR SL (Level 5).
@@ -215,6 +219,11 @@ class ConfigResolver:
                     "dedup_seconds")
                 if isinstance(_dedup, (int, float)) and _dedup > 0:
                     config["dedup_seconds"] = int(_dedup)
+                # NX-09 — opt-out de symbol_busy (bool explícito).
+                _stack = (strategy_profile.pipeline_config_json or {}).get(
+                    "allow_stacking")
+                if isinstance(_stack, bool):
+                    config["allow_stacking"] = _stack
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run

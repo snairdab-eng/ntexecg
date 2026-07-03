@@ -443,5 +443,24 @@ class FilterPipeline:
             return {"failed": True, "reason": "position_locked",
                     "check": "3.3_position_state"}
 
+        # 3.4 symbol_busy (NX-09) — una posición por símbolo/cuenta: con el
+        # símbolo ocupado (abierta o en tránsito) se bloquea CUALQUIER entrada,
+        # de la misma estrategia (re-entrada/piramidación) o de otra (caso dos
+        # ES sobre MES). Opt-out por estrategia: allow_stacking. Los reversals
+        # están exentos: su cierre lo despachó este mismo flujo justo antes.
+        # Las salidas nunca llegan aquí (L3 se salta para exits).
+        busy_states = ("PENDING_LONG", "PENDING_SHORT", "LONG", "SHORT",
+                       "EXITING")
+        if (
+            position.state in busy_states
+            and not config.get("allow_stacking")
+            and signal.signal_role not in ("reversal_to_long",
+                                           "reversal_to_short")
+        ):
+            return {"failed": True, "reason": "symbol_busy",
+                    "check": "3.4_symbol_busy",
+                    "state": position.state,
+                    "holder_strategy": position.strategy_id}
+
         # 3.1 daily_loss_stop / 3.2 max_positions — Phase 1 stubs
         return {"failed": False}
