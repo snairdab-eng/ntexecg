@@ -178,6 +178,24 @@ Herramientas: `pullback_timing.py`, `check_leg_touch.py`.
 
 ---
 
+### 4.9 Filtro direccional EMA de TF superior (CANDIDATO NUEVO)
+Sesgo de tendencia de timeframe alto: **solo `buy` si `precio > EMA`; solo `sell` si
+`precio < EMA`; en contra → BLOCK `against_htf_ema`**. Es un **gate duro** (Nivel 4), NO un
+subscore ponderado (la intención es "tomar o no", no graduar).
+
+- **Parámetros por estrategia:** timeframe ∈ {1h, 4h}, período ∈ {20, 50}, y **buffer/deadband
+  opcional** (X% o X×ATR sobre la EMA, para no hacer whipsaw pegado a la línea).
+- **Datos:** ✅ sin problema — hay **5+ años por activo, refrescados cada 15 min** (backtest y
+  vivo). La tubería de TF alto ya existe (el gate de régimen lee 1h).
+- **EMA-1 (test):** elegir período×TF por estrategia por **lift de PF/WR** (H4 = sesgo lento y
+  fuerte, menos trades; H1 = más reactivo).
+- **Relación con régimen:** complementarios — el régimen dice el *estado* (tendencia/rango), la
+  EMA dice el *lado*. No apilar a lo bruto (cada filtro recorta trades).
+
+> ⚠️ **NOTA VISIBLE (recordar):** el EMA-bias es para estrategias de **tendencia** (Neo Cloud,
+> Trend Catcher). **NO aplicarlo a las contrarian** (p. ej. `GC5m_ContraNormal_ST_WeakConf`):
+> esas viven de **fadear** el movimiento y un sesgo de EMA de TF alto les **mata el edge**.
+
 ## 5. Matriz de seguimiento (llenar al correr)
 
 Estado: ⬜ pendiente · 🟨 en curso · ✅ hecho. En cada celda anotar el **mejor umbral** y el **ΔPF/ΔWR** encontrado.
@@ -232,8 +250,29 @@ que dan lift, HMM sí/no, TP — y **botón "aplicar config recomendada"** por e
 
 Principios: es **offline** (no toca dispatch/posición/TradersPost); reutiliza la lógica viva
 (resultado offline = comportamiento real); único write = aplicar config con confirmación.
-Requisito de datos: el OHLC debe cubrir las fechas de la lista de operaciones.
+Datos: ✅ hay **5+ años de OHLC por activo, actualizados cada 15 min** (no es un cuello de
+botella). La **lista de operaciones** la actualiza el operador **diario/semanal** (tarea manual
+por ahora; a futuro, semi-automatizable desde el histórico ejecutado / reconciliación).
 
-Secuencia: **después** de cerrar los P0/P1 de seguridad del backlog de arquitectura (es
-feature nueva, no arreglo). Camino corto interino: correrlo por CLI (`eval_strategy_battery` +
-`eval_quality_filters`) contra la lista + OHLC y emitir el doc de resultados por estrategia.
+### 8.1 Preview interactivo de filtros junto a la pestaña Config (idea clave)
+Al lado de "Filtros técnicos", un **panel de analítica que se recalcula al activar/desactivar
+cada filtro y mover los sliders** (SL×ATR, score_minimum, régimen, EMA-bias), mostrando cómo se
+habría comportado la estrategia **en el pasado** sobre su lista de operaciones: curva de
+equity, WR, PF, expectancy, # trades, cola. Feedback inmediato = configurar deja de ser a ojo.
+
+Arquitectura recomendada (para que sea **instantáneo**):
+1. **Al subir/refrescar la lista** (tarea diaria/semanal del operador) → job en background
+   construye una **matriz de features por trade**: `{entry_ts, lado, pnl_nativo, sub_volume,
+   sub_atr, sub_vwap, sub_time, regime, ema_side(1h/4h·20/50), MAE, …}` usando los **mismos
+   scorers** del pipeline. El cómputo pesado ocurre **una vez** aquí.
+2. **En la UI**, togglear un filtro es solo **re-filtrar y re-agregar** esa matriz (rápido,
+   sin releer OHLC) → el gráfico y las métricas se actualizan al instante.
+
+> ⚠️ **Riesgo de sobreajuste (in-sample):** togglear hasta que la curva "se vea bonita" sobre
+> los MISMOS datos es trampa. **Mitigación obligatoria:** partir la lista en **in-sample /
+> out-of-sample** (p. ej. 70/30 temporal) y mostrar **ambas curvas**; solo confiar en configs
+> que aguanten fuera de muestra. Es la regla "validado out-of-sample" hecha visible.
+
+**Secuencia:** todo esto es **feature nueva**, va **después** de cerrar los P0/P1 de seguridad
+del backlog. Camino corto interino: CLI (`eval_strategy_battery` + `eval_quality_filters`)
+contra la lista + OHLC → doc de resultados por estrategia.
