@@ -166,6 +166,16 @@ Herramienta: `eval_strategy_battery.py` (test SL×ATR + SL catastrófico).
 ### 4.7 Entrada escalonada + Cancel after
 Herramientas: `pullback_timing.py`, `check_leg_touch.py`.
 
+**El motor soporta N piernas** (no está fijo en 3): `build_scaled` itera `quantities`
+(`C1..CN`; `C1`=pierna a mercado, offset 0; qty 0 → pierna omitida) y `levels` (N-1 offsets
+×ATR para `C2..CN`, **posicional** — dejar el slot aunque la pierna sea 0). Ej. NQ 5 piernas:
+`quantities=[0,1,0,1,0]`, `levels=[0.5,0.75,1.0,1.25]` → dispara C2 @ 0.5×ATR y C4 @ 1.0×ATR.
+Topes: `max_micro_contracts` (total ≤ eso o cae a entrada única) y `max_contracts` por perfil.
+Se configura desde la UI/JSON sin cambio de código. **Cuántas piernas y a qué niveles NO se
+decide a ojo:** sale del **analítico de profundidad de pullback** (§8.1 / SC-1) — fill-rate por
+nivel × desenlace. Activos más movidos (NQ) probablemente pidan piernas más profundas/numerosas,
+pero lo confirma la data.
+
 - **SC-1 fill-rate por nivel:** con `pullback_timing`, medir % de piernas que se llenan y el **tiempo al pullback** por nivel ×ATR. Ajustar `levels`/`quantities` a lo que realmente se toca.
 - **SC-2 escalonado vs entrada única:** expectancy de C1+adds vs una sola entrada a mercado.
 - **SC-3 cancel_after por estrategia:** fijar el valor (TradersPost) = **p90 del tiempo al pullback + colchón**, topado a 3600 s.
@@ -260,13 +270,55 @@ cada filtro y mover los sliders** (SL×ATR, score_minimum, régimen, EMA-bias), 
 habría comportado la estrategia **en el pasado** sobre su lista de operaciones: curva de
 equity, WR, PF, expectancy, # trades, cola. Feedback inmediato = configurar deja de ser a ojo.
 
+**Línea base SIEMPRE visible (contra qué comparar):** el panel debe mostrar de arranque los
+**datos base = LuxAlgo nativo** tal cual vienen en la lista de operaciones (sin filtros, sin
+SL/TP overlay): WR, PF, expectancy, curva de equity, cola. Es el brazo **B** (QS-0/RG-0/SL-base
+del §3-§4). Cada filtro/SL/TP que actives se dibuja **encima como delta vs esa base** (curva de
+comparación + Δ en las métricas), para que **nunca configures a ciegas**: siempre ves si mejoró
+o empeoró respecto a no hacer nada. Sin la base de referencia, un "se ve bien" no significa nada.
+
 Arquitectura recomendada (para que sea **instantáneo**):
 1. **Al subir/refrescar la lista** (tarea diaria/semanal del operador) → job en background
    construye una **matriz de features por trade**: `{entry_ts, lado, pnl_nativo, sub_volume,
-   sub_atr, sub_vwap, sub_time, regime, ema_side(1h/4h·20/50), MAE, …}` usando los **mismos
-   scorers** del pipeline. El cómputo pesado ocurre **una vez** aquí.
+   sub_atr, sub_vwap, sub_time, regime(1h/4h), ema_side(1h/4h·20/50), MAE, …}` usando los
+   **mismos scorers** del pipeline. El cómputo pesado ocurre **una vez** aquí.
 2. **En la UI**, togglear un filtro es solo **re-filtrar y re-agregar** esa matriz (rápido,
    sin releer OHLC) → el gráfico y las métricas se actualizan al instante.
+
+**SL×ATR en el preview (distinto a los filtros):** los filtros solo **incluyen/excluyen**
+trades; el **SL cambia el desenlace** de cada uno (un stop más ajustado convierte ganadores en
+perdedores). Para que el slider de `k` sea instantáneo, precomputar por trade el **MAE en
+múltiplos de ATR** (excursión adversa máxima dentro de la ventana de holding, con el ATR
+período/TF del pipeline). Regla: **SL se activa ⟺ `MAE_ATR ≥ k`** → resultado `−k×ATR`; si no,
+resultado nativo. Así el slider re-agrega sin releer OHLC. Caveats: asume fill exacto en k×ATR
+(ignora slippage/**gaps**), medir el orden SL-vs-salida-nativa, TP interactúa (MVP solo SL),
+el escalonado es overlay aparte. Es el **SL-1/SL-2** interactivo (encontrar el `k` que capa la
+cola sin degradar WR/PF, y su equivalente en `$`).
+
+**TP en el preview (completa el cuadro):** TP solo = simétrico al SL con el **MFE en ATR**
+(`TP ⟺ MFE_ATR ≥ tp_k` → `+tp_k×ATR`). **Cuidado con SL+TP juntos:** lo que se toca **primero**
+manda, y las magnitudes MAE/MFE no dan el orden → precomputar el **orden de toques** (camino en
+ATR compacto, o tiempos de primer toque por nivel) para resolver cualquier `(k_sl, tp_k)`.
+**Decisión de modelado explícita:** el bracket ATR (a) **reemplaza** la salida nativa de LuxAlgo,
+o (b) se toma **el primero** entre SL/TP/salida-nativa (más realista — recomendado). Con dos
+palancas el sobreajuste se agrava → in/out-of-sample obligatorio.
+
+**Puntos de entrada / profundidad de pullback (calibra el escalonado):** de la misma matriz
+(ya trae el camino en ATR), un **histograma de profundidad de retroceso** desde el precio de
+señal → **fill-rate por nivel** ("% de trades que retrocedieron ≥ 0.25/0.5/0.75/1.0×ATR"). Es
+lo que hoy se adivina en `scale_entry.levels`. **Clave anti-engaño:** cruzarlo con el
+**desenlace de los trades llenados** (WR/PF por nivel) — las piernas profundas suelen llenarse
+en los trades que luego fallan; el nivel bueno tiene fill-rate alto **y** buen resultado.
+Añadir el **tiempo al pullback** (ya lo da `pullback_timing`) → cuánto debe vivir la orden
+(liga con `cancel_after`). Medir el retroceso en una **ventana de entrada** (primeros N
+min/barras), no el ruido tardío. Es el **SC-1** del §4.7 hecho visual.
+
+**Régimen/HMM en el preview:** aplica igual — el régimen es categórico por trade, así que
+además del toggle de `allowed_regimes` conviene mostrar un **desglose de WR/PF por régimen**
+(trending_bull/bear/ranging/unknown), con **selector 1h/4h** (precomputado a ambos) y el bucket
+`unknown` aparte (siempre pasa). Es el RG-1/RG-2 hecho interactivo, y **confirma/corrige** las
+hipótesis de `allowed_regimes` de §4.2. Ojo: buckets por régimen con **n bajo** = stats
+ruidosas → marcarlos y validar in/out-of-sample.
 
 > ⚠️ **Riesgo de sobreajuste (in-sample):** togglear hasta que la curva "se vea bonita" sobre
 > los MISMOS datos es trampa. **Mitigación obligatoria:** partir la lista en **in-sample /
