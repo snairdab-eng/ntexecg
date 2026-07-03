@@ -35,6 +35,11 @@ class ConfigResolver:
         config: dict = {
             # System defaults (fallbacks)
             "mode": "normal",
+            # System-level brake (GlobalProfile.mode: normal/defensive/
+            # flatten_only/paused). Kept SEPARATE from "mode", which the
+            # StrategyProfile overwrites with its maturity mode (paper/micro/...).
+            # L1.1 reads THIS key — never "mode" (NX-01).
+            "global_mode": "normal",
             "dry_run": True,
             "traderspost_enabled": False,
             "sl_atr_multiplier": 1.5,
@@ -86,6 +91,8 @@ class ConfigResolver:
         if global_profile:
             config.update({
                 "mode": global_profile.mode,
+                # System brake — survives the StrategyProfile merge (NX-01).
+                "global_mode": global_profile.mode,
                 "dry_run": global_profile.dry_run,
                 "traderspost_enabled": global_profile.traderspost_enabled,
                 "score_minimum": global_profile.score_minimum,

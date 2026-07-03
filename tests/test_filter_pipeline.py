@@ -105,10 +105,14 @@ async def test_level_1_strategy_retired(
 async def test_level_1_global_mode_paused_for_entry(
     db: AsyncSession, market_data_service
 ) -> None:
-    """Level 1.1: global mode=paused + entry → BLOCK."""
+    """Level 1.1: global mode=paused + entry → BLOCK.
+
+    NX-01: the brake lives under "global_mode" — "mode" carries the strategy's
+    maturity mode (paper/micro/...) after the StrategyProfile merge.
+    """
     signal = _make_signal(action="buy")
     strategy = _make_strategy()
-    config = {"mode": "paused"}
+    config = {"global_mode": "paused"}
     pipeline = FilterPipeline(market_data_service)
 
     result = await pipeline.evaluate(db, signal, strategy, config)
@@ -125,7 +129,7 @@ async def test_level_1_global_mode_paused_for_exit_permitted(
     """Level 1.1: global mode=paused + exit → permitted (exits bypass)."""
     signal = _make_signal(action="exit")
     strategy = _make_strategy()
-    config = {"mode": "paused"}
+    config = {"global_mode": "paused"}
     pipeline = FilterPipeline(market_data_service)
 
     # Level 1 passes (exit exception), but pipeline needs full eval

@@ -283,7 +283,10 @@ class FilterPipeline:
         """
 
         # 1.1 Global mode — exits always pass (contract rule: exits prioritized)
-        mode = config.get("mode", "normal")
+        # Reads "global_mode" (GlobalProfile.mode), NOT "mode": the StrategyProfile
+        # merge overwrites "mode" with the strategy's maturity mode (paper/micro/...),
+        # which silently disabled this brake for every strategy (NX-01).
+        mode = config.get("global_mode", "normal")
         if mode in ("paused", "flatten_only") and not is_exit:
             return {"outcome": "BLOCK", "reason": f"global_{mode}",
                     "check": "1.1_global_mode"}
