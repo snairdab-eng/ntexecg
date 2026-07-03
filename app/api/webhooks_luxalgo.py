@@ -262,6 +262,15 @@ async def _classify_and_handle_reversal(
     if norm.signal_role not in ("reversal_to_long", "reversal_to_short"):
         return None  # normal entry/exit flow
 
+    # NX-27 — el reversal respeta L1.2: una estrategia candidate/quarantined/
+    # retired NO despacha ni el cierre. Se deja caer al pipeline para que
+    # registre el QUEUE/BLOCK normal con 0 deliveries. ("paused" sí cierra:
+    # las salidas tienen prioridad y L1.2 solo bloquea sus entradas.)
+    if strategy is None or strategy.status in (
+        "candidate", "quarantined", "retired"
+    ):
+        return None
+
     # Reversal: close the current position first (always).
     from app.services.forced_exit import dispatch_forced_exit
     await dispatch_forced_exit(db, cur, strategy, config, "reversal", settings)
@@ -343,6 +352,7 @@ async def _dispatch_approved(
     base_tp = config.get("tp_atr_multiplier")
 
     any_sent = False
+    any_failed = False
     primary_qty = 0
     for di, dest in enumerate(destinations):
         dest_config = dprof.make_dest_config(config, dest)
@@ -402,6 +412,8 @@ async def _dispatch_approved(
             ))
             if result.status == "SENT":
                 any_sent = True
+            if result.status == "FAILED":
+                any_failed = True
             try:
                 dest_qty += int(payload.get("quantity") or 0)
             except (TypeError, ValueError):
@@ -439,10 +451,23 @@ async def _dispatch_approved(
         await position_service.on_delivery_confirmed(
             db, norm.strategy_id, account_id, norm.mapped_symbol
         )
+    elif any_failed:
+        # NX-08 — envío real fallido en todos los destinos (nada SENT):
+        # estado honesto en vez de PENDING/EXITING eternos. La entrada nunca
+        # llegó al broker → FLAT; la salida es incierta → UNKNOWN (L3 bloquea
+        # entradas hasta revisión). DRY_RUN puro no entra aquí.
+        if is_exit:
+            await position_service.on_exit_failed(
+                db, norm.strategy_id, account_id, norm.mapped_symbol
+            )
+        else:
+            await position_service.on_entry_failed(
+                db, norm.strategy_id, account_id, norm.mapped_symbol
+            )
 
     logger.info(
-        "dispatch_complete strategy={} destinations={} any_sent={}",
-        norm.strategy_id, len(destinations), any_sent,
+        "dispatch_complete strategy={} destinations={} any_sent={} any_failed={}",
+        norm.strategy_id, len(destinations), any_sent, any_failed,
     )
 
 

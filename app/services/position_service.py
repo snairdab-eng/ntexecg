@@ -101,6 +101,53 @@ class PositionService:
         await db.flush()
         return position
 
+    async def on_exit_failed(
+        self, db: AsyncSession, strategy_id: str, account_id: str, symbol: str,
+        actor: str = "system",
+    ) -> PositionState:
+        """NX-08: cierre con envío FAILED (reintentos agotados) → UNKNOWN.
+
+        El estado real es incierto (la posición puede seguir abierta en el
+        broker); UNKNOWN bloquea nuevas entradas en L3 hasta revisión manual.
+        """
+        position = await self.get_state(db, strategy_id, account_id, symbol)
+        old_state = position.state
+        position.state = "UNKNOWN"
+        await db.flush()
+        await self._audit.log(
+            db, actor=actor, action="DELIVERY_FAILED", object_type="PositionState",
+            object_id=f"{account_id}:{symbol}",
+            old_value={"state": old_state},
+            new_value={"state": "UNKNOWN", "cause": "exit_delivery_failed"},
+        )
+        return position
+
+    async def on_entry_failed(
+        self, db: AsyncSession, strategy_id: str, account_id: str, symbol: str,
+        actor: str = "system",
+    ) -> PositionState:
+        """NX-08: entrada con envío FAILED → nada llegó al broker → FLAT.
+
+        Solo revierte PENDING_* (no toca LONG/SHORT confirmados de otro flujo).
+        """
+        position = await self.get_state(db, strategy_id, account_id, symbol)
+        if position.state not in ("PENDING_LONG", "PENDING_SHORT"):
+            return position
+        old_state = position.state
+        position.state = "FLAT"
+        position.quantity = 0
+        position.direction = None
+        position.entry_price = None
+        position.entry_signal_id = None
+        await db.flush()
+        await self._audit.log(
+            db, actor=actor, action="DELIVERY_FAILED", object_type="PositionState",
+            object_id=f"{account_id}:{symbol}",
+            old_value={"state": old_state},
+            new_value={"state": "FLAT", "cause": "entry_delivery_failed"},
+        )
+        return position
+
     async def on_flatten_manual(
         self, db: AsyncSession, strategy_id: str, account_id: str, symbol: str,
         actor: str,

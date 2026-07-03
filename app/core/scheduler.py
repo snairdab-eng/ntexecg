@@ -137,13 +137,23 @@ class ExitManagerJob:
 
     async def _run(self) -> None:
         from app.db.session import AsyncSessionLocal
-        from app.services.forced_exit import exit_manager_sweep
+        from app.services.forced_exit import exit_manager_sweep, find_stale_positions
 
         async with AsyncSessionLocal() as db:
             try:
                 n = await exit_manager_sweep(db, self._settings)
                 if n:
                     logger.info("exit_manager_sweep dispatched={}", n)
+                # NX-08 — posiciones en estado transitorio (PENDING_*/EXITING)
+                # sin actualizar hace >15 min: algo se perdió, el operador debe
+                # revisar (el banner de FAILED del dashboard da el detalle).
+                for pos in await find_stale_positions(db):
+                    logger.warning(
+                        "position_stale state={} symbol={} strategy={} "
+                        "account={} updated_at={}",
+                        pos.state, pos.symbol, pos.strategy_id,
+                        pos.account_id, pos.updated_at,
+                    )
                 await db.commit()
             except Exception as exc:
                 logger.error("exit_manager_sweep_failed error={}", exc)
