@@ -191,3 +191,65 @@ async def test_legacy_list_cache_still_readable(client: AsyncClient, lab_dirs: P
 async def test_invalid_instrument_rejected(client: AsyncClient, lab_dirs: Path):
     r = await client.get("/ui/lab/data?instrument=../../etc")
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Fase B2 — selecciones de régimen/EMA, edge por hora y controles en la página
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_aggregate_regime_selection_fail_open(client: AsyncClient, lab_dirs: Path):
+    """Gate de régimen con semántica viva: los permitidos Y unknown pasan."""
+    rows = feature_rows(_mk_trades(20))
+    for i, r in enumerate(rows):            # 5 bull, 5 unknown, 10 ranging
+        r["regime_1h"] = ("trending_bull" if i < 5
+                          else "unknown" if i < 10 else "ranging")
+    _write_cache(lab_dirs, rows)
+
+    r = await client.post("/ui/lab/aggregate", json={
+        "instrument": "ES",
+        "regime": {"tf": "1h", "allowed": ["trending_bull"]}})
+    assert r.status_code == 200
+    j = r.json()
+    kept = j["result"]["in"]["n"] + j["result"]["out"]["n"]
+    assert kept == 10                        # 5 bull + 5 unknown (fail-open)
+
+
+@pytest.mark.asyncio
+async def test_aggregate_ema_selection_strict(client: AsyncClient, lab_dirs: Path):
+    """EMA con-tendencia estricta: True pasa; False y None se excluyen."""
+    rows = feature_rows(_mk_trades(20))     # 1h20 True en pares, 4h50 None
+    _write_cache(lab_dirs, rows)
+    r = await client.post("/ui/lab/aggregate",
+                          json={"instrument": "ES", "ema": ["1h20"]})
+    kept = r.json()["result"]
+    assert kept["in"]["n"] + kept["out"]["n"] == 10       # solo los pares
+    r = await client.post("/ui/lab/aggregate",
+                          json={"instrument": "ES", "ema": ["4h50"]})
+    kept = r.json()["result"]
+    assert kept["in"]["n"] + kept["out"]["n"] == 0        # None nunca pasa
+
+
+@pytest.mark.asyncio
+async def test_hourly_parity_with_offline(client: AsyncClient, lab_dirs: Path):
+    """El panel horario usa la MISMA función que el §3 del reporte."""
+    from app.services.lab_metrics import hourly_from_rows
+    from scripts.lab_analyze import hourly_edge
+
+    trades = _mk_trades(20)
+    rows = feature_rows(trades)
+    assert hourly_from_rows(rows) == hourly_edge(trades)
+
+
+@pytest.mark.asyncio
+async def test_page_has_interactive_panels_and_hourly(client: AsyncClient, lab_dirs: Path):
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)
+    r = await client.get("/ui/lab?instrument=ES")
+    assert r.status_code == 200
+    assert "labSel(" in r.text                       # componente Alpine
+    assert "/ui/lab/aggregate" in r.text             # sin métricas en JS: fetch
+    assert "volume_relative" in r.text and "4h50" in r.text
+    assert "Edge por hora" in r.text
+    assert "⚠" in r.text                             # buckets n bajo marcados
+    assert "no confiable" in r.text                  # guarda n<15 visible

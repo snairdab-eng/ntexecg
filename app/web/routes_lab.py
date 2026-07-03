@@ -23,8 +23,13 @@ from app.services.lab_metrics import (
     LOW_N_OUT,
     baseline_from_rows,
     deltas_vs_base,
+    hourly_from_rows,
     lift_from_rows,
 )
+
+# Buckets horarios con n < 10 se marcan como poco poblados (igual que el §3
+# del reporte offline); la guarda dura anti-espejismo del out sigue en 15.
+LOW_N_BUCKET = 10
 from app.web.common import render
 
 router = APIRouter()
@@ -85,12 +90,14 @@ async def lab_page(request: Request, instrument: str = "ES") -> HTMLResponse:
         instrument = "ES"
     cached = load_cache(instrument)
     ctx: dict = {"instruments": INSTRUMENTS, "instrument": instrument,
-                 "regen_cmd": REGEN_CMD, "meta": None, "base": None}
+                 "regen_cmd": REGEN_CMD, "meta": None, "base": None,
+                 "hours": None, "low_n_bucket": LOW_N_BUCKET}
     if cached is not None:
         rows, meta = cached
         ctx["meta"] = meta
-        # Línea base con las MISMAS funciones que el reporte offline.
+        # Línea base y edge-por-hora con las MISMAS funciones que el reporte.
         ctx["base"] = baseline_from_rows(rows)
+        ctx["hours"] = hourly_from_rows(rows)
     return await render(request, "lab.html", ctx)
 
 

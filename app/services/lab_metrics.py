@@ -129,6 +129,21 @@ def lift_from_rows(rows: list[dict], selection: dict) -> dict:
     return out
 
 
+def hourly_from_rows(rows: list[dict]) -> dict[int, dict]:
+    """Edge por hora (ET) sobre las filas con hora — misma función para el §3
+    del reporte offline y el panel del visor."""
+    covered = [r for r in rows if r.get("hour") is not None]
+    out: dict[int, dict] = {}
+    for h in sorted({r["hour"] for r in covered}):
+        sel = [r for r in covered if r["hour"] == h]
+        out[h] = {
+            "in": aggregate([r["pnl_pct"] for r in sel if r["in_sample"]]),
+            "out": aggregate([r["pnl_pct"] for r in sel if not r["in_sample"]]),
+            "n": len(sel),
+        }
+    return out
+
+
 def deltas_vs_base(sel: dict, base: dict) -> dict:
     """ΔPF/ΔWR/Δexpectancy in/out de una selección contra la línea base."""
     def d(a, b, nd=2):
