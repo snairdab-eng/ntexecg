@@ -34,3 +34,5 @@ DOCS/*.pdf
 .DS_Store
 Thumbs.db
 desktop.ini
+
+.claude/
