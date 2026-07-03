@@ -107,10 +107,14 @@ def resolve_destinations(config: dict) -> list[dict]:
             "scale_entry": scale,
             "sl_atr_multiplier": _ovr("sl_atr_multiplier", base_sl),
             "tp_atr_multiplier": p["tp_atr_multiplier"] if "tp_atr_multiplier" in p else base_tp,
-            "dry_run": p["dry_run"] if isinstance(p.get("dry_run"), bool) else base_dry,
-            "traderspost_enabled": (
-                p["traderspost_enabled"]
-                if isinstance(p.get("traderspost_enabled"), bool) else base_tpen
+            # Kill-switch por capas (NX-02): un perfil solo puede RESTRINGIR el
+            # envío, nunca abrirlo por encima de la base (que ya fusiona global
+            # OR/AND estrategia). dry_run hereda con OR; traderspost_enabled con
+            # AND (sin especificar → hereda; especificado → solo endurece).
+            "dry_run": bool(base_dry) or bool(p.get("dry_run")),
+            "traderspost_enabled": bool(base_tpen) and (
+                bool(p["traderspost_enabled"])
+                if isinstance(p.get("traderspost_enabled"), bool) else True
             ),
         })
 
