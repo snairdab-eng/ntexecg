@@ -264,6 +264,18 @@ Datos: ✅ hay **5+ años de OHLC por activo, actualizados cada 15 min** (no es 
 botella). La **lista de operaciones** la actualiza el operador **diario/semanal** (tarea manual
 por ahora; a futuro, semi-automatizable desde el histórico ejecutado / reconciliación).
 
+**Formato de entrada / ingesta (confirmado):** las listas viven en
+`C:\NTEXECG\ListaDeOperaciones`. **El único insumo del módulo es el CSV** (LuxAlgo Backtester),
+1 por estrategia. **El reporte `.md` NO se usa** para el cómputo (es narrativo) — a lo sumo sirve
+como **cross-check** de la línea base (que el WR/PF calculado cuadre con lo que reportó LuxAlgo).
+El CSV trae **2 filas por trade** (Entrada/Salida, pareadas por `Trade number`),
+con dirección, fecha/hora, precio, PyG, y **ya incluye `Desviación adversa` (MAE) y `Desviación
+favorable` (MFE)** en USD y %. → Profundidad de pullback, SL y TP (magnitudes) salen **directo
+del CSV**; solo el **timing** (tiempo-al-pullback → `cancel_after`; orden SL-vs-TP) se saca del
+OHLC. Para normalizar a **×ATR**: `MAE% × precio ÷ ATR_en_entrada`. **Requisito UX:** reemplazar
+el archivo por estrategia debe ser trivial (drop-in / upload por estrategia). **Ojo:** confirmar
+la **zona horaria** de `Fecha y hora` para el analítico de hora/ventana. Las dos ES = dos CSV.
+
 ### 8.1 Preview interactivo de filtros junto a la pestaña Config (idea clave)
 Al lado de "Filtros técnicos", un **panel de analítica que se recalcula al activar/desactivar
 cada filtro y mover los sliders** (SL×ATR, score_minimum, régimen, EMA-bias), mostrando cómo se
@@ -309,9 +321,24 @@ señal → **fill-rate por nivel** ("% de trades que retrocedieron ≥ 0.25/0.5/
 lo que hoy se adivina en `scale_entry.levels`. **Clave anti-engaño:** cruzarlo con el
 **desenlace de los trades llenados** (WR/PF por nivel) — las piernas profundas suelen llenarse
 en los trades que luego fallan; el nivel bueno tiene fill-rate alto **y** buen resultado.
-Añadir el **tiempo al pullback** (ya lo da `pullback_timing`) → cuánto debe vivir la orden
-(liga con `cancel_after`). Medir el retroceso en una **ventana de entrada** (primeros N
-min/barras), no el ruido tardío. Es el **SC-1** del §4.7 hecho visual.
+Añadir el **tiempo al pullback** (ya lo da `pullback_timing`) → **curva "% de fills por
+tiempo" por nivel** → `cancel_after` = **p90 del tiempo al toque + colchón** (topado a 3600 s,
+un valor por estrategia = dimensionado a la pierna más profunda/lenta). Medir el retroceso en
+una **ventana de entrada** (primeros N min/barras), no el ruido tardío. Es el **SC-1/SC-3**
+del §4.7 hecho visual.
+**Consistencia clave `cancel_after` ↔ reserva `symbol_busy`:** el tiempo que vive la pierna
+límite = el tiempo que el símbolo queda **reservado** (NX-09). Deben ser el **mismo valor**: al
+expirar la pierna por `cancel_after` sin llenarse, la reserva se **libera** (PENDING → FLAT) y
+otra estrategia puede ganar el símbolo. Una sola "fecha de caducidad" para la orden y la reserva.
+
+**Ventana de operaciones / edge por hora en el preview:** la ventana es un **gate duro L2**
+(fuera → BLOCK entradas; salidas exentas), distinta del subscore blando `time_of_day` (L4). El
+analítico debe mostrar un **desglose del edge por hora / franja de 30 min** (WR/PF/expectancy +
+nº trades) → así se fija la ventana **con datos** (poner las horas ganadoras) y se calibra el
+`time_of_day`. En el preview, la ventana es un control (arrastrar inicio/fin o casillas por
+hora) que re-filtra al instante (hora precomputada por trade). Es el **SW-1** (§4.5) visual.
+Cuidados: TZ consistente, instrumentos 24h cruzan madrugada, buckets con **n bajo** = ruido →
+marcar y validar in/out-of-sample.
 
 **Régimen/HMM en el preview:** aplica igual — el régimen es categórico por trade, así que
 además del toggle de `allowed_regimes` conviene mostrar un **desglose de WR/PF por régimen**
