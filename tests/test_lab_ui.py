@@ -477,6 +477,191 @@ def test_survivors_single_source_parity():
     assert len(a) > 0
 
 
+# ---------------------------------------------------------------------------
+# B4.2 (revisado) — panel de DECISIÓN: vector completo + frase de tradeoff
+# ---------------------------------------------------------------------------
+
+def test_deltas_include_risk_vector():
+    """El Δ contra base cubre el vector completo: PF, WR, exp, maxDD y net."""
+    from app.services.lab_metrics import deltas_vs_base
+
+    sel = {"in": {"pf": 1.5, "wr": 60.0, "expectancy_pct": 0.1,
+                  "max_dd_pct": -2.0, "net_pct": 4.0},
+           "out": {"pf": 1.2, "wr": 55.0, "expectancy_pct": 0.05,
+                   "max_dd_pct": -1.0, "net_pct": 1.0}}
+    base = {"in": {"pf": 1.3, "wr": 55.0, "expectancy_pct": 0.08,
+                   "max_dd_pct": -3.5, "net_pct": 5.0},
+            "out": {"pf": 1.0, "wr": 50.0, "expectancy_pct": 0.01,
+                    "max_dd_pct": -2.0, "net_pct": 0.5}}
+    d = deltas_vs_base(sel, base)
+    assert d["in"]["max_dd_pct"] == 1.5          # −2.0 − (−3.5): DD mejora
+    assert d["in"]["net_pct"] == -1.0
+    assert d["out"]["max_dd_pct"] == 1.0
+
+
+def test_tradeoff_read_deterministic_patterns():
+    """B4.2 — la capa de interpretación: reglas DETERMINISTAS sobre el patrón
+    de signos del Δ (en lab_metrics, no en JS). Los 4 mapeos del operador."""
+    from app.services.lab_metrics import tradeoff_read
+
+    # PF↓ + WR↑ + DD↓ (dd Δ>0 = drawdown menos profundo) → riesgo, no calidad
+    t = tradeoff_read({"pf": -0.3, "wr": 5.0, "max_dd_pct": 1.2})
+    assert t["verdict"] == "tradeoff_riesgo"
+    assert "riesgo, no de calidad" in t["phrase"]
+    # PF↑ + WR↓ → más volátil
+    t = tradeoff_read({"pf": 0.4, "wr": -4.0, "max_dd_pct": -0.5})
+    assert t["verdict"] == "volatil"
+    assert "volátil" in t["phrase"]
+    # PF↑ + WR↑ → mejor en todo
+    t = tradeoff_read({"pf": 0.4, "wr": 3.0, "max_dd_pct": 0.5})
+    assert t["verdict"] == "mejor"
+    # PF↓ + WR↓ → peor en todo — descartar
+    t = tradeoff_read({"pf": -0.4, "wr": -3.0, "max_dd_pct": -0.5})
+    assert t["verdict"] == "peor"
+    assert "descartar" in t["phrase"]
+    # neutro (dentro de la tolerancia) y sin datos
+    assert tradeoff_read({"pf": 0.01, "wr": 0.1,
+                          "max_dd_pct": 0.0})["verdict"] == "neutro"
+    assert tradeoff_read({"pf": None, "wr": 1.0,
+                          "max_dd_pct": 0.0})["verdict"] == "sin_datos"
+
+
+# ---------------------------------------------------------------------------
+# B4.3 (revisado) — config default por RIESGO (sizing 1%), elegida por OUT
+# ---------------------------------------------------------------------------
+
+def _risk_row(pnl, mae_atr, pb: dict | None, in_sample=True) -> dict:
+    return {"pnl_pct": pnl, "mae_pct": abs(pnl), "mfe_pct": abs(pnl) + 0.1,
+            "atr_pct": 1.0, "mae_atr": mae_atr, "mfe_atr": 1.0,
+            "in_sample": in_sample, "t_pb_touch": pb}
+
+
+def test_risk_sized_outcomes_known_answer():
+    """Modelo de sizing a riesgo fijo: tamaño tal que (todo llena y pega el
+    stop) = −risk%. SL ANCLADO a la señal; pierna llena a mejor precio →
+    pierde menos contra el stop y gana más en el ganador."""
+    from app.services.lab_metrics import risk_sized_outcomes
+
+    legs = ((0.0, 0.5), (0.5, 0.5))
+    # ganador con pullback (la pierna 0.5 llena): worst = 7.75 → m = 1/7.75
+    win = _risk_row(2.0, 0.6, {"0.5": 10.0})
+    r = risk_sized_outcomes([win], 8.0, legs)
+    assert r["in"]["expectancy_pct"] == round((0.5*2.0 + 0.5*2.5) / 7.75, 4)
+    assert r["approx_fills"] is False
+    # stopped con todo lleno → EXACTAMENTE −1% (el tope duro, por construcción)
+    stop = _risk_row(-5.0, 9.0, {"0.5": 5.0})
+    r = risk_sized_outcomes([stop], 8.0, legs)
+    assert r["in"]["expectancy_pct"] == -1.0
+    # ganador SIN pullback: la pierna no llena → solo media posición gana
+    nofill = _risk_row(2.0, 0.1, {})
+    r = risk_sized_outcomes([nofill], 8.0, legs)
+    assert r["in"]["expectancy_pct"] == round(0.5 * 2.0 / 7.75, 4)
+    # cache sin t_pb_touch (legado) → fallback mae_atr con flag approx
+    legacy = _risk_row(2.0, 0.6, None)
+    r = risk_sized_outcomes([legacy], 8.0, legs)
+    assert r["approx_fills"] is True
+    assert r["in"]["expectancy_pct"] == round((0.5*2.0 + 0.5*2.5) / 7.75, 4)
+
+
+def test_default_config_picks_by_out_never_in_sample():
+    """Regla dura B4.3: la config default se elige por OUT-of-sample. El
+    escalonado que domina IN-SAMPLE (0.655%/trade @4×+0.75) NO gana si
+    fuera de muestra las piernas no llenan en los ganadores."""
+    from app.services.lab_metrics import default_config_study
+
+    rows = []
+    # in: 14 ganadores CON pullback somero (el escalonado luce espectacular)
+    for _ in range(14):
+        rows.append(_risk_row(2.0, 0.6, {"0.25": 5.0, "0.5": 10.0}))
+    # out: 5 ganadores SIN pullback (pierna no llena → cede ganancia) + 1 stop
+    for _ in range(5):
+        rows.append(_risk_row(2.0, 0.1, {}, in_sample=False))
+    rows.append(_risk_row(-5.0, 9.0,
+                          {"0.25": 5.0, "0.5": 5.0, "0.75": 5.0},
+                          in_sample=False))
+
+    st = default_config_study(rows)
+    assert st["none_viable"] is False
+    rec = st["recommended"]
+    # por OUT gana la entrada única @4× (0.25%/trade out) …
+    assert rec["sl_k"] == 4.0
+    assert len(rec["legs"]) == 1 and rec["legs"][0]["depth"] == 0.0
+    assert rec["out"]["expectancy_pct"] == 0.25
+    # … aunque por IN-SAMPLE ganaría el somero 0.75 (espejismo)
+    best_in = max(st["candidates"],
+                  key=lambda c: c["in"]["expectancy_pct"] or -9e9)
+    assert len(best_in["legs"]) > 1 and best_in is not rec
+    # costo visible: riesgo duro, peor pérdida topada a −1%, cesión vs nativo
+    assert rec["cost"]["risk_pct"] == 1.0
+    assert rec["cost"]["worst_account_pct"] >= -1.0
+    assert "ceded_out_pct" in rec["cost"]
+    # guarda n<15 visible
+    assert rec["low_n_out"] is True and rec["out"]["n"] == 6
+
+
+def test_default_config_none_viable():
+    """Guarda innegociable: sin expectancy OOS positiva no se recomienda —
+    reducir riesgo hasta volverla no-rentable derrota el propósito."""
+    from app.services.lab_metrics import default_config_study
+
+    rows = ([_risk_row(-1.0, 0.5, {}) for _ in range(14)]
+            + [_risk_row(-1.0, 0.5, {}, in_sample=False) for _ in range(6)])
+    st = default_config_study(rows)
+    assert st["none_viable"] is True and st["recommended"] is None
+
+
+@pytest.mark.asyncio
+async def test_default_endpoint_and_tradeoff_in_responses(
+    client: AsyncClient, lab_dirs: Path
+):
+    """GET /ui/lab/default sirve el estudio del núcleo; aggregate/resim
+    incluyen la frase de tradeoff (paridad con lab_metrics)."""
+    from app.services.lab_metrics import (default_config_study, deltas_vs_base,
+                                          tradeoff_read)
+
+    rows = feature_rows(_mk_trades(20))
+    for r in rows:
+        r["t_pb_touch"] = {"0.5": 10.0}
+    _write_cache(lab_dirs, rows)
+
+    r = await client.get("/ui/lab/default?instrument=ES")
+    assert r.status_code == 200
+    j = r.json()
+    off = default_config_study(rows)
+    assert j["none_viable"] == off["none_viable"]
+    if not j["none_viable"]:
+        assert j["recommended"]["label"] == off["recommended"]["label"]
+        assert j["recommended"]["cost"]["risk_pct"] == 1.0
+
+    r2 = await client.post("/ui/lab/aggregate", json={
+        "instrument": "ES", "subs": {"volume_relative": 60}})
+    j2 = r2.json()
+    off_t = tradeoff_read(j2["deltas"]["out"])
+    assert j2["tradeoff"]["out"] == json.loads(json.dumps(off_t))
+    assert "phrase" in j2["tradeoff"]["in"]
+    r3 = await client.post("/ui/lab/resim",
+                           json={"instrument": "ES", "sl_k": 2.5})
+    assert "tradeoff" in r3.json()
+
+
+@pytest.mark.asyncio
+async def test_page_decision_panel_and_default_card(client: AsyncClient, lab_dirs: Path):
+    """B4.2/B4.3 (revisados): panel de decisión (frase del servidor, tarjeta
+    de riesgo resaltada, KPI estilo Analytics) + tarjeta de config default."""
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)
+    r = await client.get("/ui/lab?instrument=ES")
+    assert "Decisión — base → selección" in r.text
+    assert "res.tradeoff.out.phrase" in r.text          # frase: viene del server
+    assert "riesgo / cola" in r.text                    # LA tarjeta, resaltada
+    assert "veredicto honesto" in r.text
+    assert "Config DEFAULT recomendada" in r.text       # B4.3
+    assert "/ui/lab/default" in r.text
+    assert "tope duro 1%/trade" in r.text
+    assert "lab-apply-sl" in r.text                     # aplicar SL al re-sim
+    assert "piernas profundas prohibidas" in r.text
+
+
 @pytest.mark.asyncio
 async def test_page_b4_verdict_et_and_best_button(client: AsyncClient, lab_dirs: Path):
     rows = feature_rows(_mk_trades(20))

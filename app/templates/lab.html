@@ -146,76 +146,156 @@
             </div>
         </div>
 
-        <!-- B4.2 — panel de VEREDICTO unificado: base y selección lado a lado,
-             Δ coloreado y barra de calor 1–10 (el score viene del SERVIDOR:
-             lab_metrics.verdict — aquí solo se pinta) -->
+        <!-- B4.2 — panel de DECISIÓN: veredicto en una línea (frase de
+             tradeoff DETERMINISTA de lab_metrics) + tarjetas KPI estilo
+             Analytics con el vector completo. Todo computado en el SERVIDOR;
+             aquí solo se pinta. -->
         <div class="mt-4 border-t border-gray-800 pt-3">
             <template x-if="res">
                 <div>
                     <div class="flex items-center gap-2 mb-2 text-xs">
-                        <span class="text-gray-500 uppercase tracking-wider">Veredicto — base vs selección</span>
+                        <span class="text-gray-500 uppercase tracking-wider">Decisión — base → selección</span>
                         <span x-show="res.low_n_out" class="px-1.5 py-0.5 rounded bg-amber-900 text-amber-300">⚠ out n &lt; {{ meta.low_n_threshold }} — no confiable</span>
                         <span x-show="loading" class="text-gray-600">…</span>
                     </div>
-                    <table class="w-full text-sm">
-                        <thead><tr class="text-gray-500 text-xs border-b border-gray-800">
-                            <th class="text-left px-3 py-1">bloque</th><th class="text-right px-3 py-1">n (kept%)</th>
-                            <th class="text-right px-3 py-1">PF base → sel (Δ)</th>
-                            <th class="text-right px-3 py-1">WR% base → sel (Δ)</th>
-                            <th class="text-right px-3 py-1">exp% base → sel (Δ)</th>
-                            <th class="text-left px-3 py-1 pl-6">veredicto (1–10)</th>
-                        </tr></thead>
-                        <tbody>
-                        <template x-for="blk in ['in', 'out']" :key="blk">
-                            <tr class="border-b border-gray-800 last:border-0"
-                                :class="blk === 'out' ? 'bg-gray-800/60 text-gray-200' : 'text-gray-300'">
-                                <td class="px-3 py-1 font-mono">
-                                    <span x-text="blk"></span>
-                                    <span x-show="blk === 'out'" class="text-[10px] text-sky-400">★ veredicto honesto</span>
-                                    <span x-show="blk === 'out' && res.low_n_out" class="text-amber-400">⚠</span>
-                                </td>
-                                <td class="px-3 py-1 text-right" x-text="res.result[blk].n + ' (' + fmt(res.result[blk].kept_pct, 0) + '%)'"></td>
-                                <td class="px-3 py-1 text-right">
-                                    <span x-text="fmt(res.base[blk].pf) + ' → ' + fmt(res.result[blk].pf)"></span>
-                                    <span :class="dcls(res.deltas[blk].pf)" x-text="' (' + delta(res.deltas[blk].pf) + ')'"></span>
-                                </td>
-                                <td class="px-3 py-1 text-right">
-                                    <span x-text="fmt(res.base[blk].wr, 1) + ' → ' + fmt(res.result[blk].wr, 1)"></span>
-                                    <span :class="dcls(res.deltas[blk].wr)" x-text="' (' + delta(res.deltas[blk].wr, 1) + ')'"></span>
-                                </td>
-                                <td class="px-3 py-1 text-right">
-                                    <span x-text="fmt(res.base[blk].expectancy_pct, 3) + ' → ' + fmt(res.result[blk].expectancy_pct, 3)"></span>
-                                    <span :class="dcls(res.deltas[blk].expectancy_pct)" x-text="' (' + delta(res.deltas[blk].expectancy_pct, 3) + ')'"></span>
-                                </td>
-                                <td class="px-3 py-1 pl-6">
-                                    <div class="flex items-center gap-2 flex-wrap">
-                                        <template x-if="res.verdict[blk].score !== null">
-                                            <div class="flex items-center gap-1">
-                                                <div class="flex gap-0.5">
-                                                    <template x-for="i in 10" :key="i">
-                                                        <div class="w-1.5 h-3 rounded-sm"
-                                                             :class="i <= res.verdict[blk].score ? heatColor(res.verdict[blk].score) : 'bg-gray-800'"></div>
-                                                    </template>
-                                                </div>
-                                                <span class="font-mono text-xs text-gray-400" x-text="res.verdict[blk].score + '/10'"></span>
-                                            </div>
-                                        </template>
-                                        <template x-if="res.verdict[blk].score === null"><span class="text-gray-600 text-xs">—</span></template>
-                                        <template x-if="blk === 'out' && res.verdict.out.pf !== null">
-                                            <span class="text-xs font-medium"
-                                                  :class="res.verdict.out.survives ? 'text-green-400' : 'text-red-400'"
-                                                  x-text="res.verdict.out.survives ? ('sobrevive · PF out ' + fmt(res.verdict.out.pf) + ' ≥ 1') : ('cae · PF out ' + fmt(res.verdict.out.pf) + ' < 1')"></span>
+
+                    <!-- veredicto de una línea (OUT ★ = el honesto) -->
+                    <div class="bg-gray-800/60 border-l-2 border-sky-500 rounded p-3 mb-3">
+                        <div class="flex items-center gap-3 flex-wrap text-xs">
+                            <span class="uppercase text-sky-400 font-semibold">out ★ veredicto honesto</span>
+                            <template x-if="res.verdict.out.score !== null">
+                                <div class="flex items-center gap-1">
+                                    <div class="flex gap-0.5">
+                                        <template x-for="i in 10" :key="i">
+                                            <div class="w-1.5 h-3 rounded-sm"
+                                                 :class="i <= res.verdict.out.score ? heatColor(res.verdict.out.score) : 'bg-gray-950'"></div>
                                         </template>
                                     </div>
-                                </td>
-                            </tr>
+                                    <span class="font-mono text-gray-400" x-text="res.verdict.out.score + '/10'"></span>
+                                </div>
+                            </template>
+                            <template x-if="res.verdict.out.pf !== null">
+                                <span class="font-medium"
+                                      :class="res.verdict.out.survives ? 'text-green-400' : 'text-red-400'"
+                                      x-text="res.verdict.out.survives ? ('sobrevive · PF out ' + fmt(res.verdict.out.pf) + ' ≥ 1') : ('cae · PF out ' + fmt(res.verdict.out.pf) + ' < 1')"></span>
+                            </template>
+                            <span class="font-mono text-gray-500" x-text="res.tradeoff.out.pattern"></span>
+                        </div>
+                        <div class="text-sm text-gray-100 mt-1.5" x-text="res.tradeoff.out.phrase"></div>
+                    </div>
+
+                    <!-- tarjetas KPI (lenguaje visual de Analytics): out titular, in debajo -->
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                        <template x-for="k in [['pf','PF',2],['wr','WR%',1],['expectancy_pct','exp%',3],['net_pct','net%',2]]" :key="k[0]">
+                            <div class="bg-gray-950/60 border border-gray-800 rounded p-3">
+                                <div class="text-xs text-gray-500 uppercase" x-text="k[1] + ' · out'"></div>
+                                <div class="text-lg font-bold text-white mt-0.5"
+                                     x-text="fmt(res.base.out[k[0]], k[2]) + ' → ' + fmt(res.result.out[k[0]], k[2])"></div>
+                                <div class="text-xs font-medium" :class="dcls(res.deltas.out[k[0]])"
+                                     x-text="'Δ ' + delta(res.deltas.out[k[0]], k[2])"></div>
+                                <div class="text-[10px] text-gray-600 mt-1">
+                                    in: <span x-text="fmt(res.base['in'][k[0]], k[2]) + ' → ' + fmt(res.result['in'][k[0]], k[2])"></span>
+                                    <span :class="dcls(res.deltas['in'][k[0]])" x-text="' (' + delta(res.deltas['in'][k[0]], k[2]) + ')'"></span>
+                                </div>
+                            </div>
                         </template>
-                        </tbody>
-                    </table>
+                        <!-- riesgo/cola — LA tarjeta del punto: resaltada -->
+                        <div class="bg-gray-950/60 border border-amber-600/60 rounded p-3">
+                            <div class="text-xs text-amber-400 uppercase">riesgo / cola · out</div>
+                            <div class="text-lg font-bold text-white mt-0.5"
+                                 x-text="'maxDD ' + fmt(res.base.out.max_dd_pct) + ' → ' + fmt(res.result.out.max_dd_pct)"></div>
+                            <div class="text-xs font-medium" :class="dcls(res.deltas.out.max_dd_pct)"
+                                 x-text="'Δ ' + delta(res.deltas.out.max_dd_pct) + ' (Δ>0 = DD menos profundo)'"></div>
+                            <div class="text-[10px] text-gray-600 mt-1"
+                                 x-text="'peor trade: ' + fmt(res.base.out.worst_pct) + ' → ' + fmt(res.result.out.worst_pct)"></div>
+                        </div>
+                        <div class="bg-gray-950/60 border border-gray-800 rounded p-3">
+                            <div class="text-xs text-gray-500 uppercase">n (kept%) · out</div>
+                            <div class="text-lg font-bold text-white mt-0.5"
+                                 x-text="res.result.out.n + ' (' + fmt(res.result.out.kept_pct, 0) + '%)'"></div>
+                            <div class="text-xs" :class="res.low_n_out ? 'text-amber-400' : 'text-gray-500'"
+                                 x-text="res.low_n_out ? '⚠ n bajo — no confiable' : 'muestra suficiente'"></div>
+                            <div class="text-[10px] text-gray-600 mt-1"
+                                 x-text="'in: ' + res.result['in'].n + ' (' + fmt(res.result['in'].kept_pct, 0) + '%)'"></div>
+                        </div>
+                    </div>
+
+                    <!-- in (secundario): heat + su lectura -->
+                    <div class="mt-2 flex items-center gap-2 text-xs text-gray-500 flex-wrap">
+                        <span class="uppercase">in</span>
+                        <template x-if="res.verdict['in'].score !== null">
+                            <div class="flex gap-0.5">
+                                <template x-for="i in 10" :key="i">
+                                    <div class="w-1 h-2.5 rounded-sm"
+                                         :class="i <= res.verdict['in'].score ? heatColor(res.verdict['in'].score) : 'bg-gray-800'"></div>
+                                </template>
+                            </div>
+                        </template>
+                        <span x-text="res.tradeoff['in'].phrase"></span>
+                    </div>
                 </div>
             </template>
             <template x-if="error"><div class="text-xs text-red-400" x-text="error"></div></template>
         </div>
+    </div>
+
+    <!-- B4.3 — config DEFAULT recomendada por RIESGO (sizing 1%; el visor
+         solo muestra — aplicar sigue en los CLI auditados) -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4" x-data="labDefault('{{ instrument }}')">
+        <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500">Config DEFAULT recomendada — objetivo: reducir riesgo (tope duro 1%/trade)</h2>
+            <button @click="fetchIt()"
+                    class="px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white text-xs transition">Calcular recomendación</button>
+        </div>
+        <p class="text-xs text-gray-600 mb-2">SL catastrófico <b>anclado a la señal</b> + escalonado <b>somero</b> (piernas profundas prohibidas por default) + <b>tamaño por riesgo</b>: contratos tal que tamaño × distancia_SL = 1% de la cuenta — la cuenta nunca arriesga más, aun si todo llena y pega el stop. Guarda innegociable: expectancy OOS &gt; 0; se elige por <b>out-of-sample</b>.</p>
+        <template x-if="st && st.none_viable">
+            <div class="text-xs text-amber-200 bg-amber-900/30 border border-amber-700 rounded p-3">
+                ninguna config con expectancy OOS positiva → <b>no se recomienda default</b> — reducir riesgo hasta volverla no-rentable derrota el propósito (revisar la estrategia).
+            </div>
+        </template>
+        <template x-if="st && st.recommended">
+            <div>
+                <div class="flex items-center gap-2 flex-wrap text-xs mb-2">
+                    <span class="px-1.5 py-0.5 rounded bg-sky-900 text-sky-300 font-medium" x-text="'⭐ ' + st.recommended.label"></span>
+                    <span x-show="st.recommended.low_n_out" class="px-1.5 py-0.5 rounded bg-amber-900 text-amber-300" x-text="'⚠ n_out=' + st.recommended.out.n + ' — no confiable'"></span>
+                    <span x-show="st.recommended.approx_fills" class="px-1.5 py-0.5 rounded bg-amber-900 text-amber-300">⚠ fills aproximados (cache sin toques de pullback — regenerar)</span>
+                    <button @click="$dispatch('lab-apply-sl', st.recommended.sl_k)"
+                            class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">aplicar SL al panel re-sim ↓</button>
+                    <span class="text-gray-600">(las piernas se aplican en la config combinada — B5)</span>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <div class="bg-gray-950/60 border border-gray-800 rounded p-3">
+                        <div class="text-lg font-bold text-white" x-text="fmt(st.recommended.out.expectancy_pct, 3) + '%'"></div>
+                        <div class="text-xs text-gray-500 uppercase mt-1">exp OUT (% cuenta/trade)</div>
+                        <div class="text-[10px] text-gray-600" x-text="'in: ' + fmt(st.recommended['in'].expectancy_pct, 3) + '%'"></div>
+                    </div>
+                    <div class="bg-gray-950/60 border border-gray-800 rounded p-3">
+                        <div class="text-lg font-bold text-white" x-text="fmt(st.recommended.out.pf)"></div>
+                        <div class="text-xs text-gray-500 uppercase mt-1">PF out</div>
+                    </div>
+                    <div class="bg-gray-950/60 border border-amber-600/60 rounded p-3">
+                        <div class="text-lg font-bold text-white" x-text="st.risk_pct + '%'"></div>
+                        <div class="text-xs text-amber-400 uppercase mt-1">riesgo por trade (tope duro)</div>
+                        <div class="text-[10px] text-gray-600" x-text="'peor pérdida topada: ' + fmt(st.recommended.cost.worst_account_pct) + '% cuenta'"></div>
+                    </div>
+                    <div class="bg-gray-950/60 border border-gray-800 rounded p-3">
+                        <div class="text-lg font-bold" :class="dcls(st.recommended.cost.ceded_out_pct === null ? null : -st.recommended.cost.ceded_out_pct)"
+                             x-text="fmt(st.recommended.cost.ceded_out_pct, 3) + '%'"></div>
+                        <div class="text-xs text-gray-500 uppercase mt-1">ganancia cedida vs nativo (out)</div>
+                        <div class="text-[10px] text-gray-600">negativo = la config GANA al nativo</div>
+                    </div>
+                    <div class="bg-gray-950/60 border border-gray-800 rounded p-3">
+                        <div class="text-sm font-bold text-white">
+                            <template x-for="(l, ix) in st.recommended.legs" :key="ix">
+                                <div x-text="Math.round(l.weight * 100) + '% @ ' + (l.depth === 0 ? 'market' : l.depth + '×ATR')"></div>
+                            </template>
+                        </div>
+                        <div class="text-xs text-gray-500 uppercase mt-1">piernas (someras)</div>
+                    </div>
+                </div>
+            </div>
+        </template>
+        <template x-if="error"><div class="text-xs text-red-400 mt-2" x-text="error"></div></template>
     </div>
 
     <!-- Edge por hora (base, no interactivo; misma función que el §3 del reporte) -->
@@ -250,7 +330,8 @@
     <!-- B3 — CAMBIA-DESENLACE: SL/TP re-sim (sección aparte de los filtros
          sustractivos; misma resim_rows que §2/§8/§9 del reporte) -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4"
-         x-data="labResim('{{ instrument }}')">
+         x-data="labResim('{{ instrument }}')"
+         @lab-apply-sl.window="slk = String($event.detail); refresh()">
         <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">SL / TP re-simulados (cambian el desenlace — no son filtros)</h2>
         <p class="text-xs text-gray-600 mb-3">SL ⟺ |mae%| ≥ k·ATR% → −k·ATR% · TP ⟺ mfe% ≥ tp·ATR% → +tp·ATR% · ambos → decide el <b>orden de toques intrabar del 5m</b> (cacheado por el camino A; misma barra → SL, conservador).</p>
         <div class="flex items-center gap-4 text-sm flex-wrap">
@@ -299,6 +380,11 @@
                     </template>
                     </tbody>
                 </table>
+                <div class="text-xs text-gray-400 mb-2 bg-gray-800/60 border-l-2 border-sky-500 rounded px-2 py-1">
+                    <span class="uppercase text-sky-400 font-semibold">out ★</span>
+                    <span class="font-mono text-gray-500 mx-1" x-text="res.tradeoff.out.pattern"></span>
+                    <span x-text="res.tradeoff.out.phrase"></span>
+                </div>
                 <div class="text-xs text-gray-600 mb-1">Curva de equity (P&amp;L% acumulado, universo con ATR) — <span class="text-sky-400">base</span> vs <span class="text-amber-400">re-sim</span>; el split in|out cae en el trade <span class="font-mono" x-text="res.curves.split_idx"></span>.</div>
                 <div class="h-56"><canvas x-ref="chart"></canvas></div>
             </div>
@@ -411,6 +497,23 @@
                     else { this.res = await r.json(); }
                 } catch (e) { this.error = String(e); this.res = null; }
                 this.loading = false;
+            },
+        };
+    }
+
+    function labDefault(instrument) {
+        // B4.3 — solo pinta lo que decide el servidor (default_config_study)
+        return {
+            instrument, st: null, error: null,
+            fmt(v, nd = 2) { return v === null || v === undefined ? '—' : Number(v).toFixed(nd); },
+            dcls(v) { return v === null || v === undefined ? 'text-gray-600' : v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-400'; },
+            async fetchIt() {
+                this.error = null; this.st = null;
+                try {
+                    const r = await fetch('/ui/lab/default?instrument=' + this.instrument);
+                    if (!r.ok) { this.error = 'Error ' + r.status + ' — ¿caché regenerada?'; return; }
+                    this.st = await r.json();
+                } catch (e) { this.error = String(e); }
             },
         };
     }

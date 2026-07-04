@@ -24,12 +24,14 @@ from app.services.lab_metrics import (
     SL_GRID,
     TP_GRID,
     baseline_from_rows,
+    default_config_study,
     deltas_vs_base,
     equity_curve,
     hourly_from_rows,
     lift_from_rows,
     oos_survivors_from_rows,
     resim_rows,
+    tradeoff_read,
     verdict,
 )
 
@@ -160,9 +162,11 @@ async def lab_aggregate(sel: Selection) -> JSONResponse:
         "base": base,
         "result": result,
         "deltas": deltas,
-        # B4.2 — veredicto visual (heat 1–10 + sobrevive), computado en el
-        # SERVIDOR con el núcleo compartido (nada de métricas en JS).
+        # B4.2 — veredicto visual (heat 1–10 + sobrevive) y frase de tradeoff,
+        # computados en el SERVIDOR con el núcleo (nada de métricas en JS).
         "verdict": verdict(result, deltas),
+        "tradeoff": {"in": tradeoff_read(deltas["in"]),
+                     "out": tradeoff_read(deltas["out"])},
         "low_n_out": result["low_n_out"],
         "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
     })
@@ -189,6 +193,30 @@ async def lab_best(instrument: str = "ES") -> JSONResponse:
         "survivors": survivors,
         "winner": survivors[0] if survivors else None,
         "none_robust": not survivors,
+        "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
+    })
+
+
+@router.get("/ui/lab/default")
+async def lab_default(instrument: str = "ES") -> JSONResponse:
+    """B4.3 — config DEFAULT recomendada por RIESGO (principio rector:
+    disminuir el riesgo de LuxAlgo, no maximizar ganancia): SL catastrófico
+    anclado + escalonado somero + sizing a riesgo fijo 1%, elegida por
+    OUT-of-sample con expectancy OOS > 0 (lab_metrics.default_config_study;
+    el visor solo la muestra — aplicar sigue en los CLI auditados)."""
+    if instrument not in INSTRUMENTS:
+        return JSONResponse({"error": "instrumento inválido"}, status_code=400)
+    cached = load_cache(instrument)
+    if cached is None:
+        return JSONResponse(
+            {"error": "cache_missing", "regen_cmd": REGEN_CMD},
+            status_code=409,
+        )
+    rows, meta = cached
+    study = default_config_study(rows)
+    return JSONResponse({
+        "instrument": instrument,
+        **study,
         "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
     })
 
@@ -242,6 +270,8 @@ async def lab_resim(sel: ResimSel) -> JSONResponse:
         "result": {"in": r["in"], "out": r["out"]},
         "deltas": deltas,
         "verdict": verdict(r, deltas),
+        "tradeoff": {"in": tradeoff_read(deltas["in"]),
+                     "out": tradeoff_read(deltas["out"])},
         "low_n_out": r["low_n_out"],
         "curves": {"base": equity_curve(native),
                    "resim": equity_curve(outcomes),

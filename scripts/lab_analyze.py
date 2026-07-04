@@ -128,6 +128,10 @@ class Trade:
     # suficiente para que el visor resuelva el orden SL/TP sin caminar barras):
     t_sl_touch: dict = field(default_factory=dict)  # "2.5" → min | None
     t_tp_touch: dict = field(default_factory=dict)  # "6.0" → min | None
+    # B4.3 — toques de pullback por nivel DENTRO de la ventana del estudio
+    # (fills de piernas para el modelo de sizing a riesgo y la config
+    # combinada B5; solo niveles tocados): "0.5" → min
+    t_pb_touch: dict = field(default_factory=dict)
 
     @property
     def mae_atr(self) -> float | None:
@@ -418,6 +422,7 @@ def feature_rows(trades: list[Trade]) -> list[dict]:
         "ema_with": t.ema_with or None,
         "t_sl_touch": t.t_sl_touch or None,
         "t_tp_touch": t.t_tp_touch or None,
+        "t_pb_touch": t.t_pb_touch or None,
     } for t in trades]
 
 
@@ -694,6 +699,9 @@ def pullback_study(
                 if adverse_atr >= L:
                     touched[L] = mins
                     pending.discard(L)
+        # B4.3 — el toque por trade va al cache (fills de piernas para el
+        # modelo de sizing a riesgo del visor; B5 lo reusa).
+        t.t_pb_touch = {str(L): m for L, m in sorted(touched.items())}
         for L in PULLBACK_LEVELS:
             if L in touched:
                 per[L]["touch_min"].append(touched[L])

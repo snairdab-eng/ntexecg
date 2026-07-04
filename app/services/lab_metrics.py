@@ -332,19 +332,182 @@ def oos_survivors_from_rows(rows: list[dict], base: dict | None = None) -> list[
 
 
 def deltas_vs_base(sel: dict, base: dict) -> dict:
-    """ΔPF/ΔWR/Δexpectancy in/out de una selección contra la línea base."""
+    """Δ del VECTOR completo (PF/WR/exp/maxDD/net) in/out contra la base.
+    Nota de signo: max_dd_pct es negativo — Δ>0 = drawdown MENOS profundo
+    (mejora de riesgo); el clasificador de tradeoff (B4.2) depende de esto."""
     def d(a, b, nd=2):
         if a is None or b is None:
             return None
         return round(a - b, nd)
 
-    return {
-        "in": {"pf": d(sel["in"]["pf"], base["in"]["pf"]),
-               "wr": d(sel["in"]["wr"], base["in"]["wr"], 1),
-               "expectancy_pct": d(sel["in"]["expectancy_pct"],
-                                   base["in"]["expectancy_pct"], 4)},
-        "out": {"pf": d(sel["out"]["pf"], base["out"]["pf"]),
-                "wr": d(sel["out"]["wr"], base["out"]["wr"], 1),
-                "expectancy_pct": d(sel["out"]["expectancy_pct"],
-                                    base["out"]["expectancy_pct"], 4)},
-    }
+    def blk(name: str) -> dict:
+        s, b = sel[name], base[name]
+        return {"pf": d(s["pf"], b["pf"]),
+                "wr": d(s["wr"], b["wr"], 1),
+                "expectancy_pct": d(s["expectancy_pct"],
+                                    b["expectancy_pct"], 4),
+                "max_dd_pct": d(s.get("max_dd_pct"), b.get("max_dd_pct")),
+                "net_pct": d(s.get("net_pct"), b.get("net_pct"))}
+
+    return {"in": blk("in"), "out": blk("out")}
+
+
+def tradeoff_read(deltas_blk: dict) -> dict:
+    """B4.2 — la capa de INTERPRETACIÓN: lee el patrón de signos del Δ
+    (PF, WR, maxDD) y lo traduce a una frase determinista — "el PF baja pero
+    el WR se mantiene y el DD mejora → es riesgo, no calidad". Vive aquí (no
+    en JS): fuente única y testeable.
+
+    Tolerancias de "sin cambio": |ΔPF| < 0.05, |ΔWR| < 0.5pp, |ΔDD| < 0.05.
+    Recuerda: Δ(max_dd_pct) > 0 = drawdown menos profundo = MENOS riesgo."""
+    d_pf, d_wr = deltas_blk.get("pf"), deltas_blk.get("wr")
+    d_dd = deltas_blk.get("max_dd_pct")
+    if d_pf is None or d_wr is None:
+        return {"pattern": None, "verdict": "sin_datos",
+                "phrase": "sin datos comparables (bloque sin pérdidas o "
+                          "sin trades suficientes)"}
+
+    def sgn(v, eps):
+        return 0 if v is None or abs(v) < eps else (1 if v > 0 else -1)
+
+    pf, wr, dd = sgn(d_pf, 0.05), sgn(d_wr, 0.5), sgn(d_dd, 0.05)
+    arrow = {1: "↑", 0: "=", -1: "↓"}
+    # DD se rotula por PROFUNDIDAD del drawdown (dd=+1 ⇒ menos profundo ⇒ DD↓)
+    pattern = f"PF{arrow[pf]} WR{arrow[wr]} DD{arrow[-dd]}"
+
+    if pf > 0 and wr >= 0:
+        v, p = "mejor", "mejor en todo — gana más por trade sin ceder acierto"
+        if dd < 0:
+            p += " (ojo: el drawdown se hace más profundo)"
+    elif pf >= 0 and wr > 0:
+        v, p = "mejor", "acierta más sin ceder PF — mejor en todo"
+        if dd < 0:
+            p += " (ojo: el drawdown se hace más profundo)"
+    elif pf < 0 and wr < 0:
+        v, p = "peor", "peor en todo — gana menos y acierta menos: descartar"
+    elif pf < 0 and wr >= 0 and dd > 0:
+        v, p = ("tradeoff_riesgo",
+                "menos ganancia por trade, más consistente y menos riesgo — "
+                "tradeoff de riesgo, no de calidad")
+    elif pf < 0:
+        v, p = ("tradeoff_dudoso",
+                "gana menos por trade y el riesgo no mejora — "
+                "tradeoff dudoso")
+    elif pf > 0 and wr < 0:
+        v, p = ("volatil",
+                "gana más por trade pero acierta menos — más volátil")
+    elif pf == 0 and wr < 0:
+        v, p = "peor", "acierta menos al mismo PF — leve deterioro"
+    else:
+        v, p = "neutro", "sin cambio material vs base"
+    return {"pattern": pattern, "verdict": v, "phrase": p}
+
+
+# ---------------------------------------------------------------------------
+# B4.3 — config DEFAULT recomendada por RIESGO (principio rector de NTEXECG:
+# disminuir el riesgo de LuxAlgo, no maximizar ganancia). Modelo: SL ancho
+# catastrófico ANCLADO a la señal + escalonado SOMERO + tamaño a riesgo fijo.
+# ---------------------------------------------------------------------------
+
+RISK_PCT_DEFAULT = 1.0            # tope duro: % de la cuenta por trade
+
+# SLs candidatos (catastróficos anchos — cola de SL_GRID) y formas de
+# escalonado SOMERO (≤0.75×; las piernas profundas están PROHIBIDAS por
+# default: promedian hacia abajo en los peores trades = más riesgo).
+CAT_SL_GRID = (4.0, 6.0, 8.0)
+LEG_SHAPES: tuple = (
+    ("entrada única (market)", ((0.0, 1.0),)),
+    ("somero 50% @0 + 50% @0.5×", ((0.0, 0.5), (0.5, 0.5))),
+    ("somero tercios @0/0.25×/0.5×",
+     ((0.0, 1 / 3), (0.25, 1 / 3), (0.5, 1 / 3))),
+    ("somero 50% @0 + 50% @0.75×", ((0.0, 0.5), (0.75, 0.5))),
+)
+
+
+def _leg_filled(row: dict, depth: float, approx: bool) -> bool:
+    """¿La pierna a `depth`×ATR habría llenado? Con cache B4+: el toque de
+    pullback cacheado (ventana real del estudio); cache legado: mae_atr
+    (aprox: ignora la ventana — se marca approx_fills)."""
+    if depth <= 0:
+        return True
+    if approx:
+        return (row.get("mae_atr") or 0) >= depth
+    return (row.get("t_pb_touch") or {}).get(str(depth)) is not None
+
+
+def risk_sized_outcomes(rows: list[dict], sl_k: float, legs: tuple,
+                        risk_pct: float = RISK_PCT_DEFAULT) -> dict:
+    """Desenlaces EN % DE CUENTA con sizing a riesgo fijo (B4.3).
+
+    Por trade: tamaño m tal que el peor caso (todas las piernas llenan y el
+    stop — ANCLADO al precio de señal — pega) pierda exactamente `risk_pct`:
+      m = risk_pct / Σᵢ wᵢ·(k − Lᵢ)·atr%      (la cuenta NUNCA arriesga más)
+    Pierna i llena si el pullback tocó Lᵢ; desenlace por pierna:
+      stopped (mae_atr ≥ k):  −(k − Lᵢ)·atr%   (mejor entrada pierde menos)
+      si no:                   pnl% + Lᵢ·atr%   (mejor entrada gana más)
+    Pierna sin llenar: capital sin usar (contribuye 0).
+    `native_*` = mismo sizing, entrada única SIN stop (para medir cesión)."""
+    universe = [r for r in rows if r.get("atr_pct")]
+    approx = not any(r.get("t_pb_touch") for r in universe)
+    outcomes: list[tuple[dict, float]] = []
+    natives: list[tuple[dict, float]] = []
+    for r in universe:
+        atr = r["atr_pct"]
+        worst = sum(w * (sl_k - d) for d, w in legs) * atr
+        m = risk_pct / worst
+        stopped = (r.get("mae_atr") or 0) >= sl_k
+        acc = 0.0
+        for d, w in legs:
+            if not _leg_filled(r, d, approx):
+                continue
+            leg_pnl = (-(sl_k - d) * atr) if stopped else (r["pnl_pct"]
+                                                           + d * atr)
+            acc += w * leg_pnl
+        outcomes.append((r, m * acc))
+        natives.append((r, m * r["pnl_pct"]))
+
+    def blk(pairs, ins):
+        return aggregate([v for r, v in pairs if r["in_sample"] == ins])
+
+    return {"in": blk(outcomes, True), "out": blk(outcomes, False),
+            "native_in": blk(natives, True), "native_out": blk(natives, False),
+            "outcomes": [v for _, v in outcomes], "approx_fills": approx}
+
+
+def default_config_study(rows: list[dict],
+                         risk_pct: float = RISK_PCT_DEFAULT) -> dict:
+    """B4.3 — recomendación default por estrategia: maximiza la ganancia OUT
+    (en % de cuenta) SUJETO al tope duro de riesgo (por construcción del
+    sizing) y a expectancy OOS > 0 (guarda innegociable). Se elige por
+    OUT-of-sample, NUNCA por in-sample (ahí vive el espejismo)."""
+    candidates: list[dict] = []
+    for k in CAT_SL_GRID:
+        for name, legs in LEG_SHAPES:
+            m = risk_sized_outcomes(rows, k, legs, risk_pct)
+            exp_out = m["out"]["expectancy_pct"]
+            worst = round(min(m["outcomes"]), 4) if m["outcomes"] else None
+            ceded = (round(m["native_out"]["expectancy_pct"]
+                           - exp_out, 4)
+                     if exp_out is not None
+                     and m["native_out"]["expectancy_pct"] is not None
+                     else None)
+            candidates.append({
+                "sl_k": k,
+                "legs": [{"depth": d, "weight": round(w, 4)} for d, w in legs],
+                "label": f"SL {k}× anclado + {name}",
+                "in": m["in"], "out": m["out"],
+                "viable": exp_out is not None and exp_out > 0,
+                "low_n_out": m["out"]["n"] < LOW_N_OUT,
+                "approx_fills": m["approx_fills"],
+                "cost": {"risk_pct": risk_pct,
+                         "worst_account_pct": worst,
+                         "ceded_out_pct": ceded},
+            })
+    candidates.sort(key=lambda c: (c["out"]["expectancy_pct"]
+                                   if c["out"]["expectancy_pct"] is not None
+                                   else -9e9), reverse=True)
+    viable = [c for c in candidates if c["viable"]]
+    return {"candidates": candidates,
+            "recommended": viable[0] if viable else None,
+            "none_viable": not viable,
+            "risk_pct": risk_pct}
