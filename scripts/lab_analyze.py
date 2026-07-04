@@ -52,13 +52,18 @@ from app.services.hmm_service import classify_regime      # lógica viva (Kaufma
 # Núcleo de agregación COMPARTIDO con el visor (camino B): una sola fuente de
 # verdad — el reporte offline y el endpoint del UI llaman a estas funciones.
 from app.services.lab_metrics import (
+    EMA_KEYS,
+    REGIME_GATE_DEFS,
     SL_GRID,
+    SUB_NAMES,
+    SUB_THRESHOLDS,
     TP_GRID,
     aggregate,
     baseline_from_rows,
     hourly_from_rows,
     lift_from_rows,
     resim_rows,
+    survivors_from_lifts,
 )
 from app.services.market_data_service import _calc_atr    # lógica viva de ATR
 from app.services.quality_scorer import _SUBSCORES        # lógica viva (4 subscores)
@@ -559,13 +564,25 @@ def touch_minutes(
     """UNA caminata por las barras 5m (entrada → salida) registrando el minuto
     del primer toque de cada umbral adverso (SL k·ATR) y favorable (TP tp·ATR).
     Es el estadístico suficiente para el orden de toques: mismo minuto = misma
-    barra = ambiguo. Devuelve ({str(k): min|None}, {str(tp): min|None})."""
+    barra = ambiguo. Devuelve ({str(k): min|None}, {str(tp): min|None}).
+
+    Consistencia B4.0 con el MFE/MAE de LuxAlgo (misma ATR, misma referencia):
+    - Excursión en ABSOLUTO HOLC desde el close de la barra alineada (= el
+      precio del instante de entrada EN ESCALA HOLC; usar entry_price del CSV
+      contra barras back-ajustadas rompería la escala por el δ del roll).
+    - Denominador = entry_price (el del CSV: mfe_pct/mae_pct denominan ahí)
+      → (exc/entry)/atr_pct tiene EXACTAMENTE la forma de mfe_atr/mae_atr.
+    - La barra alineada se EXCLUYE: HOLC estampa por cierre, así que su rango
+      es PRE-entrada (validado en ES real: incluirla sobrecuenta adversos).
+    Validación de aceptación en tests/test_lab_consistency.py (ES real)."""
     adv: dict = {str(float(k)): None for k in adverse_lvls}
     fav: dict = {str(float(x)): None for x in favor_lvls}
-    if t.aligned_ts is None or t.bar_close is None or not t.atr_pct:
+    if (t.aligned_ts is None or t.bar_close is None
+            or not t.entry_price or not t.atr_pct):
         return adv, fav
     end_ts = (t.exit_ts + (t.aligned_ts - t.entry_ts)) if t.exit_ts else None
-    i = idx5[t.aligned_ts]
+    i = idx5[t.aligned_ts] + 1          # la barra alineada es pre-entrada
+    ref, den = t.bar_close, t.entry_price
     pend_a = set(adv)
     pend_f = set(fav)
     for k5 in keys5[i:]:
@@ -575,11 +592,11 @@ def touch_minutes(
             break
         _o, high, low, _c, _v = bars5[k5]
         if t.side == "long":
-            adverse = (t.bar_close - low) / t.bar_close * 100.0
-            favor = (high - t.bar_close) / t.bar_close * 100.0
+            adverse = (ref - low) / den * 100.0
+            favor = (high - ref) / den * 100.0
         else:
-            adverse = (high - t.bar_close) / t.bar_close * 100.0
-            favor = (t.bar_close - low) / t.bar_close * 100.0
+            adverse = (high - ref) / den * 100.0
+            favor = (ref - low) / den * 100.0
         mins = (k5 - t.aligned_ts).total_seconds() / 60.0
         for key in sorted(pend_a):
             if adverse >= float(key) * t.atr_pct:
@@ -647,8 +664,10 @@ def pullback_study(
     """Para cada nivel L×ATR: qué trades lo TOCARON dentro de la ventana de
     entrada (una límite a L habría llenado), a los cuántos minutos, y el
     desenlace NATIVO condicionado a llenó/no-llenó. Referencia de precio =
-    close de la barra de entrada (escala HOLC, igual que el ATR); la barra de
-    entrada se incluye, como en el estudio vivo (pullback_timing)."""
+    close de la barra alineada (el precio del instante de la señal EN ESCALA
+    HOLC — la pierna viva se coloca en signalPrice − L×ATR, payload_builder).
+    B4.0: la barra alineada se EXCLUYE — HOLC estampa por cierre, su rango es
+    PRE-señal y una límite no puede llenarse antes de existir."""
     per: dict[float, dict] = {
         L: {"touch_min": [], "filled": [], "unfilled": []}
         for L in PULLBACK_LEVELS
@@ -656,9 +675,9 @@ def pullback_study(
     for t in trades:
         # `not atr_entry` cubre None Y 0.0 (sesión de rango verdadero nulo,
         # p. ej. 6J): sin ATR útil no hay escala — mismo trato que "sin ATR".
-        if t.aligned_ts is None or not t.atr_entry:
+        if t.aligned_ts is None or not t.atr_entry or t.bar_close is None:
             continue
-        i = idx5[t.aligned_ts]
+        i = idx5[t.aligned_ts] + 1      # la barra alineada es pre-señal
         end = t.aligned_ts + timedelta(minutes=window_min)
         pending = set(PULLBACK_LEVELS)
         touched: dict[float, float] = {}
@@ -708,31 +727,18 @@ def pullback_study(
 # ---------------------------------------------------------------------------
 
 def oos_survivors(base: dict, phase2: dict) -> list[dict]:
-    """Filtros×umbral con ΔPF > 0 DENTRO y FUERA de muestra (el criterio del
-    Anexo 25: solo confiar en lo que aguanta out-of-sample), ordenados por
-    ΔPF out. n_out chico se marca aparte (no descarta, advierte)."""
-    rows: list[tuple[str, dict]] = []
+    """Filtros×umbral con ΔPF > 0 DENTRO y FUERA de muestra — delega el
+    CRITERIO en lab_metrics.survivors_from_lifts (B4.3: el botón "mejor
+    configuración" del visor usa la misma función; una sola fuente)."""
+    items: list[tuple[str, dict, dict | None]] = []
     for name, by_thr in phase2["subs"].items():
         for thr, d in by_thr.items():
-            rows.append((f"{name} ≥ {thr}", d))
-    rows += [(f"regime solo {k}", d) for k, d in phase2["regime_gates"].items()]
-    rows += [(f"EMA {k[:2]}·{k[2:]} con-tendencia", d)
-             for k, d in phase2["ema_gates"].items()]
-
-    out: list[dict] = []
-    for label, d in rows:
-        i, o = d["in"], d["out"]
-        if None in (i["pf"], o["pf"], base["in"]["pf"], base["out"]["pf"]):
-            continue
-        d_in = i["pf"] - base["in"]["pf"]
-        d_out = o["pf"] - base["out"]["pf"]
-        if d_in > 0 and d_out > 0:
-            out.append({"label": label, "d_in": round(d_in, 2),
-                        "d_out": round(d_out, 2),
-                        "kept_in": i.get("kept_pct"),
-                        "n_out": o["n"]})
-    out.sort(key=lambda r: r["d_out"], reverse=True)
-    return out
+            items.append((f"{name} ≥ {thr}", d, None))
+    items += [(f"regime solo {k}", d, None)
+              for k, d in phase2["regime_gates"].items()]
+    items += [(f"EMA {k[:2]}·{k[2:]} con-tendencia", d, None)
+              for k, d in phase2["ema_gates"].items()]
+    return survivors_from_lifts(base, items)
 
 
 def joint_ambiguity_total(phase2: dict) -> int:
@@ -1015,22 +1021,20 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     # que el visor re-simule el orden intrabar sin tocar las barras.
     compute_touch_times(trades, keys5, idx5, bars)
     rows = feature_rows(trades)
+    # Grilla de candidatos COMPARTIDA con el visor (lab_metrics — B4.3).
     subs = {
         name: {thr: lift_from_rows(rows, {"subs": {name: thr}})
-               for thr in (50, 60, 70, 80)}
-        for name in ("volume_relative", "atr_normalized",
-                     "vwap_position", "time_of_day")
+               for thr in SUB_THRESHOLDS}
+        for name in SUB_NAMES
     }
     regimes = {tf: regime_breakdown(trades, tf) for tf in ("1h", "4h")}
-    regime_gates = {}
-    for tf in ("1h", "4h"):
-        for label, allowed in (("trend", ["trending_bull", "trending_bear"]),
-                               ("ranging", ["ranging"])):
-            regime_gates[f"{tf}·{label}"] = lift_from_rows(
-                rows, {"regime": {"tf": tf, "allowed": allowed}})
+    regime_gates = {
+        key: lift_from_rows(rows, {"regime": gate})
+        for key, gate in REGIME_GATE_DEFS
+    }
     ema_gates = {
         key: lift_from_rows(rows, {"ema": [key]})
-        for key in ("1h20", "1h50", "4h20", "4h50")
+        for key in EMA_KEYS
     }
     tp_sweeps = {tp: resim_tp(trades, tp) for tp in TP_KS}
     joint = {(k, tp): resim_sl_tp(trades, k, tp, keys5, idx5, bars)

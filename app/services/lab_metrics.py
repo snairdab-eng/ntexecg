@@ -237,6 +237,100 @@ def hourly_from_rows(rows: list[dict]) -> dict[int, dict]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# B4 — veredicto visual (heat 1–10) y supervivientes out-of-sample.
+# UNA sola fuente: el reporte offline (§ supervivientes del RESUMEN) y el
+# botón "mejor configuración" del visor llaman ESTAS funciones.
+# ---------------------------------------------------------------------------
+
+# Grilla de candidatos de la Fase 2 (la misma del reporte §5/§6/§7):
+SUB_NAMES = ("volume_relative", "atr_normalized", "vwap_position",
+             "time_of_day")
+SUB_THRESHOLDS = (50, 60, 70, 80)
+REGIME_GATE_DEFS = tuple(
+    (f"{tf}·{label}", {"tf": tf, "allowed": allowed})
+    for tf in ("1h", "4h")
+    for label, allowed in (("trend", ["trending_bull", "trending_bear"]),
+                           ("ranging", ["ranging"]))
+)
+EMA_KEYS = ("1h20", "1h50", "4h20", "4h50")
+
+
+def heat_score(d_pf: float | None) -> int | None:
+    """Calificación 1–10 del ΔPF (5 = neutro; ≥6 mejora, ≤4 empeora).
+
+    Escalones simétricos: ±0.05 (neutro), ±0.25, ±0.5, ±1.0, ±2.0.
+    None si no hay PF comparable (p. ej. sin pérdidas en el bloque)."""
+    if d_pf is None:
+        return None
+    for thr, worse, better in ((2.0, 1, 10), (1.0, 2, 9), (0.5, 3, 8),
+                               (0.25, 4, 7), (0.05, 4, 6)):
+        if d_pf >= thr:
+            return better
+        if d_pf <= -thr:
+            return worse
+    return 5
+
+
+def verdict(result: dict, deltas: dict) -> dict:
+    """Veredicto por bloque para la barra de calor del visor: score 1–10 del
+    ΔPF y, en out (el veredicto honesto), si el PF cruza 1.0 (sobrevive)."""
+    out_pf = result["out"].get("pf")
+    return {
+        "in": {"score": heat_score(deltas["in"]["pf"])},
+        "out": {"score": heat_score(deltas["out"]["pf"]),
+                "pf": out_pf,
+                "survives": (out_pf is not None and out_pf >= 1.0)},
+    }
+
+
+def survivors_from_lifts(
+    base: dict, items: list[tuple[str, dict, dict | None]],
+) -> list[dict]:
+    """EL criterio de supervivencia (Anexo 25): ΔPF > 0 DENTRO y FUERA de
+    muestra, ordenado por ΔPF out — NUNCA por in-sample (ahí vive el
+    espejismo). items = [(label, lift, selection|None)]; n_out chico se
+    marca (advierte, no descarta)."""
+    out: list[dict] = []
+    for label, d, selection in items:
+        i, o = d["in"], d["out"]
+        if None in (i["pf"], o["pf"], base["in"]["pf"], base["out"]["pf"]):
+            continue
+        d_in = i["pf"] - base["in"]["pf"]
+        d_out = o["pf"] - base["out"]["pf"]
+        if d_in > 0 and d_out > 0:
+            out.append({"label": label, "selection": selection,
+                        "d_in": round(d_in, 2), "d_out": round(d_out, 2),
+                        "kept_in": i.get("kept_pct"), "n_out": o["n"],
+                        "low_n_out": o["n"] < LOW_N_OUT})
+    out.sort(key=lambda r: r["d_out"], reverse=True)
+    return out
+
+
+def survivor_candidates(rows: list[dict]) -> list[tuple[str, dict, dict]]:
+    """(label, lift, selection) para TODA la grilla de la Fase 2 — los mismos
+    candidatos (y etiquetas) del reporte offline."""
+    items: list[tuple[str, dict, dict]] = []
+    for name in SUB_NAMES:
+        for thr in SUB_THRESHOLDS:
+            sel = {"subs": {name: thr}}
+            items.append((f"{name} ≥ {thr}", lift_from_rows(rows, sel), sel))
+    for key, gate in REGIME_GATE_DEFS:
+        sel = {"regime": gate}
+        items.append((f"regime solo {key}", lift_from_rows(rows, sel), sel))
+    for key in EMA_KEYS:
+        sel = {"ema": [key]}
+        items.append((f"EMA {key[:2]}·{key[2:]} con-tendencia",
+                      lift_from_rows(rows, sel), sel))
+    return items
+
+
+def oos_survivors_from_rows(rows: list[dict], base: dict | None = None) -> list[dict]:
+    """Supervivientes OOS directamente desde la matriz (visor B4.3)."""
+    return survivors_from_lifts(base or baseline_from_rows(rows),
+                                survivor_candidates(rows))
+
+
 def deltas_vs_base(sel: dict, base: dict) -> dict:
     """ΔPF/ΔWR/Δexpectancy in/out de una selección contra la línea base."""
     def d(a, b, nd=2):

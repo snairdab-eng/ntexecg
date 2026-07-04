@@ -9,7 +9,8 @@
     <div class="flex items-center justify-between flex-wrap gap-2">
         <div>
             <h1 class="text-xl font-semibold text-gray-100">Laboratorio <span class="text-xs text-gray-500">(visor read-only del camino A — no aplica nada a producción)</span></h1>
-            <p class="text-xs text-gray-500 mt-1">Los números salen del MISMO núcleo de agregación que el reporte offline (<code>lab_metrics</code>): lo que ves = lo que dice <code>REPORTES/LAB_*.md</code>.</p>
+            <p class="text-xs text-gray-500 mt-1">Los números salen del MISMO núcleo de agregación que el reporte offline (<code>lab_metrics</code>): lo que ves = lo que dice <code>REPORTES/LAB_*.md</code>.
+            <span class="ml-1 px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 whitespace-nowrap">🕐 todos los tiempos en ET (America/New_York)</span></p>
         </div>
         <div class="flex items-center gap-1 flex-wrap text-sm">
             {% for i in instruments %}
@@ -41,10 +42,12 @@
         {% if meta.get('tz') and meta.tz.get('offset_minutes') is not none %}· TZ {{ '%+d'|format(meta.tz.offset_minutes) }} min (sanity {{ (meta.tz.sanity * 100)|round(0)|int }}%){% endif %}
     </div>
 
-    <!-- Línea base (SIEMPRE visible: la referencia de todo what-if) -->
+    <!-- Línea base — B4.2: la síntesis vive en el panel de veredicto; la
+         tabla completa (maxDD, p95|MAE|, …) queda como detalle colapsable -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4">
-        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-3">Línea base — LuxAlgo nativo</h2>
-        <table class="w-full text-sm">
+        <details>
+        <summary class="text-sm uppercase tracking-wider text-gray-500 cursor-pointer select-none">Línea base — LuxAlgo nativo <span class="normal-case text-gray-600">(detalle completo: maxDD, p95|MAE|, net USD…)</span></summary>
+        <table class="w-full text-sm mt-3">
             <thead><tr class="text-gray-500 text-xs border-b border-gray-800">
                 <th class="text-left px-3 py-2">bloque</th><th class="text-right px-3 py-2">n</th>
                 <th class="text-right px-3 py-2">WR%</th><th class="text-right px-3 py-2">PF</th>
@@ -72,13 +75,25 @@
             {% endfor %}
             </tbody>
         </table>
+        </details>
     </div>
 
     <!-- B2 — filtros interactivos (sustractivos): Alpine → POST /ui/lab/aggregate,
          que agrega con el MISMO núcleo del reporte. Nada de métricas en JS. -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4"
          x-data="labSel('{{ instrument }}')" x-init="refresh()">
-        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">Filtros what-if (sustractivos: incluyen/excluyen trades)</h2>
+        <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500">Filtros what-if (sustractivos: incluyen/excluyen trades)</h2>
+            <!-- B4.3 — busca supervivientes OOS (misma lógica del RESUMEN) y
+                 auto-selecciona el ganador; elige por OUT, nunca por in -->
+            <div class="flex items-center gap-2 text-xs">
+                <span x-show="best" class="px-1.5 py-0.5 rounded bg-sky-900 text-sky-300"
+                      x-text="best ? ('🏆 ' + best.label + ' · ΔPF out ' + delta(best.d_out) + (best.low_n_out ? ' · ⚠ n_out=' + best.n_out : '')) : ''"></span>
+                <span x-show="bestMsg" class="px-1.5 py-0.5 rounded bg-amber-900 text-amber-300" x-text="bestMsg"></span>
+                <button @click="applyBest()"
+                        class="px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition">Mejor configuración (out-of-sample)</button>
+            </div>
+        </div>
         <p class="text-xs text-gray-600 mb-3">Universo del what-if = trades CON cobertura de barras (los "sin barras" cuentan solo en la línea base). Los SL/TP que cambian el desenlace van en su propia sección (B3).</p>
 
         <div class="grid md:grid-cols-3 gap-4 text-sm">
@@ -131,30 +146,68 @@
             </div>
         </div>
 
-        <!-- Resultado: SIEMPRE base vs selección -->
+        <!-- B4.2 — panel de VEREDICTO unificado: base y selección lado a lado,
+             Δ coloreado y barra de calor 1–10 (el score viene del SERVIDOR:
+             lab_metrics.verdict — aquí solo se pinta) -->
         <div class="mt-4 border-t border-gray-800 pt-3">
             <template x-if="res">
                 <div>
                     <div class="flex items-center gap-2 mb-2 text-xs">
-                        <span class="text-gray-500 uppercase tracking-wider">Selección vs base</span>
+                        <span class="text-gray-500 uppercase tracking-wider">Veredicto — base vs selección</span>
                         <span x-show="res.low_n_out" class="px-1.5 py-0.5 rounded bg-amber-900 text-amber-300">⚠ out n &lt; {{ meta.low_n_threshold }} — no confiable</span>
                         <span x-show="loading" class="text-gray-600">…</span>
                     </div>
                     <table class="w-full text-sm">
                         <thead><tr class="text-gray-500 text-xs border-b border-gray-800">
                             <th class="text-left px-3 py-1">bloque</th><th class="text-right px-3 py-1">n (kept%)</th>
-                            <th class="text-right px-3 py-1">PF (Δ)</th><th class="text-right px-3 py-1">WR% (Δ)</th>
-                            <th class="text-right px-3 py-1">exp% (Δ)</th>
+                            <th class="text-right px-3 py-1">PF base → sel (Δ)</th>
+                            <th class="text-right px-3 py-1">WR% base → sel (Δ)</th>
+                            <th class="text-right px-3 py-1">exp% base → sel (Δ)</th>
+                            <th class="text-left px-3 py-1 pl-6">veredicto (1–10)</th>
                         </tr></thead>
                         <tbody>
                         <template x-for="blk in ['in', 'out']" :key="blk">
                             <tr class="border-b border-gray-800 last:border-0"
-                                :class="(blk === 'out' && res.low_n_out) ? 'text-gray-500' : 'text-gray-300'">
-                                <td class="px-3 py-1 font-mono" x-text="blk + ((blk === 'out' && res.low_n_out) ? ' ⚠' : '')"></td>
+                                :class="blk === 'out' ? 'bg-gray-800/60 text-gray-200' : 'text-gray-300'">
+                                <td class="px-3 py-1 font-mono">
+                                    <span x-text="blk"></span>
+                                    <span x-show="blk === 'out'" class="text-[10px] text-sky-400">★ veredicto honesto</span>
+                                    <span x-show="blk === 'out' && res.low_n_out" class="text-amber-400">⚠</span>
+                                </td>
                                 <td class="px-3 py-1 text-right" x-text="res.result[blk].n + ' (' + fmt(res.result[blk].kept_pct, 0) + '%)'"></td>
-                                <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].pf) + ' (' + delta(res.deltas[blk].pf) + ')'"></td>
-                                <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].wr, 1) + ' (' + delta(res.deltas[blk].wr, 1) + ')'"></td>
-                                <td class="px-3 py-1 text-right" x-text="fmt(res.result[blk].expectancy_pct, 3) + ' (' + delta(res.deltas[blk].expectancy_pct, 3) + ')'"></td>
+                                <td class="px-3 py-1 text-right">
+                                    <span x-text="fmt(res.base[blk].pf) + ' → ' + fmt(res.result[blk].pf)"></span>
+                                    <span :class="dcls(res.deltas[blk].pf)" x-text="' (' + delta(res.deltas[blk].pf) + ')'"></span>
+                                </td>
+                                <td class="px-3 py-1 text-right">
+                                    <span x-text="fmt(res.base[blk].wr, 1) + ' → ' + fmt(res.result[blk].wr, 1)"></span>
+                                    <span :class="dcls(res.deltas[blk].wr)" x-text="' (' + delta(res.deltas[blk].wr, 1) + ')'"></span>
+                                </td>
+                                <td class="px-3 py-1 text-right">
+                                    <span x-text="fmt(res.base[blk].expectancy_pct, 3) + ' → ' + fmt(res.result[blk].expectancy_pct, 3)"></span>
+                                    <span :class="dcls(res.deltas[blk].expectancy_pct)" x-text="' (' + delta(res.deltas[blk].expectancy_pct, 3) + ')'"></span>
+                                </td>
+                                <td class="px-3 py-1 pl-6">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <template x-if="res.verdict[blk].score !== null">
+                                            <div class="flex items-center gap-1">
+                                                <div class="flex gap-0.5">
+                                                    <template x-for="i in 10" :key="i">
+                                                        <div class="w-1.5 h-3 rounded-sm"
+                                                             :class="i <= res.verdict[blk].score ? heatColor(res.verdict[blk].score) : 'bg-gray-800'"></div>
+                                                    </template>
+                                                </div>
+                                                <span class="font-mono text-xs text-gray-400" x-text="res.verdict[blk].score + '/10'"></span>
+                                            </div>
+                                        </template>
+                                        <template x-if="res.verdict[blk].score === null"><span class="text-gray-600 text-xs">—</span></template>
+                                        <template x-if="blk === 'out' && res.verdict.out.pf !== null">
+                                            <span class="text-xs font-medium"
+                                                  :class="res.verdict.out.survives ? 'text-green-400' : 'text-red-400'"
+                                                  x-text="res.verdict.out.survives ? ('sobrevive · PF out ' + fmt(res.verdict.out.pf) + ' ≥ 1') : ('cae · PF out ' + fmt(res.verdict.out.pf) + ' < 1')"></span>
+                                        </template>
+                                    </div>
+                                </td>
                             </tr>
                         </template>
                         </tbody>
@@ -297,9 +350,45 @@
         return {
             instrument, subsOn: {}, thrIdx: 1, regimeTf: '', regimeAllowed: [],
             ema: [], res: null, error: null, loading: false, _t: null,
+            best: null, bestMsg: null,
             get thr() { return THRS[this.thrIdx]; },
             fmt(v, nd = 2) { return v === null || v === undefined ? '—' : Number(v).toFixed(nd); },
             delta(v, nd = 2) { return v === null || v === undefined ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(nd); },
+            // Presentación pura (los scores/deltas vienen del servidor):
+            dcls(v) { return v === null || v === undefined ? 'text-gray-600' : v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-400'; },
+            heatColor(s) { return s >= 8 ? 'bg-green-500' : s >= 6 ? 'bg-green-600' : s === 5 ? 'bg-gray-500' : s >= 3 ? 'bg-amber-500' : 'bg-red-500'; },
+            // B4.3 — el ganador lo decide el SERVIDOR (lab_metrics, ΔPF out);
+            // aquí solo se mueven las perillas a su selección.
+            async applyBest() {
+                this.best = null; this.bestMsg = null;
+                try {
+                    const r = await fetch('/ui/lab/best?instrument=' + this.instrument);
+                    if (!r.ok) { this.bestMsg = 'Error ' + r.status + ' — ¿caché regenerada?'; return; }
+                    const j = await r.json();
+                    if (j.none_robust) {
+                        this._applySelection({});           // controles en OFF
+                        this.bestMsg = 'ninguno robusto → nativo domina';
+                        this.refresh();
+                        return;
+                    }
+                    this.best = j.winner;
+                    this._applySelection(j.winner.selection || {});
+                    this.refresh();
+                } catch (e) { this.bestMsg = String(e); }
+            },
+            _applySelection(sel) {
+                this.subsOn = {}; this.regimeTf = ''; this.regimeAllowed = []; this.ema = [];
+                for (const [name, thr] of Object.entries(sel.subs || {})) {
+                    this.subsOn[name] = true;
+                    const i = THRS.indexOf(thr);
+                    if (i >= 0) this.thrIdx = i;
+                }
+                if (sel.regime && (sel.regime.allowed || []).length) {
+                    this.regimeTf = sel.regime.tf || '1h';
+                    this.regimeAllowed = sel.regime.allowed;
+                }
+                if ((sel.ema || []).length) this.ema = sel.ema;
+            },
             refresh() {  // debounce corto; la agregación vive en el SERVIDOR
                 clearTimeout(this._t);
                 this._t = setTimeout(() => this._fetch(), 120);

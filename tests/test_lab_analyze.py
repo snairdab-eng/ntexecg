@@ -165,8 +165,9 @@ def test_first_touch_orders():
     idx = {k: i for i, k in enumerate(keys)}
     assert _first_touch(t, 2.0, 3.0, keys, idx, bars) == "tp"
 
-    # ambos en la MISMA barra → ambiguo → SL (conservador)
-    bars = _flat_bars(start, [(103.5, 97.5)])
+    # ambos en la MISMA barra → ambiguo → SL (conservador); la primera barra
+    # es la alineada (pre-señal, excluida — B4.0)
+    bars = _flat_bars(start, [(100.2, 99.8), (103.5, 97.5)])
     keys = sorted(bars)
     idx = {k: i for i, k in enumerate(keys)}
     assert _first_touch(t, 2.0, 3.0, keys, idx, bars) == "ambiguous_sl"
@@ -178,7 +179,8 @@ def test_resim_sl_tp_uses_touch_order():
     t.mfe_pct = 5.0
     t.aligned_ts = start
     t.bar_close = 100.0
-    bars = _flat_bars(start, [(103.2, 99.8), (100.0, 97.0)])  # TP primero
+    # barra alineada neutral (pre-señal, excluida — B4.0) + TP primero
+    bars = _flat_bars(start, [(100.1, 99.9), (103.2, 99.8), (100.0, 97.0)])
     keys = sorted(bars)
     idx = {k: i for i, k in enumerate(keys)}
     m = resim_sl_tp([t], 2.0, 3.0, keys, idx, bars)["in"]
@@ -317,6 +319,76 @@ def test_pullback_atr_zero_skipped():
     assert res[1.0]["unfilled_outcome"]["n"] == 0
     # …y el sano intacto (low 98.9 en el minuto 5 → 1.1×ATR ≥ 1.0)
     assert res[1.0]["t_med"] == 5
+
+
+# ---------------------------------------------------------------------------
+# B4.0 — consistencia toques intrabar ↔ MFE/MAE (misma referencia: la ENTRADA)
+# ---------------------------------------------------------------------------
+
+def test_touch_denominates_like_luxalgo():
+    """mfe_atr = mfe_pct/atr_pct denomina la excursión sobre el PRECIO DE
+    ENTRADA del CSV, pero el HOLC es back-ajustado (δ del roll): la caminata
+    debe medir la excursión en ABSOLUTO HOLC (desde el close alineado, misma
+    escala que high/low) y denominarla sobre entry_price — si denomina sobre
+    el close back-ajustado, el multiplo queda desinflado por close/entry y
+    los toques marginales se pierden (trades 9/41 de ES, mfe_atr ≈ 6.03)."""
+    from scripts.lab_analyze import touch_minutes
+
+    start = datetime(2026, 3, 16, 9, 0)
+    t = _trade(0.5, 0.5, 100.0 / 161.0)   # atr% = atr(1.0)/close(161)·100
+    t.entry_price = 100.0                 # precio del CSV (escala real)
+    t.bar_close = 161.0                   # close HOLC (δ del roll = +61)
+    t.aligned_ts = start
+    t.exit_ts = None
+    t.mfe_pct = 4.0                       # (165−161)/entry·100 → mfe_atr=6.44
+    # bar alineada neutral (pre-señal) + high 165 en la siguiente:
+    # exc abs = 4.0 = 6.44×ATR sobre entry; sobre el close daría 4.0 (< 6)
+    bars = _flat_bars(start, [(161.5, 160.5), (165.0, 160.8)], base=161.0)
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    _adv, fav = touch_minutes(t, keys, idx, bars)
+    assert fav["6.0"] is not None         # consistente con mfe_atr = 6.44 ≥ 6
+
+
+def test_touch_excludes_presignal_bar():
+    """HOLC estampa la barra por su CIERRE: el rango de la barra alineada es
+    PRE-entrada y el MFE/MAE de LuxAlgo no lo incluye — la caminata tampoco
+    debe (contarla inflaba los adversos bajos en ES real, Δ+3.5pp)."""
+    from scripts.lab_analyze import touch_minutes
+
+    start = datetime(2026, 3, 16, 9, 0)
+    t = _trade(0.5, 0.5, 1.0)
+    t.aligned_ts = start
+    t.bar_close = 100.0
+    t.exit_ts = None
+    # TODO el movimiento está en la barra alineada (pre-señal); después, nada
+    bars = _flat_bars(start, [(103.5, 97.5), (100.1, 99.9)])
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    adv, fav = touch_minutes(t, keys, idx, bars)
+    assert all(v is None for v in adv.values())
+    assert all(v is None for v in fav.values())
+
+
+def test_pullback_excludes_presignal_bar():
+    """Una pierna límite no puede llenarse ANTES de existir: el dip de la
+    barra alineada (pre-señal) no es un fill — contarlo inflaba el fill-rate
+    de los niveles hondos (el overcount que denuncia B4.0)."""
+    from scripts.lab_analyze import pullback_study
+
+    start = datetime(2026, 3, 16, 9, 0)
+    t = _trade(0.8, 1.2, 1.0)
+    t.aligned_ts = start
+    t.bar_close = 100.0
+    t.atr_entry = 1.0
+    # dip 5×ATR PRE-señal en la barra alineada; después solo 1×ATR
+    bars = _flat_bars(start, [(100.2, 95.0), (100.1, 99.0)])
+    keys = sorted(bars)
+    idx = {k: i for i, k in enumerate(keys)}
+    res = pullback_study([t], keys, idx, bars, window_min=60)
+    assert res[1.0]["n_filled"] == 1 and res[1.0]["t_med"] == 5
+    assert res[1.5]["n_filled"] == 0
+    assert res[5.0]["n_filled"] == 0
 
 
 # ---------------------------------------------------------------------------

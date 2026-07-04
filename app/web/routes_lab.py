@@ -28,7 +28,9 @@ from app.services.lab_metrics import (
     equity_curve,
     hourly_from_rows,
     lift_from_rows,
+    oos_survivors_from_rows,
     resim_rows,
+    verdict,
 )
 
 # Buckets horarios con n < 10 se marcan como poco poblados (igual que el §3
@@ -151,13 +153,42 @@ async def lab_aggregate(sel: Selection) -> JSONResponse:
                  "ema": sel.ema or []}
     base = baseline_from_rows(rows)
     result = lift_from_rows(rows, selection)
+    deltas = deltas_vs_base(result, base)
     return JSONResponse({
         "instrument": sel.instrument,
         "selection": selection,
         "base": base,
         "result": result,
-        "deltas": deltas_vs_base(result, base),
+        "deltas": deltas,
+        # B4.2 — veredicto visual (heat 1–10 + sobrevive), computado en el
+        # SERVIDOR con el núcleo compartido (nada de métricas en JS).
+        "verdict": verdict(result, deltas),
         "low_n_out": result["low_n_out"],
+        "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
+    })
+
+
+@router.get("/ui/lab/best")
+async def lab_best(instrument: str = "ES") -> JSONResponse:
+    """B4.3 — "mejor configuración (out-of-sample)": corre la búsqueda de
+    supervivientes con la MISMA lógica del RESUMEN (lab_metrics: ΔPF > 0
+    dentro Y fuera, elegido por ΔPF OUT — nunca por in-sample, ahí vive el
+    espejismo). Ganador = mayor ΔPF out; ninguno → nativo domina."""
+    if instrument not in INSTRUMENTS:
+        return JSONResponse({"error": "instrumento inválido"}, status_code=400)
+    cached = load_cache(instrument)
+    if cached is None:
+        return JSONResponse(
+            {"error": "cache_missing", "regen_cmd": REGEN_CMD},
+            status_code=409,
+        )
+    rows, meta = cached
+    survivors = oos_survivors_from_rows(rows)
+    return JSONResponse({
+        "instrument": instrument,
+        "survivors": survivors,
+        "winner": survivors[0] if survivors else None,
+        "none_robust": not survivors,
         "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
     })
 
@@ -203,12 +234,14 @@ async def lab_resim(sel: ResimSel) -> JSONResponse:
     # (conservador) — avisar para regenerar.
     legacy = (sel.sl_k is not None and sel.tp is not None
               and not any(row.get("t_sl_touch") for row in universe))
+    deltas = deltas_vs_base(r, base)
     return JSONResponse({
         "instrument": sel.instrument,
         "sl_k": sel.sl_k, "tp": sel.tp,
         "base": base,
         "result": {"in": r["in"], "out": r["out"]},
-        "deltas": deltas_vs_base(r, base),
+        "deltas": deltas,
+        "verdict": verdict(r, deltas),
         "low_n_out": r["low_n_out"],
         "curves": {"base": equity_curve(native),
                    "resim": equity_curve(outcomes),

@@ -362,6 +362,135 @@ async def test_page_pullback_missing_hint(client: AsyncClient, lab_dirs: Path):
     assert "no trae el agregado de pullback" in r.text
 
 
+# ---------------------------------------------------------------------------
+# Fase B4 — veredicto (heat 1–10), rótulo ET y "mejor configuración" (OOS)
+# ---------------------------------------------------------------------------
+
+def test_heat_score_known_answers():
+    """Escalones documentados del heat 1–10 (5 = neutro; ±0.05/0.25/0.5/1/2)."""
+    from app.services.lab_metrics import heat_score
+
+    assert heat_score(None) is None
+    assert heat_score(0.0) == 5
+    assert heat_score(0.05) == 6
+    assert heat_score(0.3) == 7
+    assert heat_score(0.6) == 8
+    assert heat_score(1.2) == 9
+    assert heat_score(2.5) == 10
+    assert heat_score(-0.06) == 4
+    assert heat_score(-0.3) == 4
+    assert heat_score(-0.55) == 3
+    assert heat_score(-1.5) == 2
+    assert heat_score(-3.0) == 1
+
+
+@pytest.mark.asyncio
+async def test_aggregate_and_resim_include_verdict(client: AsyncClient, lab_dirs: Path):
+    """B4.2 — el veredicto viene del SERVIDOR (paridad con lab_metrics.verdict;
+    nada de métricas en JS) y marca si el PF out cruza 1.0."""
+    from app.services.lab_metrics import deltas_vs_base, verdict
+
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)
+
+    r = await client.post("/ui/lab/aggregate", json={
+        "instrument": "ES", "subs": {"atr_normalized": 50}})
+    j = r.json()
+    base = baseline_from_rows(rows)
+    result = lift_from_rows(rows, {"subs": {"atr_normalized": 50},
+                                   "regime": {}, "ema": []})
+    off = verdict(result, deltas_vs_base(result, base))
+    assert j["verdict"] == json.loads(json.dumps(off))
+    # atr≥50 mantiene todo → Δ0 → neutro 5; PF out 1.67 ≥ 1 → sobrevive
+    assert j["verdict"]["in"]["score"] == 5
+    assert j["verdict"]["out"]["survives"] is True
+
+    r2 = await client.post("/ui/lab/resim",
+                           json={"instrument": "ES", "sl_k": 2.5})
+    j2 = r2.json()
+    assert set(j2["verdict"]) == {"in", "out"}
+    assert "survives" in j2["verdict"]["out"]
+
+
+@pytest.mark.asyncio
+async def test_best_picks_oos_survivor_not_in_sample_mirage(
+    client: AsyncClient, lab_dirs: Path
+):
+    """B4.3 (regla dura): el ganador se elige por OUT-of-sample. El espejismo
+    (mejora ENORME in-sample pero empeora out) NO gana ni aparece."""
+    trades = _mk_trades(20)
+    for i, t in enumerate(trades):
+        # volume ≥60: sobrevive DENTRO y FUERA (ganadores + 1 perdedor por bloque)
+        t.sub_volume = 0.9 if (i % 2 == 0 or i in (1, 15)) else 0.3
+        # atr ≥80: espejismo — dentro solo ganadores(+1), fuera solo perdedores
+        t.sub_atr = (0.9 if ((i % 2 == 0 and i < 14) or i == 1
+                             or (i % 2 == 1 and i >= 15)) else 0.3)
+    rows = feature_rows(trades)
+    _write_cache(lab_dirs, rows)
+
+    r = await client.get("/ui/lab/best?instrument=ES")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["none_robust"] is False
+    assert j["winner"]["label"].startswith("volume_relative")
+    assert j["winner"]["selection"]["subs"]        # auto-aplicable por el visor
+    labels = [s["label"] for s in j["survivors"]]
+    assert all(not lbl.startswith("atr_normalized") for lbl in labels)
+
+
+@pytest.mark.asyncio
+async def test_best_none_robust_native_dominates(client: AsyncClient, lab_dirs: Path):
+    """Sin superviviente robusto → explícito "nativo domina" (caso 6E/6J)."""
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)
+    r = await client.get("/ui/lab/best?instrument=ES")
+    j = r.json()
+    assert j["none_robust"] is True and j["winner"] is None
+    assert j["survivors"] == []
+
+
+def test_survivors_single_source_parity():
+    """El reporte (phase2) y el visor (rows) comparten criterio Y grilla:
+    mismos labels y deltas por ambas rutas."""
+    from app.services.lab_metrics import (
+        EMA_KEYS, REGIME_GATE_DEFS, SUB_NAMES, SUB_THRESHOLDS,
+        oos_survivors_from_rows,
+    )
+    from scripts.lab_analyze import oos_survivors
+
+    trades = _mk_trades(20)
+    for i, t in enumerate(trades):
+        t.sub_volume = 0.9 if (i % 2 == 0 or i in (1, 15)) else 0.3
+    rows = feature_rows(trades)
+    base = baseline_from_rows(rows)
+    phase2 = {
+        "subs": {name: {thr: lift_from_rows(rows, {"subs": {name: thr}})
+                        for thr in SUB_THRESHOLDS} for name in SUB_NAMES},
+        "regime_gates": {k: lift_from_rows(rows, {"regime": g})
+                         for k, g in REGIME_GATE_DEFS},
+        "ema_gates": {k: lift_from_rows(rows, {"ema": [k]}) for k in EMA_KEYS},
+    }
+    a = oos_survivors(base, phase2)
+    b = oos_survivors_from_rows(rows, base)
+    assert [(s["label"], s["d_in"], s["d_out"]) for s in a] == \
+           [(s["label"], s["d_in"], s["d_out"]) for s in b]
+    assert len(a) > 0
+
+
+@pytest.mark.asyncio
+async def test_page_b4_verdict_et_and_best_button(client: AsyncClient, lab_dirs: Path):
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)
+    r = await client.get("/ui/lab?instrument=ES")
+    assert "todos los tiempos en ET (America/New_York)" in r.text     # B4.1
+    assert "Mejor configuración (out-of-sample)" in r.text            # B4.3
+    assert "/ui/lab/best" in r.text
+    assert "nativo domina" in r.text                                  # caso vacío
+    assert "veredicto honesto" in r.text                              # B4.2 out ★
+    assert "heatColor" in r.text                                      # barra 1–10
+    assert "<details>" in r.text and "detalle completo" in r.text     # base plegada
+
+
 @pytest.mark.asyncio
 async def test_page_has_interactive_panels_and_hourly(client: AsyncClient, lab_dirs: Path):
     rows = feature_rows(_mk_trades(20))
