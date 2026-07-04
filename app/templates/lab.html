@@ -83,7 +83,7 @@
     <div class="bg-gray-900 border border-gray-800 rounded p-4"
          x-data="labSel('{{ instrument }}')" x-init="refresh()">
         <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
-            <h2 class="text-sm uppercase tracking-wider text-gray-500">Filtros what-if (sustractivos: incluyen/excluyen trades)</h2>
+            <h2 class="text-sm uppercase tracking-wider text-gray-500">Config COMBINADA — un solo estado: filtros + SL/TP + piernas</h2>
             <!-- B4.3 — busca supervivientes OOS (misma lógica del RESUMEN) y
                  auto-selecciona el ganador; elige por OUT, nunca por in -->
             <div class="flex items-center gap-2 text-xs">
@@ -94,7 +94,7 @@
                         class="px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition">Mejor configuración (out-of-sample)</button>
             </div>
         </div>
-        <p class="text-xs text-gray-600 mb-3">Universo del what-if = trades CON cobertura de barras (los "sin barras" cuentan solo en la línea base). Los SL/TP que cambian el desenlace van en su propia sección (B3).</p>
+        <p class="text-xs text-gray-600 mb-3">Las perillas se aplican JUNTAS, en orden: <b>1)</b> sustractivos (filtros/régimen/EMA) recortan el universo → <b>2)</b> SL/TP re-simulan sobre ese subconjunto → <b>3)</b> piernas mueven la entrada (fills del pullback cacheado). Universo = trades CON cobertura de barras. El efecto de cada perilla por separado vive en su panel "efecto aislado".</p>
 
         <div class="grid md:grid-cols-3 gap-4 text-sm">
             <!-- Subscores de calidad -->
@@ -144,6 +144,36 @@
                 </label>
                 {% endfor %}
             </div>
+        </div>
+
+        <!-- B5.1 — perillas de desenlace y entrada del estado combinado -->
+        <div class="mt-3 pt-3 border-t border-gray-800 flex items-center gap-4 text-sm flex-wrap">
+            <span class="text-xs text-gray-500 uppercase">Desenlace + entrada</span>
+            <label class="text-gray-400 text-xs">SL k×ATR
+                <select class="ml-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200"
+                        x-model="slk" @change="refresh()">
+                    <option value="">OFF</option>
+                    {% for k in sl_grid %}<option value="{{ k }}">{{ k }}×</option>{% endfor %}
+                </select>
+            </label>
+            <label class="text-gray-400 text-xs">TP tp×ATR
+                <select class="ml-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200"
+                        x-model="tp" @change="refresh()">
+                    <option value="">OFF</option>
+                    {% for t in tp_grid %}<option value="{{ t }}">{{ t }}×</option>{% endfor %}
+                </select>
+            </label>
+            <label class="text-gray-400 text-xs">Piernas (escalonado somero)
+                <select class="ml-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200"
+                        x-model.number="legsIx" @change="refresh()">
+                    <template x-for="(p, ix) in LEGS" :key="ix">
+                        <option :value="ix" x-text="p.label" :selected="ix === legsIx"></option>
+                    </template>
+                </select>
+            </label>
+            {% if nominal and nominal.tp_p99_atr is not none %}
+            <span class="text-xs text-gray-500">brackets nominales (esta estrategia): <b class="text-gray-300">TP ≈ {{ nominal.tp_p99_atr }}×</b> (MFE p99) · <b class="text-gray-300">SL ≈ {{ nominal.sl_p99_atr }}×</b> (MAE p99) — topes anchos, no metas</span>
+            {% endif %}
         </div>
 
         <!-- B4.2 — panel de DECISIÓN: veredicto en una línea (frase de
@@ -233,6 +263,26 @@
                         </template>
                         <span x-text="res.tradeoff['in'].phrase"></span>
                     </div>
+
+                    <!-- B5.1 — LA salida central: equity base vs combinada -->
+                    <div class="mt-3">
+                        <div class="text-xs text-gray-600 mb-1">Curva de equity (P&amp;L% acumulado, universo con ATR; lo filtrado no se opera = tramo plano) — <span class="text-sky-400">base (nativo)</span> vs <span class="text-emerald-400">config combinada</span>; el split in|out cae en el trade <span class="font-mono" x-text="res.curves.split_idx"></span>.</div>
+                        <div class="h-56"><canvas x-ref="chart"></canvas></div>
+                    </div>
+
+                    <!-- B5.1 — por qué suma el escalonado (mecánica visible) -->
+                    <template x-if="res.scaling">
+                        <div class="mt-3 bg-gray-950/60 border border-gray-800 rounded p-3">
+                            <div class="text-xs text-gray-500 uppercase mb-1">por qué suma el escalonado</div>
+                            <div class="flex items-center gap-4 flex-wrap text-sm text-gray-300">
+                                <span>entrada: base → <b class="text-white">mejora media <span x-text="fmt(res.scaling.avg_entry_improvement_atr, 3)"></span>×ATR</b> (ponderada, piernas que llenan)</span>
+                                <span>contribución neta de las piernas: <b :class="dcls(res.scaling.net_contrib_pct.out)" x-text="delta(res.scaling.net_contrib_pct.out) + '% out'"></b> <span class="text-gray-500" x-text="'(' + delta(res.scaling.net_contrib_pct['in']) + '% in)'"></span></span>
+                                <span class="text-gray-500">fills: <template x-for="(n, d) in res.scaling.fills" :key="d"><span class="mr-2" x-text="d + '× → ' + n"></span></template></span>
+                            </div>
+                            <div class="text-xs text-gray-500 mt-1" x-text="res.scaling.why + ' (ver la tabla de pullback abajo)'"></div>
+                            <div x-show="res.scaling.approx_fills" class="text-xs text-amber-400 mt-1">⚠ fills aproximados (cache sin toques de pullback — regenerar)</div>
+                        </div>
+                    </template>
                 </div>
             </template>
             <template x-if="error"><div class="text-xs text-red-400" x-text="error"></div></template>
@@ -332,7 +382,7 @@
     <div class="bg-gray-900 border border-gray-800 rounded p-4"
          x-data="labResim('{{ instrument }}')"
          @lab-apply-sl.window="slk = String($event.detail); refresh()">
-        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">SL / TP re-simulados (cambian el desenlace — no son filtros)</h2>
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">SL / TP re-simulados — <span class="text-amber-400/80">efecto aislado de esta perilla</span> (el resultado combinado vive arriba)</h2>
         <p class="text-xs text-gray-600 mb-3">SL ⟺ |mae%| ≥ k·ATR% → −k·ATR% · TP ⟺ mfe% ≥ tp·ATR% → +tp·ATR% · ambos → decide el <b>orden de toques intrabar del 5m</b> (cacheado por el camino A; misma barra → SL, conservador).</p>
         <div class="flex items-center gap-4 text-sm flex-wrap">
             <label class="text-gray-400 text-xs">SL k×ATR
@@ -433,9 +483,12 @@
     <script>
     function labSel(instrument) {
         const THRS = [50, 60, 70, 80];
+        // Presets de piernas someras (los mismos del estudio default — server)
+        const LEGS = {{ leg_shapes | tojson }};
         return {
             instrument, subsOn: {}, thrIdx: 1, regimeTf: '', regimeAllowed: [],
-            ema: [], res: null, error: null, loading: false, _t: null,
+            ema: [], slk: '', tp: '', legsIx: 0, LEGS,
+            res: null, error: null, loading: false, _t: null, _chart: null,
             best: null, bestMsg: null,
             get thr() { return THRS[this.thrIdx]; },
             fmt(v, nd = 2) { return v === null || v === undefined ? '—' : Number(v).toFixed(nd); },
@@ -483,20 +536,51 @@
                 this.loading = true; this.error = null;
                 const subs = {};
                 for (const [k, on] of Object.entries(this.subsOn)) if (on) subs[k] = this.thr;
+                // B5.1 — UN solo estado → /ui/lab/combined (el núcleo aplica
+                // el orden documentado; /ui/lab/aggregate queda para efectos
+                // aislados vía API)
                 const body = { instrument: this.instrument, subs };
                 if (this.regimeTf && this.regimeAllowed.length)
                     body.regime = { tf: this.regimeTf, allowed: this.regimeAllowed };
                 if (this.ema.length) body.ema = this.ema;
+                if (this.slk) body.sl_k = Number(this.slk);
+                if (this.tp) body.tp = Number(this.tp);
+                const preset = LEGS[this.legsIx];
+                if (preset && preset.legs.length > 1) body.legs = preset.legs;
                 try {
-                    const r = await fetch('/ui/lab/aggregate', {
+                    const r = await fetch('/ui/lab/combined', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(body),
                     });
                     if (!r.ok) { this.error = 'Error ' + r.status + ' — ¿caché regenerada?'; this.res = null; }
-                    else { this.res = await r.json(); }
+                    else { this.res = await r.json(); this.$nextTick(() => this._draw()); }
                 } catch (e) { this.error = String(e); this.res = null; }
                 this.loading = false;
+            },
+            _draw() {  // solo dibuja: los números vienen del servidor
+                const el = this.$refs.chart;
+                if (!el || !this.res) return;
+                const c = this.res.curves;
+                const labels = c.base.map((_, i) => i + 1);
+                if (this._chart) this._chart.destroy();
+                this._chart = new Chart(el, {
+                    type: 'line',
+                    data: { labels, datasets: [
+                        { label: 'base (nativo)', data: c.base, borderColor: '#38bdf8',
+                          pointRadius: 0, borderWidth: 1.5, tension: 0 },
+                        { label: 'config combinada', data: c.combined, borderColor: '#34d399',
+                          pointRadius: 0, borderWidth: 1.5, tension: 0 },
+                    ]},
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: { legend: { labels: { color: '#9ca3af', boxWidth: 12 } } },
+                        scales: {
+                            x: { ticks: { color: '#6b7280', maxTicksLimit: 12 }, grid: { color: '#1f2937' } },
+                            y: { ticks: { color: '#6b7280' }, grid: { color: '#1f2937' } },
+                        },
+                    },
+                });
             },
         };
     }

@@ -676,6 +676,178 @@ async def test_page_b4_verdict_et_and_best_button(client: AsyncClient, lab_dirs:
     assert "<details>" in r.text and "detalle completo" in r.text     # base plegada
 
 
+# ---------------------------------------------------------------------------
+# FASE B5.1 — config COMBINADA (orden: sustractivos → SL/TP → piernas)
+# ---------------------------------------------------------------------------
+
+def _cmb_row(pnl, mae_atr, sub_volume=0.9, pb=None, mfe_pct=None,
+             ttp=None, in_sample=True) -> dict:
+    """Fila mínima para la config combinada (atr_pct=1.0: números legibles)."""
+    return {"pnl_pct": pnl, "mae_pct": mae_atr, "mfe_pct": mfe_pct or 0.1,
+            "atr_pct": 1.0, "mae_atr": mae_atr,
+            "mfe_atr": (mfe_pct or 0.1), "sub_volume": sub_volume,
+            "in_sample": in_sample, "t_pb_touch": pb,
+            "t_sl_touch": {"2.0": 5.0} if mae_atr >= 2.0 else {},
+            "t_tp_touch": ttp or {}}
+
+
+_CMB_LEGS = [[0.0, 0.5], [0.5, 0.5]]
+
+
+def test_combined_order_and_legs_known_answer():
+    """El ORDEN es la semántica: (1) el filtro recorta PRIMERO (el trade
+    filtrado no aporta ni su stop), (2) SL re-simula sobre el subconjunto,
+    (3) las piernas mueven la entrada (SL ANCLADO: la pierna pierde menos;
+    nativo: gana más; sin pullback: peso sin usar)."""
+    from app.services.lab_metrics import combined_config
+
+    rows = [
+        _cmb_row(2.0, 0.6, pb={"0.5": 5.0}),               # nativo +2 → 2.25
+        _cmb_row(-3.0, 9.0, pb={"0.5": 5.0}),              # stop @2 → −1.75
+        _cmb_row(-1.0, 5.0, sub_volume=0.3),               # FILTRADO (ni stop)
+        _cmb_row(1.0, 0.1, pb={}, in_sample=False),        # pierna no llena
+        _cmb_row(-0.5, 0.3, pb={"0.5": 5.0}, in_sample=False),
+    ]
+    sel = {"subs": {"volume_relative": 60}}
+    r = combined_config(rows, selection=sel, sl_k=2.0, legs=_CMB_LEGS)
+    # in: [0.5·2 + 0.5·2.5, 0.5·(−2) + 0.5·(−1.5)] = [2.25, −1.75]
+    assert r["in"]["n"] == 2
+    assert r["in"]["net_pct"] == 0.5
+    assert r["in"]["kept_pct"] == 66.7                     # 2 de 3
+    # out: [0.5·1 + 0, 0.5·(−0.5) + 0.5·0] = [0.5, −0.25]
+    assert r["out"]["net_pct"] == 0.25
+    # curva sobre el universo COMPLETO: el filtrado aporta 0 (no se opera)
+    assert r["outcomes"] == [2.25, -1.75, 0.0, 0.5, -0.25]
+    # el %SL reporta la etapa re-sim sobre el subconjunto
+    assert r["in"]["sl_pct"] == 50.0
+
+
+def test_combined_leg_respects_tp_order():
+    """Una pierna que el pullback toca DESPUÉS del TP no llena (la posición
+    ya salió): el orden usa los minutos cacheados."""
+    from app.services.lab_metrics import combined_config
+
+    antes = _cmb_row(0.2, 0.6, pb={"0.5": 5.0}, mfe_pct=3.5,
+                     ttp={"3.0": 10.0})
+    despues = _cmb_row(0.2, 0.6, pb={"0.5": 20.0}, mfe_pct=3.5,
+                       ttp={"3.0": 10.0})
+    r = combined_config([antes], tp=3.0, legs=_CMB_LEGS)
+    assert r["in"]["net_pct"] == round(0.5 * 3.0 + 0.5 * 3.5, 2)   # 3.25
+    r = combined_config([despues], tp=3.0, legs=_CMB_LEGS)
+    assert r["in"]["net_pct"] == 1.5                                # solo mkt
+
+
+def test_combined_parity_with_isolated_knobs():
+    """Candado de paridad: con UNA sola perilla activa, el combinado devuelve
+    exactamente lo del camino aislado (lift_from_rows / resim_rows)."""
+    from app.services.lab_metrics import (combined_config, lift_from_rows,
+                                          resim_rows)
+
+    rows = feature_rows(_mk_trades(20))
+    sel = {"subs": {"volume_relative": 60}}
+    a = combined_config(rows, selection=sel)
+    b = lift_from_rows(rows, sel)
+    for blk in ("in", "out"):
+        for key in ("n", "pf", "wr", "expectancy_pct", "net_pct", "kept_pct"):
+            assert a[blk][key] == b[blk][key], (blk, key)
+
+    for r in rows:
+        r["mae_pct"], r["mfe_pct"] = 2.0, 0.1
+    c = combined_config(rows, sl_k=2.5)
+    d = resim_rows(rows, sl_k=2.5)
+    for blk in ("in", "out"):
+        for key in ("n", "pf", "expectancy_pct", "sl_pct"):
+            assert c[blk][key] == d[blk][key], (blk, key)
+
+
+def test_combined_scaling_explainer():
+    """El mini-panel del "por qué suma": contribución neta de las piernas
+    (= net con piernas − net sin piernas, misma etapa previa), fills por
+    pierna y mejora de entrada promedio."""
+    from app.services.lab_metrics import combined_config
+
+    rows = [
+        _cmb_row(2.0, 0.6, pb={"0.5": 5.0}),
+        _cmb_row(-3.0, 9.0, pb={"0.5": 5.0}),
+        _cmb_row(1.0, 0.1, pb={}, in_sample=False),
+    ]
+    r = combined_config(rows, sl_k=2.0, legs=_CMB_LEGS)
+    s = r["scaling"]
+    # sin piernas (in): [2, −2] → net 0; con piernas: [2.25, −1.75] → 0.5
+    assert s["net_contrib_pct"]["in"] == 0.5
+    assert s["fills"]["0.5"] == 2
+    assert s["approx_fills"] is False
+    assert "someros" in s["why"]
+    # sin piernas someras activas no hay panel
+    assert combined_config(rows, sl_k=2.0)["scaling"] is None
+
+
+# ---------------------------------------------------------------------------
+# FASE B5.2 — rejillas extendidas + brackets nominales (MFE/MAE p99)
+# ---------------------------------------------------------------------------
+
+def test_extended_grids_single_source():
+    from app.services.lab_metrics import PULLBACK_LEVELS, TP_GRID
+    from scripts.lab_analyze import PULLBACK_LEVELS as PB_A
+
+    assert PULLBACK_LEVELS[-1] == 10.0                 # pullback hasta 10×
+    assert {6.0, 7.0, 8.0, 9.0, 10.0} <= set(PULLBACK_LEVELS)
+    assert {8.0, 10.0, 12.0, 15.0, 20.0} <= set(TP_GRID)   # TP nominal alto
+    assert PB_A is PULLBACK_LEVELS                     # fuente única
+
+
+def test_nominal_brackets_p99():
+    """Modo "TP nominal sobre el MFE p99" (y SL catastrófico sobre MAE p99):
+    el bracket es nominal ancho, no una meta."""
+    from app.services.lab_metrics import nominal_brackets
+
+    rows = [{"atr_pct": 1.0, "mfe_atr": float(i + 1), "mae_atr": float(i + 1) / 2}
+            for i in range(100)]
+    nb = nominal_brackets(rows)
+    assert round(nb["tp_p99_atr"], 1) == 99.0
+    assert round(nb["sl_p99_atr"], 1) == 49.5
+    assert nominal_brackets([]) == {"tp_p99_atr": None, "sl_p99_atr": None}
+
+
+@pytest.mark.asyncio
+async def test_combined_endpoint_and_validation(client: AsyncClient, lab_dirs: Path):
+    rows = feature_rows(_mk_trades(20))
+    for r in rows:
+        r["t_pb_touch"] = {"0.5": 10.0}
+    _write_cache(lab_dirs, rows)
+
+    r = await client.post("/ui/lab/combined", json={
+        "instrument": "ES", "subs": {"volume_relative": 60},
+        "sl_k": 2.5, "legs": [[0.0, 0.5], [0.5, 0.5]]})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert set(j["curves"]) == {"base", "combined", "split_idx"}
+    assert len(j["curves"]["base"]) == len(j["curves"]["combined"]) == 20
+    assert "phrase" in j["tradeoff"]["out"]            # frase del COMBINADO
+    assert "verdict" in j and "scaling" in j
+    # validaciones: pesos que no suman 1 / pierna fuera de grilla / ≥ SL
+    assert (await client.post("/ui/lab/combined", json={
+        "instrument": "ES", "legs": [[0.0, 0.9]]})).status_code == 400
+    assert (await client.post("/ui/lab/combined", json={
+        "instrument": "ES", "legs": [[0.0, 0.5], [0.33, 0.5]]})).status_code == 400
+    assert (await client.post("/ui/lab/combined", json={
+        "instrument": "ES", "sl_k": 1.5,
+        "legs": [[0.0, 0.5], [2.0, 0.5]]})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_page_b5_combined_and_grids(client: AsyncClient, lab_dirs: Path):
+    rows = feature_rows(_mk_trades(20))
+    _write_cache(lab_dirs, rows)
+    r = await client.get("/ui/lab?instrument=ES")
+    assert "Config COMBINADA" in r.text
+    assert "/ui/lab/combined" in r.text
+    assert "efecto aislado" in r.text                  # perillas rotuladas
+    assert "por qué suma el escalonado" in r.text
+    assert "MFE p99" in r.text                         # bracket nominal
+    assert ">20.0×<" in r.text                         # TP grid extendida
+
+
 @pytest.mark.asyncio
 async def test_page_has_interactive_panels_and_hourly(client: AsyncClient, lab_dirs: Path):
     rows = feature_rows(_mk_trades(20))
@@ -683,7 +855,7 @@ async def test_page_has_interactive_panels_and_hourly(client: AsyncClient, lab_d
     r = await client.get("/ui/lab?instrument=ES")
     assert r.status_code == 200
     assert "labSel(" in r.text                       # componente Alpine
-    assert "/ui/lab/aggregate" in r.text             # sin métricas en JS: fetch
+    assert "/ui/lab/combined" in r.text              # sin métricas en JS: fetch
     assert "volume_relative" in r.text and "4h50" in r.text
     assert "Edge por hora" in r.text
     assert "⚠" in r.text                             # buckets n bajo marcados

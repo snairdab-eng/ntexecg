@@ -59,10 +59,11 @@ def test_lab_instrument_micros():
 def test_grid_round_up():
     assert grid_round_up(1.25) == (1.5, False)     # ES_ConfNormal real
     assert grid_round_up(0.75) == (0.75, False)    # exacto NO sube
-    assert grid_round_up(5.0) == (5.0, False)      # NQ real, tope exacto
+    assert grid_round_up(5.0) == (5.0, False)      # NQ real, exacto
     assert grid_round_up(0.1) == (0.25, False)
+    assert grid_round_up(6.0) == (6.0, False)      # B5.2: la grilla llega a 10×
     # más profundo que la grilla: clampa al máximo y lo MARCA
-    assert grid_round_up(6.0) == (5.0, True)
+    assert grid_round_up(12.0) == (10.0, True)
 
 
 # ---------------------------------------------------------------------------

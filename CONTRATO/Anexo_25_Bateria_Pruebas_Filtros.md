@@ -389,8 +389,14 @@ contra la lista + OHLC → doc de resultados por estrategia.
 
 ### 9.2 Ronda 1 — aplicada (2026-07-03, CLI auditado)
 - **cancel_after de diseño (Lab F3)** escrito en 3 estrategias: `ES5m_ConfNormal_TC_TSR` → 3600,
-  `GC5m_ContraNormal_ST_WeakConf` → **660**, `NQ5m_ConfAny_ST_TC` → 3600. TradersPost alineado a
-  mano (GC 3600→660; ES/NQ ya en 3600). `scripts/apply_cancel_after.py`, backup + audit.
+  `GC5m_ContraNormal_ST_WeakConf` → **3060**, `NQ5m_ConfAny_ST_TC` → 3600. `scripts/apply_cancel_after.py`,
+  backup + audit. TradersPost alineado a mano ("Cancel open entry order after delay": GC → 3060;
+  ES/NQ ya en 3600).
+  - **Corrección post-B4.0 (2026-07-04):** GC se había aplicado en **660** con el pullback pre-B4.0;
+    ese valor venía de **fills fantasma en el minuto 0** (la barra pre-señal, que HOLC estampa por
+    cierre, contaba un toque antes de que existiera el trade). Con B4.0 esa barra se excluye → el p90
+    real de la pierna 0.75× es ~50m → cancel_after correcto **3060**. El 660 cancelaba la pierna a los
+    11m cuando necesita ~50m (sub-llenado del escalonado de GC en producción).
 - **RTY15m_ConfNormal_NC_TST** → gate de régimen `1h ∈ {trending_bull, trending_bear}` — único
   superviviente OOS sin ⚠ (n_out=16). **EXPERIMENTO a vigilar** (esperado ~60% de bloqueo
   `regime_not_allowed`; revertir con `apply_regime_gate --disable --apply`). `scripts/apply_regime_gate.py`.
@@ -403,7 +409,28 @@ contra la lista + OHLC → doc de resultados por estrategia.
 - **ES5m_ConfNormal_TC_TSR — pierna más profunda a 1.25×:** más honda que el rango somero
   (0.25–0.75×) de §9.1; revisar.
 
-### 9.4 Hallazgo del visor a corregir (Fase B, bloqueante)
-- El **%TP intrabar** del panel SL/TP **sobre-cuenta fills** (ES: 46.7% vs 15.8% a nivel de trade
-  a TP 6×) — desajuste de referencia de ATR entre el `mfe_atr` cacheado y el toque del 5m.
-  Reconciliar (favorable y adverso) **antes de confiar** en los ΔPF del panel SL/TP y del pullback.
+### 9.4 Hallazgo del visor — RESUELTO (Fase B4.0, 2026-07-04)
+- El **%TP intrabar** del panel SL/TP sobre-contaba fills. **Corregido en B4.0:** la caminata 5m
+  se hizo consistente con `mfe_atr`/`mae_atr` (misma ATR, misma referencia — excursión en absoluto
+  HOLC desde el close alineado, denominada sobre `entry_price`; y se excluye la barra pre-señal que
+  HOLC estampa por cierre). Test de aceptación `test_lab_consistency.py` (ES real, tolerancia 2pp).
+  Efecto colateral valioso: destapó que el `cancel_after` de GC estaba mal (660 por fills fantasma
+  del minuto 0 → corregido a 3060, ver §9.2).
+
+### 9.5 Defaults por riesgo — objetivo "rentable sin arriesgar la cuenta" (visor B4.3, 2026-07-04)
+Criterio: **maximizar ganancia bajo tope duro de 1% de la cuenta por trade** (SL catastrófico
+ANCLADO a la señal + escalonado SOMERO, profundas prohibidas + sizing tal que `tamaño × distancia_SL
+= 1%`), **guarda innegociable: expectancy positiva OOS**. Elegido por out-of-sample. Sobre el cache
+cosido (`--stitch-db`, hasta 2026-07-04):
+- **GC5m_ContraNormal — VIABLE (sólido):** SL **6× anclado + 50% @market / 50% @0.75×** + 1%.
+  Exp out **+0.225%cta/trade**, **PF out 1.63**, peor pérdida topada −1.00%, cede solo 0.378% vs
+  nativo, n_out 27. Confirma el patrón §9.1 (SL ancho + somero) con respaldo cuantitativo. **Dimensionable.**
+- **ES5m_ConfNormal — MARGINAL-viable:** la cola cosida lo pasó de "ninguna viable" (cache local)
+  a viable **por un pelo**: SL **8× + tercios @0/0.25×/0.5×** + 1%, exp out **+0.007%cta/trade**,
+  **PF out 1.03** (≈ breakeven). No condenado, pero al filo → **correr chico y vigilar**; se gana el
+  pan por milímetros. Re-evaluar conforme entren datos demo.
+- **Aviso general:** el botón "Mejor configuración (OOS)" apunta en ES/GC a `time_of_day ≥ 60` con
+  n_out 3–6 (espejismo de n bajo, PF inflado) — el panel lo marca "n<15 no confiable". **La
+  recomendación de fiar es la tarjeta CONFIG DEFAULT** (guarda + sizing), no ese botón.
+- **Pendiente de modelo:** el sizing a 1% es la dimensión nueva; aplicar un default a producción
+  seguirá por CLI auditado (aún no existe — futura ronda), nunca desde el visor.

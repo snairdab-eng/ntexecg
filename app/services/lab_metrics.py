@@ -131,8 +131,16 @@ def lift_from_rows(rows: list[dict], selection: dict) -> dict:
 
 # Grillas del cambia-desenlace (las mismas del reporte offline; el visor las
 # valida — el orden intrabar solo está cacheado para estos valores).
+# B5.2: TP extendida a valores nominales altos (el TP es un bracket ancho que
+# TradersPost exige, no una meta — ver nominal_brackets para el modo p99).
 SL_GRID = (1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0)
-TP_GRID = (3.0, 4.0, 6.0)
+TP_GRID = (3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0)
+
+# B5.2: niveles del estudio de pullback (fuente única — lab_analyze los
+# importa de aquí), extendidos hasta 10× para ver dónde tocan fondo el
+# fill-rate y el desenlace.
+PULLBACK_LEVELS = (0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0,
+                   6.0, 7.0, 8.0, 9.0, 10.0)
 
 
 def _joint_order(row: dict, k: float, tp: float) -> str:
@@ -208,7 +216,11 @@ def resim_rows(rows: list[dict], sl_k: float | None = None,
         return m
 
     out = {"in": block(True), "out": block(False),
-           "outcomes": [p for _, p in outcomes]}
+           "outcomes": [p for _, p in outcomes],
+           # B5.1 — el tag por fila ("sl"/"ambiguous_sl"/"tp"/"native", mismo
+           # orden que outcomes): la config combinada aplica las piernas
+           # según CÓMO salió el trade en la etapa re-sim.
+           "tags": tags}
     out["low_n_out"] = out["out"]["n"] < LOW_N_OUT
     return out
 
@@ -220,6 +232,147 @@ def equity_curve(pnls: list[float]) -> list[float]:
         cum += p
         out.append(round(cum, 4))
     return out
+
+
+# ---------------------------------------------------------------------------
+# B5.1 — config COMBINADA: un solo estado aplicado JUNTO, en orden documentado
+# ---------------------------------------------------------------------------
+
+def _leg_fill_min(row: dict, depth: float, approx: bool) -> float | None:
+    """Minuto en que la pierna a `depth`×ATR habría llenado (None = no llena).
+    Cache B4+: t_pb_touch (ventana real del estudio); legado: mae_atr aprox."""
+    if depth <= 0:
+        return 0.0
+    if approx:
+        return 0.0 if (row.get("mae_atr") or 0) >= depth else None
+    return (row.get("t_pb_touch") or {}).get(str(depth))
+
+
+def combined_config(rows: list[dict], selection: dict | None = None,
+                    sl_k: float | None = None, tp: float | None = None,
+                    legs: list | None = None) -> dict:
+    """B5.1 — LA configuración combinada (las perillas interactúan; esto NO es
+    la suma de efectos aislados). Orden documentado:
+
+      1) SUSTRACTIVOS (filtros calidad + régimen + EMA, selection_mask)
+         recortan el universo — un trade filtrado no se opera (ni su stop).
+      2) SL/TP re-simulan el desenlace SOBRE ESE SUBCONJUNTO (resim_rows,
+         orden intrabar con los toques cacheados).
+      3) PIERNAS (escalonado, fills del t_pb_touch cacheado) mueven la
+         entrada de lo que quedó. SL/TP ANCLADOS a la señal:
+           salió SL      → la pierna a L pierde (k−L)·atr%
+           salió TP      → la pierna a L gana (tp+L)·atr%  (si llenó ANTES
+                           del TP — el orden usa los minutos cacheados)
+           salió nativo  → pnl% + L·atr%
+         Pierna sin llenar = peso sin usar (contribuye 0).
+
+    Con una sola perilla activa degrada EXACTAMENTE al camino aislado
+    (paridad: lift_from_rows / resim_rows — testeado). `outcomes` cubre el
+    universo COMPLETO (0.0 en lo filtrado) para la curva comparable contra
+    la base nativa; los bloques in/out agregan SOLO lo operado."""
+    universe = [r for r in rows if r.get("atr_pct") is not None]
+    sel = {"subs": {}, "regime": {}, "ema": [], **(selection or {})}
+    kept = [r for r in universe if selection_mask(r, sel)]
+    kept_ids = {id(r) for r in kept}
+
+    rr = resim_rows(kept, sl_k=sl_k, tp=tp)
+    legs_t = tuple((float(d), float(w)) for d, w in (legs or ((0.0, 1.0),)))
+    has_legs = any(d > 0 for d, _ in legs_t)
+    approx = has_legs and not any(r.get("t_pb_touch") for r in kept)
+
+    def leg_outcome(r: dict, tag: str, o: float, depth: float) -> float:
+        atr = r["atr_pct"]
+        if tag in ("sl", "ambiguous_sl"):
+            return -(sl_k - depth) * atr
+        if tag == "tp":
+            return (tp + depth) * atr
+        return o + depth * atr
+
+    final: list[float] = []
+    fills: dict[str, int] = {str(d): 0 for d, _ in legs_t if d > 0}
+    improves: list[float] = []
+    for r, o, tag in zip(kept, rr["outcomes"], rr["tags"]):
+        acc, improve = 0.0, 0.0
+        tp_min = ((r.get("t_tp_touch") or {}).get(str(tp))
+                  if tag == "tp" and tp is not None else None)
+        for d, w in legs_t:
+            pb_min = _leg_fill_min(r, d, approx)
+            if pb_min is None:
+                continue
+            if tag == "tp" and d > 0 and tp_min is not None and pb_min > tp_min:
+                continue                    # el TP salió antes de que llenara
+            acc += w * leg_outcome(r, tag, o, d)
+            if d > 0:
+                fills[str(d)] += 1
+                improve += w * d
+        final.append(acc)
+        improves.append(improve)
+
+    def block(ins: bool) -> dict:
+        vals = [v for r, v in zip(kept, final) if r["in_sample"] == ins]
+        m = aggregate(vals)
+        base_n = sum(1 for r in universe if r["in_sample"] == ins)
+        m["kept_pct"] = (round(100 * len(vals) / base_n, 1)
+                         if base_n else None)
+        for key in ("sl_pct", "tp_pct", "ambiguous"):
+            if key in rr["in" if ins else "out"]:
+                m[key] = rr["in" if ins else "out"][key]
+        return m
+
+    out = {"in": block(True), "out": block(False)}
+    out["low_n_out"] = out["out"]["n"] < LOW_N_OUT
+
+    kept_iter = iter(final)
+    out["outcomes"] = [next(kept_iter) if id(r) in kept_ids else 0.0
+                       for r in universe]
+
+    # Mini-panel "por qué suma el escalonado" (solo con piernas someras):
+    # la contribución neta = net(con piernas) − net(sin piernas), MISMA etapa
+    # previa (filtros + re-sim) — la mecánica hecha visible.
+    if has_legs:
+        def net_plain(ins):
+            return round(sum(o for r, o in zip(kept, rr["outcomes"])
+                             if r["in_sample"] == ins), 2)
+        out["scaling"] = {
+            "fills": fills,
+            "avg_entry_improvement_atr": (round(sum(improves)
+                                                / len(improves), 3)
+                                          if improves else None),
+            "net_contrib_pct": {
+                "in": round((out["in"]["net_pct"] or 0) - net_plain(True), 2),
+                "out": round((out["out"]["net_pct"] or 0)
+                             - net_plain(False), 2),
+            },
+            "approx_fills": approx,
+            "why": ("las piernas llenan en pullbacks someros a mejor precio, "
+                    "sobre los buenos trades; las profundas casi no llenan"),
+        }
+    else:
+        out["scaling"] = None
+    out["approx_fills"] = approx
+    return out
+
+
+def nominal_brackets(rows: list[dict]) -> dict:
+    """B5.2 — brackets NOMINALES por estrategia: TP sobre el MFE p99 y SL
+    catastrófico sobre el MAE p99 (en ×ATR). El bracket es un tope ancho que
+    TradersPost exige, no una meta — capar dentro del cuerpo de la
+    distribución regala ganancia."""
+    def p99(vals: list[float]) -> float | None:
+        if not vals:
+            return None
+        s = sorted(vals)
+        k = 0.99 * (len(s) - 1)
+        f = int(k)
+        c = min(f + 1, len(s) - 1)
+        return round(s[f] + (s[c] - s[f]) * (k - f), 2)
+
+    return {
+        "tp_p99_atr": p99([r["mfe_atr"] for r in rows
+                           if r.get("mfe_atr") is not None]),
+        "sl_p99_atr": p99([r["mae_atr"] for r in rows
+                           if r.get("mae_atr") is not None]),
+    }
 
 
 def hourly_from_rows(rows: list[dict]) -> dict[int, dict]:

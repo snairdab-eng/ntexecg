@@ -53,6 +53,7 @@ from app.services.hmm_service import classify_regime      # lógica viva (Kaufma
 # verdad — el reporte offline y el endpoint del UI llaman a estas funciones.
 from app.services.lab_metrics import (
     EMA_KEYS,
+    PULLBACK_LEVELS,
     REGIME_GATE_DEFS,
     SL_GRID,
     SUB_NAMES,
@@ -552,8 +553,11 @@ def regime_breakdown(trades: list[Trade], tf: str) -> dict[str, dict]:
 # Fase 2 — TP sweep y SL+TP conjunto (orden de toques intrabar en el 5m)
 # ---------------------------------------------------------------------------
 
-TP_KS = (3.0, 4.0, 6.0)
+# §8 barre la grilla completa (B5.2: extendida a nominales altos); el
+# conjunto §9 mantiene la subgrilla clásica para no explotar la tabla.
+TP_KS = TP_GRID
 JOINT_SL_KS = (2.0, 2.5, 4.0, 8.0)
+JOINT_TP_KS = (3.0, 4.0, 6.0)
 
 
 def resim_tp(trades: list[Trade], tp: float) -> dict:
@@ -657,9 +661,8 @@ def resim_sl_tp(
 # ---------------------------------------------------------------------------
 # Fase 3 — pullback: profundidad (fill-rate por nivel ×ATR) × desenlace y
 # tiempo al pullback (p90 → cancel_after, MISMO estimador que pullback_timing)
+# Niveles: PULLBACK_LEVELS vive en lab_metrics (fuente única; B5.2 hasta 10×).
 # ---------------------------------------------------------------------------
-
-PULLBACK_LEVELS = (0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0)
 
 
 def pullback_study(
@@ -1046,7 +1049,7 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     }
     tp_sweeps = {tp: resim_tp(trades, tp) for tp in TP_KS}
     joint = {(k, tp): resim_sl_tp(trades, k, tp, keys5, idx5, bars)
-             for k in JOINT_SL_KS for tp in TP_KS}
+             for k in JOINT_SL_KS for tp in JOINT_TP_KS}
     phase2 = {"subs": subs, "regimes": regimes, "regime_gates": regime_gates,
               "ema_gates": ema_gates, "tp": tp_sweeps, "joint": joint}
 

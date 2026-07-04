@@ -20,15 +20,19 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.services.lab_metrics import (
+    LEG_SHAPES,
     LOW_N_OUT,
+    PULLBACK_LEVELS,
     SL_GRID,
     TP_GRID,
     baseline_from_rows,
+    combined_config,
     default_config_study,
     deltas_vs_base,
     equity_curve,
     hourly_from_rows,
     lift_from_rows,
+    nominal_brackets,
     oos_survivors_from_rows,
     resim_rows,
     tradeoff_read,
@@ -113,6 +117,11 @@ async def lab_page(request: Request, instrument: str = "ES") -> HTMLResponse:
                            if pb else None)
         ctx["sl_grid"] = list(SL_GRID)
         ctx["tp_grid"] = list(TP_GRID)
+        # B5.1 — presets de piernas someras (los mismos del estudio default)
+        ctx["leg_shapes"] = [{"label": name, "legs": [list(l) for l in legs]}
+                             for name, legs in LEG_SHAPES]
+        # B5.2 — brackets nominales por estrategia (TP = MFE p99, SL = MAE p99)
+        ctx["nominal"] = nominal_brackets(rows)
     return await render(request, "lab.html", ctx)
 
 
@@ -193,6 +202,86 @@ async def lab_best(instrument: str = "ES") -> JSONResponse:
         "survivors": survivors,
         "winner": survivors[0] if survivors else None,
         "none_robust": not survivors,
+        "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
+    })
+
+
+class CombinedSel(BaseModel):
+    instrument: str = "ES"
+    subs: dict[str, int] | None = None
+    regime: dict | None = None
+    ema: list[str] | None = None
+    sl_k: float | None = None
+    tp: float | None = None
+    legs: list[list[float]] | None = None    # [[depth, weight], ...]
+
+
+@router.post("/ui/lab/combined")
+async def lab_combined(sel: CombinedSel) -> JSONResponse:
+    """B5.1 — LA config combinada (un solo estado): sustractivos → SL/TP
+    sobre el subconjunto → piernas. Núcleo: lab_metrics.combined_config
+    (orden documentado ahí; con una perilla degrada al camino aislado)."""
+    if sel.instrument not in INSTRUMENTS:
+        return JSONResponse({"error": "instrumento inválido"}, status_code=400)
+    if sel.sl_k is not None and sel.sl_k not in SL_GRID:
+        return JSONResponse(
+            {"error": f"sl_k fuera de la grilla {list(SL_GRID)}"},
+            status_code=400)
+    if sel.tp is not None and sel.tp not in TP_GRID:
+        return JSONResponse(
+            {"error": f"tp fuera de la grilla {list(TP_GRID)}"},
+            status_code=400)
+    legs = sel.legs
+    if legs:
+        depths = [float(d) for d, _w in legs]
+        weights = [float(w) for _d, w in legs]
+        if any(d > 0 and d not in PULLBACK_LEVELS for d in depths):
+            return JSONResponse(
+                {"error": f"pierna fuera de la grilla {list(PULLBACK_LEVELS)}"},
+                status_code=400)
+        if any(w <= 0 for w in weights) or abs(sum(weights) - 1.0) > 0.01:
+            return JSONResponse(
+                {"error": "los pesos de las piernas deben ser > 0 y sumar 1"},
+                status_code=400)
+        if sel.sl_k is not None and any(d >= sel.sl_k for d in depths if d > 0):
+            return JSONResponse(
+                {"error": "pierna a profundidad ≥ SL (no tiene sentido)"},
+                status_code=400)
+
+    cached = load_cache(sel.instrument)
+    if cached is None:
+        return JSONResponse(
+            {"error": "cache_missing", "regen_cmd": REGEN_CMD},
+            status_code=409)
+    rows, meta = cached
+
+    selection = {"subs": sel.subs or {}, "regime": sel.regime or {},
+                 "ema": sel.ema or []}
+    base = baseline_from_rows(rows)
+    result = combined_config(rows, selection=selection, sl_k=sel.sl_k,
+                             tp=sel.tp, legs=legs)
+    outcomes = result.pop("outcomes")
+    scaling = result.pop("scaling")
+    universe = [row for row in rows if row.get("atr_pct") is not None]
+    native = [row["pnl_pct"] for row in universe]
+    split_idx = sum(1 for row in universe if row["in_sample"])
+    deltas = deltas_vs_base(result, base)
+    return JSONResponse({
+        "instrument": sel.instrument,
+        "config": {"selection": selection, "sl_k": sel.sl_k, "tp": sel.tp,
+                   "legs": legs},
+        "base": base,
+        "result": {"in": result["in"], "out": result["out"]},
+        "deltas": deltas,
+        "verdict": verdict(result, deltas),
+        "tradeoff": {"in": tradeoff_read(deltas["in"]),
+                     "out": tradeoff_read(deltas["out"])},
+        "curves": {"base": equity_curve(native),
+                   "combined": equity_curve(outcomes),
+                   "split_idx": split_idx},
+        "scaling": scaling,
+        "approx_fills": result["approx_fills"],
+        "low_n_out": result["low_n_out"],
         "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
     })
 
