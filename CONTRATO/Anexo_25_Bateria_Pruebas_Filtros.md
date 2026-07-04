@@ -355,3 +355,55 @@ ruidosas → marcarlos y validar in/out-of-sample.
 **Secuencia:** todo esto es **feature nueva**, va **después** de cerrar los P0/P1 de seguridad
 del backlog. Camino corto interino: CLI (`eval_strategy_battery` + `eval_quality_filters`)
 contra la lista + OHLC → doc de resultados por estrategia.
+
+---
+
+## 9. Decisiones de calibración registradas (2026-07-03)
+
+> Basadas en el Laboratorio (camino A, 8 instrumentos, split in/out 70/30, datos hasta
+> 2026-07-03 vía `--stitch-db`). Verificadas contra el código real; aplicadas por CLI auditado
+> con backup + audit; reversibles.
+
+### 9.1 Política de ES (registrada)
+- **Filtros:** **nativo por defecto.** El edge de ES es la estrategia nativa (total PF 1.77);
+  **ningún filtro sobrevive out-of-sample de forma robusta** hoy (el top es `time_of_day≥60` ⚠
+  n_out=6; el espejismo clásico es `atr_normalized≥70`: in PF 4.53 → out 0.57). `volume_relative
+  ≥ 50` queda como **modo DEFENSIVO** — es lo único que mantuvo ES en verde en el tramo reciente
+  (out PF 0.92 nativo → 1.18 con el filtro), a costa de ~½ de los trades y ~35% menos neto total.
+  **Activar solo si la debilidad reciente se confirma con más datos demo, no antes.** No apilar
+  régimen/EMA (no sobrevivieron para ES).
+- **Exits — cierra LuxAlgo.** LuxAlgo manda entrada y salida; NTEXECG relaya el exit y adjunta
+  brackets de seguridad. **SL 8×ATR catastrófico/ancho** (todo SL ajustado degrada el PF de ES;
+  el 8× es red de seguridad ante gaps, no optimización — su ΔPF −0.18 es el costo del seguro).
+  **TP nominal ancho (~12–15×ATR), NO una meta** — TradersPost **exige** un TP, así que se pone
+  tan lejos que casi nunca capa antes de que cierre LuxAlgo (a 6× capaba dentro del cuerpo de la
+  distribución; MFE p95 de ES ≈ 9×, máx ≈ 20×).
+- **Piernas escalonadas someras (0.25–0.75×).** El pullback muestra que las piernas profundas
+  llenan poco y **sobre peores trades** (PF cae 1.91→0.5 de 0.25× a 5×); las someras llenan
+  ~97–100%, rápido, sobre los buenos trades.
+- **cancel_after** = p90 de la **pierna más profunda** = `entry_reserve_timeout_seconds` =
+  TradersPost "Cancel open entry order after delay". Una sola caducidad.
+- **Advertencia honesta:** con ~37 trades OOS esto es **direccional, no veredicto**; la decisión
+  "nativo vs volume≥50" es una apuesta sobre si el ES reciente es **decay o ruido**. Re-evaluar
+  conforme entren datos demo. (No aplica igual a estrategias contrarian con exit de objetivo fijo.)
+
+### 9.2 Ronda 1 — aplicada (2026-07-03, CLI auditado)
+- **cancel_after de diseño (Lab F3)** escrito en 3 estrategias: `ES5m_ConfNormal_TC_TSR` → 3600,
+  `GC5m_ContraNormal_ST_WeakConf` → **660**, `NQ5m_ConfAny_ST_TC` → 3600. TradersPost alineado a
+  mano (GC 3600→660; ES/NQ ya en 3600). `scripts/apply_cancel_after.py`, backup + audit.
+- **RTY15m_ConfNormal_NC_TST** → gate de régimen `1h ∈ {trending_bull, trending_bear}` — único
+  superviviente OOS sin ⚠ (n_out=16). **EXPERIMENTO a vigilar** (esperado ~60% de bloqueo
+  `regime_not_allowed`; revertir con `apply_regime_gate --disable --apply`). `scripts/apply_regime_gate.py`.
+- **6E/6J:** nativo domina (n_out 30/23) — sin cambios.
+
+### 9.3 Revisiones de piernas pendientes (próxima ronda)
+- **NQ5m_ConfAny_ST_TC — pierna a 5.0×ATR:** llena ~29% y sobre peores trades, y reserva el
+  símbolo 1h (cancel_after 3600). Caso de libro de "pierna profunda contraproducente" → candidata
+  a acortar (mejora fill y libera el símbolo antes).
+- **ES5m_ConfNormal_TC_TSR — pierna más profunda a 1.25×:** más honda que el rango somero
+  (0.25–0.75×) de §9.1; revisar.
+
+### 9.4 Hallazgo del visor a corregir (Fase B, bloqueante)
+- El **%TP intrabar** del panel SL/TP **sobre-cuenta fills** (ES: 46.7% vs 15.8% a nivel de trade
+  a TP 6×) — desajuste de referencia de ATR entre el `mfe_atr` cacheado y el toque del 5m.
+  Reconciliar (favorable y adverso) **antes de confiar** en los ΔPF del panel SL/TP y del pullback.
