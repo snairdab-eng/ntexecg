@@ -22,6 +22,7 @@ REPORTES/
 
 # Datos de mercado / exports
 NINJATRADER/HOLC/
+MotorRiesgo/
 ClaudeCodeTV_*/ListaDeOperaciones/*.csv
 
 # Documentos binarios generados
