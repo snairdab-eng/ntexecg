@@ -12,12 +12,27 @@
             <p class="text-xs text-gray-500 mt-1">Los números salen del MISMO núcleo de agregación que el reporte offline (<code>lab_metrics</code>): lo que ves = lo que dice <code>REPORTES/LAB_*.md</code>.
             <span class="ml-1 px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 whitespace-nowrap">🕐 todos los tiempos en ET (America/New_York)</span></p>
         </div>
+        {% if groups %}
+        <!-- B6.1 — selector por ESTRATEGIA, agrupada por símbolo -->
+        <div class="flex items-start gap-3 flex-wrap text-xs">
+            {% for sym, sids in groups.items() %}
+            <div class="flex items-center gap-1 flex-wrap">
+                <span class="text-gray-500 font-semibold">{{ sym }}:</span>
+                {% for sid in sids %}
+                <a href="/ui/lab?strategy={{ sid }}"
+                   class="px-2 py-1 rounded font-mono transition {% if sid == key %}bg-blue-700 text-white{% else %}bg-gray-800 text-gray-300 hover:bg-gray-700{% endif %}">{{ sid }}</a>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
         <div class="flex items-center gap-1 flex-wrap text-sm">
             {% for i in instruments %}
             <a href="/ui/lab?instrument={{ i }}"
-               class="px-3 py-1 rounded transition {% if i == instrument %}bg-blue-700 text-white{% else %}bg-gray-800 text-gray-300 hover:bg-gray-700{% endif %}">{{ i }}</a>
+               class="px-3 py-1 rounded transition {% if i == key %}bg-blue-700 text-white{% else %}bg-gray-800 text-gray-300 hover:bg-gray-700{% endif %}">{{ i }}</a>
             {% endfor %}
         </div>
+        {% endif %}
     </div>
 
     {% if meta is none %}
@@ -81,7 +96,7 @@
     <!-- B2 — filtros interactivos (sustractivos): Alpine → POST /ui/lab/aggregate,
          que agrega con el MISMO núcleo del reporte. Nada de métricas en JS. -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4"
-         x-data="labSel('{{ instrument }}')" x-init="refresh()">
+         x-data="labSel('{{ key }}')" x-init="refresh()">
         <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
             <h2 class="text-sm uppercase tracking-wider text-gray-500">Config COMBINADA — un solo estado: filtros + SL/TP + piernas</h2>
             <!-- B4.3 — busca supervivientes OOS (misma lógica del RESUMEN) y
@@ -291,7 +306,7 @@
 
     <!-- B4.3 — config DEFAULT recomendada por RIESGO (sizing 1%; el visor
          solo muestra — aplicar sigue en los CLI auditados) -->
-    <div class="bg-gray-900 border border-gray-800 rounded p-4" x-data="labDefault('{{ instrument }}')">
+    <div class="bg-gray-900 border border-gray-800 rounded p-4" x-data="labDefault('{{ key }}')">
         <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
             <h2 class="text-sm uppercase tracking-wider text-gray-500">Config DEFAULT recomendada — objetivo: reducir riesgo (tope duro 1%/trade)</h2>
             <button @click="fetchIt()"
@@ -380,7 +395,7 @@
     <!-- B3 — CAMBIA-DESENLACE: SL/TP re-sim (sección aparte de los filtros
          sustractivos; misma resim_rows que §2/§8/§9 del reporte) -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4"
-         x-data="labResim('{{ instrument }}')"
+         x-data="labResim('{{ key }}')"
          @lab-apply-sl.window="slk = String($event.detail); refresh()">
         <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">SL / TP re-simulados — <span class="text-amber-400/80">efecto aislado de esta perilla</span> (el resultado combinado vive arriba)</h2>
         <p class="text-xs text-gray-600 mb-3">SL ⟺ |mae%| ≥ k·ATR% → −k·ATR% · TP ⟺ mfe% ≥ tp·ATR% → +tp·ATR% · ambos → decide el <b>orden de toques intrabar del 5m</b> (cacheado por el camino A; misma barra → SL, conservador).</p>
@@ -475,6 +490,49 @@
         <div class="text-xs text-amber-200 bg-amber-900/30 border border-amber-700 rounded p-3">Esta caché no trae el agregado de pullback (formato previo a B3). Regenera con: <code>{{ regen_cmd }}</code></div>
         {% endif %}
     </div>
+
+    {% if datos %}
+    <!-- B6.2 — gestión de datos: CSV actual, subida y recálculo en 2º plano -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4" x-data="labData()">
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">Datos por estrategia (CSV ↔ estudio)</h2>
+        <p class="text-xs text-gray-600 mb-3">Único punto de escritura del visor: subir un CSV nuevo (validado con el parser antes de aceptar) y <b>recalcular</b> en segundo plano (en el server con la cola cosida). No toca dispatch, config de producción ni TradersPost.</p>
+        <table class="w-full text-xs mb-3">
+            <thead><tr class="text-gray-500 border-b border-gray-800">
+                <th class="text-left px-2 py-1">estrategia</th><th class="text-left px-2 py-1">instr</th>
+                <th class="text-left px-2 py-1">CSV actual</th><th class="text-left px-2 py-1">fecha CSV</th>
+                <th class="text-left px-2 py-1">caché generada</th><th class="text-left px-2 py-1">confirmada</th>
+                <th class="text-left px-2 py-1">acciones</th>
+            </tr></thead>
+            <tbody>
+            {% for d in datos %}
+            <tr class="border-b border-gray-800 last:border-0 text-gray-300">
+                <td class="px-2 py-1 font-mono">{{ d.key }}</td>
+                <td class="px-2 py-1">{{ d.instrument }}</td>
+                <td class="px-2 py-1">{{ d.csv }}</td>
+                <td class="px-2 py-1">{{ d.csv_date[:16] if d.csv_date else '⚠ falta' }}</td>
+                <td class="px-2 py-1">{{ d.cache_date[:16] if d.cache_date else '⚠ sin caché' }}</td>
+                <td class="px-2 py-1">{{ '✓' if d.confirmed else 'no (editar manifest)' }}</td>
+                <td class="px-2 py-1">
+                    <button @click="recalc('{{ d.key }}')"
+                            class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">recalcular</button>
+                    <span class="ml-1 text-gray-400" x-text="jobs['{{ d.key }}'] || ''"></span>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <form class="flex items-center gap-2 flex-wrap text-xs" @submit="upload($event)">
+            <span class="text-gray-500 uppercase">Subir CSV nuevo:</span>
+            <select name="strategy" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+                {% for d in datos %}<option value="{{ d.key }}">{{ d.key }}</option>{% endfor %}
+            </select>
+            <input type="file" name="file" accept=".csv" required
+                   class="text-gray-400 file:bg-gray-700 file:text-gray-200 file:border-0 file:rounded file:px-2 file:py-1">
+            <button type="submit" class="px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white">subir</button>
+            <span x-show="upMsg" class="text-gray-300" x-text="upMsg"></span>
+        </form>
+    </div>
+    {% endif %}
 
     <div class="bg-gray-900 border border-gray-800 rounded p-4 text-xs text-gray-600">
         Este visor NO aplica nada a producción: aplicar filtros/<code>cancel_after</code> sigue en los CLI auditados (<code>apply_quality_filter</code>, <code>pullback_timing --apply</code>) con backup y auditoría.
@@ -581,6 +639,54 @@
                         },
                     },
                 });
+            },
+        };
+    }
+
+    function labData() {
+        // B6.2 — dispara/pollea jobs de recálculo y sube CSVs (el servidor
+        // valida y escribe; aquí solo UI)
+        return {
+            jobs: {}, upMsg: null,
+            async recalc(key) {
+                try {
+                    const r = await fetch('/ui/lab/recalc', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ strategy: key }),
+                    });
+                    if (r.status === 409) { this.jobs[key] = '⏳ ya hay un recálculo corriendo'; return; }
+                    if (!r.ok) { this.jobs[key] = '❌ error ' + r.status; return; }
+                    this.jobs[key] = '⏳ corriendo…';
+                    this._poll(key);
+                } catch (e) { this.jobs[key] = '❌ ' + e; }
+            },
+            async _poll(key) {
+                try {
+                    const r = await fetch('/ui/lab/recalc/status?strategy=' + key);
+                    const j = await r.json();
+                    if (j.status === 'running') {
+                        this.jobs[key] = '⏳ corriendo…';
+                        setTimeout(() => this._poll(key), 2000);
+                    } else if (j.status === 'done') {
+                        this.jobs[key] = '✅ listo — recargando';
+                        setTimeout(() => location.reload(), 800);
+                    } else {
+                        this.jobs[key] = '❌ error (ver cola del job)';
+                    }
+                } catch (e) { this.jobs[key] = '❌ ' + e; }
+            },
+            async upload(ev) {
+                ev.preventDefault();
+                this.upMsg = '⏳ subiendo…';
+                try {
+                    const fd = new FormData(ev.target);
+                    const r = await fetch('/ui/lab/upload', { method: 'POST', body: fd });
+                    const j = await r.json();
+                    this.upMsg = r.ok
+                        ? ('✅ ' + j.csv + ' (' + j.n_trades + ' trades) — recalcula para regenerar')
+                        : ('❌ ' + (j.error || r.status));
+                } catch (e) { this.upMsg = '❌ ' + e; }
             },
         };
     }

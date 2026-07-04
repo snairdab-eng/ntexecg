@@ -965,13 +965,17 @@ def render_report(instrument: str, csv_path: Path, tz_detail: dict,
 def dump_features(instrument: str, trades: list[Trade],
                   tz_detail: dict | None = None, uncovered: int = 0,
                   pullback: dict | None = None,
-                  window_min: int = 180) -> Path:
+                  window_min: int = 180, cache_key: str | None = None,
+                  strategy_id: str | None = None) -> Path:
+    """B6.1: cache_key = strategy_id cuando el estudio va llaveado por
+    estrategia (lab_features_<strategy_id>.json); default = instrumento."""
     rows = feature_rows(trades)
     REPORTES.mkdir(exist_ok=True)
-    p = REPORTES / f"lab_features_{instrument}.json"
+    p = REPORTES / f"lab_features_{cache_key or instrument}.json"
     payload = {
         "meta": {
             "instrument": instrument,
+            "strategy_id": strategy_id,
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "n_trades": len(rows),
             "uncovered": uncovered,
@@ -993,8 +997,10 @@ def dump_features(instrument: str, trades: list[Trade],
 # ---------------------------------------------------------------------------
 
 async def run(instrument: str, csv_path: Path | None, oos: float,
-              stitch: bool, sample: int, window_min: int = 180) -> dict:
+              stitch: bool, sample: int, window_min: int = 180,
+              strategy_id: str | None = None) -> dict:
     csv_path = csv_path or find_trades_csv(instrument)
+    cache_key = strategy_id or instrument
     trades = parse_luxalgo_csv(csv_path)
     if not trades:
         raise SystemExit("CSV sin trades parseables.")
@@ -1060,13 +1066,15 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
                            sweeps, hours, oos, holc_range, phase2,
                            pullback, window_min)
     REPORTES.mkdir(exist_ok=True)
-    out = REPORTES / f"LAB_{instrument}_{datetime.now():%Y-%m-%d}.md"
+    out = REPORTES / f"LAB_{cache_key}_{datetime.now():%Y-%m-%d}.md"
     out.write_text(report, encoding="utf-8")
     feat = dump_features(instrument, trades, tz_detail, uncovered,
-                         pullback, window_min)
+                         pullback, window_min, cache_key=cache_key,
+                         strategy_id=strategy_id)
     print(f"✅ {out}\n· features: {feat}")
     return {
-        "instrument": instrument, "report": out, "base": base,
+        "instrument": instrument, "label": cache_key, "report": out,
+        "base": base,
         "phase2": phase2, "pullback": pullback, "tz": tz_detail,
         "survivors": oos_survivors(base, phase2),
         "ambiguous": joint_ambiguity_total(phase2),
@@ -1076,43 +1084,64 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
 _INSTRUMENTS = ["ES", "NQ", "RTY", "GC", "CL", "6E", "6J", "YM"]
 
 
+def _summary_targets() -> list[tuple[str, str, Path | None, str | None]]:
+    """(label, instrument, csv, strategy_id) — B6.1: con manifest itera
+    ESTRATEGIAS; sin manifest, los 8 instrumentos (retrocompat)."""
+    from scripts.lab_manifest import load_manifest
+
+    m = load_manifest()
+    entries = (m or {}).get("entries") or {}
+    if entries:
+        return [(key, e["instrument"], Path(e["csv"]), key)
+                for key, e in sorted(entries.items(),
+                                     key=lambda kv: (kv[1]["instrument"],
+                                                     kv[0]))]
+    return [(instr, instr, None, None) for instr in _INSTRUMENTS]
+
+
 async def run_all_summary(oos: float, stitch: bool, sample: int,
                           window_min: int) -> Path:
-    """Corre los 8 instrumentos y escribe el resumen ejecutivo: sobreviviente
-    out-of-sample por instrumento (o "nativo domina") + ambigüedad intrabar."""
+    """Corre todas las estrategias del manifest (o los 8 instrumentos sin
+    manifest) y escribe el resumen ejecutivo: sobreviviente out-of-sample
+    por estrategia (o "nativo domina") + ambigüedad intrabar."""
+    targets = _summary_targets()
     results = []
-    for instr in _INSTRUMENTS:
-        print(f"\n===== {instr} =====")
-        results.append(await run(instr, None, oos, stitch, sample, window_min))
+    for label, instr, csv_p, sid in targets:
+        print(f"\n===== {label} =====")
+        results.append(await run(instr, csv_p, oos, stitch, sample,
+                                 window_min, strategy_id=sid))
 
-    L = [f"# LAB — RESUMEN 8 instrumentos · {datetime.now():%Y-%m-%d %H:%M}",
+    L = [f"# LAB — RESUMEN {len(results)} estrategias · "
+         f"{datetime.now():%Y-%m-%d %H:%M}",
          "",
          "## Sobrevivientes out-of-sample (ΔPF > 0 dentro Y fuera; "
          "criterio Anexo 25; ⚠ = n_out < 15)",
-         "| instr | mejor filtro OOS | ΔPF in | ΔPF out | kept% in | n_out | "
-         "otros OOS+ | ambigüedad intrabar |",
-         "|---|---|---|---|---|---|---|---|"]
+         "| estrategia | instr | mejor filtro OOS | ΔPF in | ΔPF out | "
+         "kept% in | n_out | otros OOS+ | ambigüedad intrabar |",
+         "|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         surv = r["survivors"]
         if surv:
             s = surv[0]
             mark = " ⚠" if s["n_out"] < 15 else ""
-            L.append(f"| {r['instrument']} | {s['label']}{mark} | "
+            L.append(f"| {r['label']} | {r['instrument']} | "
+                     f"{s['label']}{mark} | "
                      f"{s['d_in']:+.2f} | {s['d_out']:+.2f} | "
                      f"{_fmt(s['kept_in'],0)} | {s['n_out']} | "
                      f"{len(surv) - 1} | {r['ambiguous']} |")
         else:
-            L.append(f"| {r['instrument']} | **ninguno → nativo domina** | — | "
+            L.append(f"| {r['label']} | {r['instrument']} | "
+                     f"**ninguno → nativo domina** | — | "
                      f"— | — | {r['base']['out']['n']} | 0 | {r['ambiguous']} |")
     L.append("")
-    L.append("## cancel_after sugerido por instrumento (nivel de diseño más "
+    L.append("## cancel_after sugerido por estrategia (nivel de diseño más "
              "cercano; estimador de pullback_timing)")
-    L.append("| instr | fill% @0.75×ATR | cancel_after @0.75 | fill% @1.5×ATR "
-             "| cancel_after @1.5 |")
+    L.append("| estrategia | fill% @0.75×ATR | cancel_after @0.75 | "
+             "fill% @1.5×ATR | cancel_after @1.5 |")
     L.append("|---|---|---|---|---|")
     for r in results:
         p75, p15 = r["pullback"][0.75], r["pullback"][1.5]
-        L.append(f"| {r['instrument']} | {_fmt(p75['fill_rate'],1)}% | "
+        L.append(f"| {r['label']} | {_fmt(p75['fill_rate'],1)}% | "
                  f"{p75['cancel_after'] or '—'} | {_fmt(p15['fill_rate'],1)}% | "
                  f"{p15['cancel_after'] or '—'} |")
     out = REPORTES / f"LAB_RESUMEN_{datetime.now():%Y-%m-%d}.md"
@@ -1134,16 +1163,31 @@ def main() -> None:
                     help="muestra para la validación TZ")
     ap.add_argument("--pullback-window-min", type=int, default=180,
                     help="ventana de entrada para el estudio de pullback (min)")
+    ap.add_argument("--strategy", default=None,
+                    help="B6.1: correr UNA estrategia del manifest "
+                         "(cache lab_features_<strategy_id>.json)")
     args = ap.parse_args()
     if args.all_summary:
         asyncio.run(run_all_summary(args.oos, args.stitch_db, args.sample,
                                     args.pullback_window_min))
+    elif args.strategy:
+        from scripts.lab_manifest import load_manifest
+        entries = (load_manifest() or {}).get("entries") or {}
+        entry = entries.get(args.strategy)
+        if entry is None:
+            ap.error(f"estrategia {args.strategy!r} no está en el manifest "
+                     "(corre `python -m scripts.lab_manifest propose`)")
+        asyncio.run(run(entry["instrument"],
+                        args.csv or Path(entry["csv"]), args.oos,
+                        args.stitch_db, args.sample,
+                        args.pullback_window_min,
+                        strategy_id=args.strategy))
     elif args.instrument:
         asyncio.run(run(args.instrument, args.csv, args.oos,
                         args.stitch_db, args.sample,
                         args.pullback_window_min))
     else:
-        ap.error("usa --instrument <SYM> o --all-summary")
+        ap.error("usa --strategy <id>, --instrument <SYM> o --all-summary")
 
 
 if __name__ == "__main__":
