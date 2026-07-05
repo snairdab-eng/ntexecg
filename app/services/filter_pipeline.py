@@ -279,9 +279,12 @@ class FilterPipeline:
                 "reason": calc["reason"],
                 "sl_price": calc["sl_price"],
                 "tp_price": calc["tp_price"],
-                # MR-5a: "backstop_fixed" (stop de precio fijo desde la
-                # señal) o "atr" (k×ATR de siempre) — visible en el audit.
+                # MR-5a/b: cómo se calculó el bracket — visible en el audit.
+                # sl: "backstop_fixed" (precio fijo desde la señal) | "atr".
+                # tp: "nominal_atr" | "nominal_backstop_width" (fallback sin
+                # ATR) | "legacy_atr" | None.
                 "sl_mode": calc.get("sl_mode"),
+                "tp_mode": calc.get("tp_mode"),
             }
             if not calc["passed"]:
                 return PipelineResult(

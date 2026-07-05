@@ -258,6 +258,16 @@ class ConfigResolver:
                 if (isinstance(_bk, (int, float))
                         and not isinstance(_bk, bool) and _bk > 0):
                     config["backstop_points"] = float(_bk)
+                # MR-5b — TP NOMINAL por lado (×ATR sobre el p99 del cierre
+                # de LuxAlgo, del recomendacion.json). Que cierre LuxAlgo:
+                # el TP casi nunca dispara, solo satisface el bracket de
+                # TradersPost. Misma validación opt-in que el backstop.
+                for _tk in ("tp_nominal_long", "tp_nominal_short"):
+                    _tv = (strategy_profile.pipeline_config_json or {}).get(
+                        _tk)
+                    if (isinstance(_tv, (int, float))
+                            and not isinstance(_tv, bool) and _tv > 0):
+                        config[_tk] = float(_tv)
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run

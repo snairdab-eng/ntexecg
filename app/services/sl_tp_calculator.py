@@ -7,7 +7,10 @@ Two SL modes (MR-5a, Directiva 4 del Motor de Riesgo):
     that strategy (the study showed tight ×ATR stops kill winners; the
     wide backstop IS the stop). Missing signal price → passed=False.
   - otherwise → k×ATR as always; ATR unavailable → passed=False.
-TP is managed by LuxAlgo Builtin-Exits (tp_atr_multiplier prepared but inactive).
+TP (MR-5b): la salida real es de LuxAlgo — el TP NOMINAL por lado
+(tp_nominal_long/short, ×ATR sobre el p99 del cierre) casi nunca dispara y
+solo satisface el bracket de TradersPost; sin ATR cae al ancho del backstop.
+Legacy tp_atr_multiplier se mantiene (inactivo por default).
 """
 from __future__ import annotations
 
@@ -18,6 +21,18 @@ def backstop_config(config: dict) -> float | None:
     """backstop_points válido del config merged (número > 0) o None.
     bool se excluye explícitamente (True es int en Python)."""
     v = config.get("backstop_points")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+        return None
+    return float(v)
+
+
+def tp_nominal_config(config: dict, is_long: bool) -> float | None:
+    """Multiplicador ×ATR del TP NOMINAL del lado (MR-5b) o None.
+
+    Por lado porque el estudio es asimétrico (largo alto ~11.5×, corto
+    reducido e inestable → afinable en config, no hardcodeado). Misma
+    validación que el backstop (número > 0, bool excluido)."""
+    v = config.get("tp_nominal_long" if is_long else "tp_nominal_short")
     if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
         return None
     return float(v)
@@ -59,6 +74,8 @@ class SLTPCalculator:
               "tp_price": float | None,
               "atr_value": float | None,
               "sl_mode": "backstop_fixed" | "atr" | None,
+              "tp_mode": "nominal_atr" | "nominal_backstop_width" |
+                         "legacy_atr" | None,
             }
         """
         backstop = backstop_config(config)
@@ -71,6 +88,7 @@ class SLTPCalculator:
                 "tp_price": None,
                 "atr_value": None,
                 "sl_mode": None,
+                "tp_mode": None,
             }
 
         # NX-05 — sin precio de entrada válido no hay SL calculable: BLOCK.
@@ -84,6 +102,7 @@ class SLTPCalculator:
                 "tp_price": None,
                 "atr_value": atr,
                 "sl_mode": None,
+                "tp_mode": None,
             }
 
         tp_multiplier = config.get("tp_atr_multiplier")
@@ -104,13 +123,31 @@ class SLTPCalculator:
                         else entry_price + (atr * sl_multiplier))
             sl_mode = "atr"
 
-        # TP calculation (prepared but inactive by default; needs ATR)
+        # TP calculation. Prioridad: TP NOMINAL del lado (MR-5b) > legacy
+        # tp_atr_multiplier > None. El nominal se queda en ×ATR (el estudio
+        # midió el cierre de las ganadoras en ×ATR; un TP de puntos fijos se
+        # estrecha relativo a la volatilidad justo en régimen volátil, donde
+        # las ganadoras corren más — dispararía antes que LuxAlgo cuando no
+        # debe). Fail-closed sin ATR: cae al ANCHO DEL BACKSTOP espejado al
+        # lado favorable (más ancho que el nominal → sigue siendo nominal;
+        # sin backstop este punto es inalcanzable — bloqueado arriba), para
+        # que la entrada nunca quede sin el bracket que TradersPost exige.
         tp_price = None
-        if tp_multiplier and atr and atr > 0:
-            if is_long:
-                tp_price = entry_price + (atr * tp_multiplier)
-            else:
-                tp_price = entry_price - (atr * tp_multiplier)
+        tp_mode = None
+        nominal = tp_nominal_config(config, is_long)
+        if nominal is not None:
+            if atr and atr > 0:
+                tp_price = (entry_price + (atr * nominal) if is_long
+                            else entry_price - (atr * nominal))
+                tp_mode = "nominal_atr"
+            elif backstop is not None:
+                tp_price = (entry_price + backstop if is_long
+                            else entry_price - backstop)
+                tp_mode = "nominal_backstop_width"
+        elif tp_multiplier and atr and atr > 0:
+            tp_price = (entry_price + (atr * tp_multiplier) if is_long
+                        else entry_price - (atr * tp_multiplier))
+            tp_mode = "legacy_atr"
 
         return {
             "passed": True,
@@ -119,4 +156,5 @@ class SLTPCalculator:
             "tp_price": tp_price,
             "atr_value": atr,
             "sl_mode": sl_mode,
+            "tp_mode": tp_mode,
         }
