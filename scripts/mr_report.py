@@ -252,12 +252,15 @@ def render_md(res: dict) -> str:
         L.append("ΔPF vs la base del MISMO bloque; H1/H2 = mitades "
                  "temporales («¿aguanta ambas mitades?»).")
         L.append("")
+        elegido_nombre = (rob.get("elegido") or {}).get("nombre")
         L.append("| Config | part% | PF in | **PF OOS** | ΔPF OOS | "
                  "PF H1 | PF H2 | veredicto |")
         L.append("|---|---:|---:|---:|---:|---:|---:|---|")
         for t in rob["tabla"]:
             bl = t["bloques"]
-            L.append(f"| {t['nombre']}{_flags_md(t['flags'])} | "
+            marca = (" ◀ **ELEGIDO**" if t["nombre"] == elegido_nombre
+                     else "")
+            L.append(f"| {t['nombre']}{_flags_md(t['flags'])}{marca} | "
                      f"{_f(t['participacion_pct'], 1)} | "
                      f"{_f(bl['in']['pf'])} | **{_f(bl['out']['pf'])}** | "
                      f"{_f(bl['out']['delta_pf'])} | {_f(bl['h1']['pf'])} | "
@@ -266,25 +269,46 @@ def render_md(res: dict) -> str:
 
         h2h = rob.get("head_to_head")
         if h2h:
-            L.append("### 4.1 Head-to-head — los dos líderes del barrido")
+            L.append("### 4.1 Head-to-head — los dos líderes del BARRIDO "
+                     "(comparación específica, NO la elección)")
             L.append("")
-            L.append("| | líder por NET | líder por SCORE |")
-            L.append("|---|---|---|")
-            ln, lsc = h2h["lider_net"], h2h["lider_score"]
-            L.append(f"| config | {ln['nombre']} | {lsc['nombre']} |")
+            # si el elegido no es ninguno de los dos líderes, entra como
+            # columna rotulada — que no parezca contradicción
+            cols = [("líder por NET", h2h["lider_net"]),
+                    ("líder por SCORE", h2h["lider_score"])]
+            if (elegido_nombre
+                    and elegido_nombre not in (h2h["lider_net"]["nombre"],
+                                               h2h["lider_score"]["nombre"])):
+                fila = next((t for t in rob["tabla"]
+                             if t["nombre"] == elegido_nombre), None)
+                if fila:
+                    cols.append(("**ELEGIDO** (mejor global)", fila))
+            L.append("| | " + " | ".join(lbl for lbl, _ in cols) + " |")
+            L.append("|---|" + "---|" * len(cols))
+            L.append("| config | "
+                     + " | ".join(t["nombre"] for _, t in cols) + " |")
             for key, label in (("out", "**PF OOS**"), ("h1", "PF H1"),
                                ("h2", "PF H2")):
-                L.append(f"| {label} | {_f(ln['bloques'][key]['pf'])} "
-                         f"(Δ{_f(ln['bloques'][key]['delta_pf'])}) | "
-                         f"{_f(lsc['bloques'][key]['pf'])} "
-                         f"(Δ{_f(lsc['bloques'][key]['delta_pf'])}) |")
-            L.append(f"| net OOS | {_usd(ln['bloques']['out']['net_usd'])} | "
-                     f"{_usd(lsc['bloques']['out']['net_usd'])} |")
-            L.append(f"| maxDD OOS | "
-                     f"{_usd(ln['bloques']['out']['max_dd_usd'])} | "
-                     f"{_usd(lsc['bloques']['out']['max_dd_usd'])} |")
-            L.append(f"| veredicto | {ln['veredicto']} | "
-                     f"{lsc['veredicto']} |")
+                L.append(f"| {label} | " + " | ".join(
+                    f"{_f(t['bloques'][key]['pf'])} "
+                    f"(Δ{_f(t['bloques'][key]['delta_pf'])})"
+                    for _, t in cols) + " |")
+            L.append("| net OOS | " + " | ".join(
+                _usd(t["bloques"]["out"]["net_usd"]) for _, t in cols)
+                + " |")
+            L.append("| maxDD OOS | " + " | ".join(
+                _usd(t["bloques"]["out"]["max_dd_usd"]) for _, t in cols)
+                + " |")
+            L.append("| veredicto | "
+                     + " | ".join(t["veredicto"] for _, t in cols) + " |")
+            L.append("")
+        if elegido_nombre:
+            L.append(f"**ELEGIDO del estudio: {elegido_nombre}** — mejor "
+                     f"score (net/maxDD) entre TODOS los candidatos "
+                     f"validados por el walk-forward (barrido + referencia "
+                     f"+ señal), nunca por in-sample. El head-to-head de "
+                     f"arriba compara específicamente los dos líderes del "
+                     f"barrido — no es la elección. Ver §5.")
             L.append("")
 
         estres = rob.get("estres_pierna_profunda")

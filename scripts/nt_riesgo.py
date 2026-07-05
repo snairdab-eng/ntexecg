@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import glob
 import hashlib
 import json
 import re
@@ -63,6 +64,7 @@ from scripts.lab_analyze import (
     _ATR_PERIOD,
     _MIN_SANITY,
     _f,
+    TRADES_DIR,
     Trade,
     detect_tz_offset,
     enrich_with_bars,
@@ -285,6 +287,16 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
     if not activo:
         raise SystemExit("⛔ No pude deducir el instrumento del nombre del "
                          "CSV — pásalo con --activo.")
+    # Guardia de doble-prefijo: la carpeta se llavea <ACTIVO>_<codigo>; un
+    # código que ya trae el prefijo crearía ES_ES_... en silencio. Abortar
+    # es más seguro que normalizar sin avisar.
+    if codigo.upper().startswith(f"{activo.upper()}_"):
+        sugerido = codigo[len(activo) + 1:]
+        raise SystemExit(
+            f"⛔ El código no debe incluir el prefijo del activo "
+            f"({activo}_): la carpeta sería MotorRiesgo/{activo}_{codigo}. "
+            f"Usa --codigo {sugerido} → la carpeta será "
+            f"{activo}_{sugerido}.")
     fecha = _fecha_export(csv_path, fecha)
     base_dir = MOTOR_DIR / f"{activo}_{codigo}"
 
@@ -408,6 +420,42 @@ def _fmt_usd(v) -> str:
     return f"${v:,.2f}" if v is not None else "—"
 
 
+# Master con más de estos días se marca como posiblemente desactualizado
+# (cadencia semanal del SPEC §2 — el aviso es recordatorio, no bloqueo).
+_MASTER_VIEJO_DIAS = 3
+
+
+def _avisos_master(man: dict, activo: str, hoy: date,
+                   exports_dir: Path, snapshots_dir: Path) -> list[str]:
+    """Avisos para que calcular sobre un master desactualizado sea
+    IMPOSIBLE de pasar por alto: export más nuevo sin integrar, snapshot
+    más reciente que el master, o master de días atrás."""
+    avisos: list[str] = []
+    integrado = man["integrado"]
+    for p in sorted(glob.glob(str(exports_dir / f"*_{activo}1!_*.csv"))):
+        m = _FECHA_EN_NOMBRE.search(Path(p).name)
+        if m and m.group(1) > integrado:
+            avisos.append(
+                f"hay un export más nuevo sin integrar: {Path(p).name} "
+                f"({m.group(1)} > master {integrado}) — ¿integraste el "
+                f"export nuevo?")
+    snaps = (sorted(snapshots_dir.glob("export_*.csv"))
+             if snapshots_dir.exists() else [])
+    if snaps and snaps[-1].name != man["export"]["snapshot"]:
+        avisos.append(
+            f"el snapshot más reciente ({snaps[-1].name}) no es el del "
+            f"master ({man['export']['snapshot']}) — estado inconsistente")
+    try:
+        dias = (hoy - date.fromisoformat(integrado)).days
+    except ValueError:
+        dias = None
+    if dias is not None and dias > _MASTER_VIEJO_DIAS:
+        avisos.append(
+            f"el master de este folder es del {integrado} (hace {dias} "
+            f"días) — ¿integraste el export nuevo?")
+    return avisos
+
+
 async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
                    fecha: str | None = None,
                    hc: HaircutCfg | None = None) -> dict:
@@ -424,6 +472,20 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
     activo = man["activo"]
     ppt = man["usd_por_punto"]["usado"]
     fecha = fecha or date.today().isoformat()
+
+    # Identidad del master, PROMINENTE y antes de calcular nada: que el
+    # desajuste "calcular sobre el export viejo" sea imposible de no ver.
+    t = man["trades"]
+    print("┌─ MASTER EN USO ────────────────────────────────────────────")
+    print(f"│ {clave} · export {man['integrado']} · {t['n']} trades "
+          f"({t['desde'][:10]} → {t['hasta'][:10]})")
+    print(f"│ sha256 {man['export']['sha256_master'][:12]}… · "
+          f"HOLC (al integrar) hasta {man['holc']['ultima_barra'][:16]}")
+    avisos = _avisos_master(man, activo, date.today(), TRADES_DIR,
+                            base_dir / "snapshots")
+    for a in avisos:
+        print(f"│ ⚠ {a}")
+    print("└────────────────────────────────────────────────────────────")
 
     trades = parse_luxalgo_csv(base_dir / "master.csv")
     bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(

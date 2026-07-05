@@ -138,6 +138,30 @@ nº trades / sha) y avisar si el folder no corresponde a una integración recien
 reporte el `elegido` vs el `head-to-head`. (Un motor de riesgo no debe correr en silencio sobre datos
 que no son — pasó una vez, se blinda.)
 
+## Receta oficial del backstop (multi-instrumento) — YA la automatiza el motor
+El backstop se calcula en **$ (unidad universal)**; el "100 pts" de ES **NO se reutiliza** — cada
+instrumento tiene el suyo, recalculado sobre su propia lista. Método idéntico para todos (3 pasos que
+el motor ejecuta por estrategia):
+1. **$/punto del export:** `Tamaño de la posición (valor) ÷ Precio USD` (ES: 331087.5/6621.75 = $50).
+   Fiable para cualquier activo; el motor lo infiere y lo **cruza contra la tabla §6 del SPEC** (avisa
+   si difieren).
+2. **Barrido en $ sobre la MAE** (`Desviación adversa USD`): el nivel que solo capa desastres (~2–3%
+   de trades) sin matar ganadoras. ES: ventana net-positiva $4,250–6,000.
+3. **A la unidad natural:** `backstop_pts = backstop_$ ÷ ($/pt)` (ES: $5,000/$50 = 100 pts). En
+   FX/metales, en **ticks/$**, no "puntos". Salida del motor: `$ óptimo · unidad natural · ×ATR`.
+
+**Matices (consistentes con la lección del decimal):** el óptimo es una **ventana** ($4,250–6,000 en
+ES), el punto exacto es sample-sensible ($4,500 en 120 trades, $5,000 en la referencia) → lo robusto
+es la ventana/magnitud, se afina dentro. El **×ATR es solo ancla de arranque** (~18–20×ATR), ruidoso
+(6–70× por trade); el **$ fijo es la unidad** — y por eso funciona: en $ fijo el stop se aprieta (en
+×ATR) en régimen volátil y se afloja en calma.
+
+**Tabla $/punto** (verificar SIEMPRE con el export vía paso 1; micro = full ÷ 10):
+ES $50 · RTY $50 · NQ $20 · YM $5 · GC $100 · CL $1,000 · 6E $12.50/pip · **6J: verificar con export**.
+
+> Tie-in con el punto 2 (identidad del master): el `$/punto` derivado del export es parte de la
+> procedencia — mostrarlo en la cabecera de `calcular`/reporte y avisar si difiere de la tabla §6.
+
 ## Fases sugeridas
 - **MR-1 · Ingesta + persistencia** reusando el parser/ATR/stitch del Lab: `integrar`/`estado`,
   estructura `MotorRiesgo/<ACTIVO>_<codigo>/`, snapshots, manifest reforzado. Cuadrar el PnL de la

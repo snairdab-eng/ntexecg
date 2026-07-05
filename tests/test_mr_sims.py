@@ -286,6 +286,65 @@ def test_deep_leg_stress_conteos():
 
 
 # ---------------------------------------------------------------------------
+# Endurecimiento (2026-07-05): tests adversariales rojo→verde
+# ---------------------------------------------------------------------------
+
+def test_integrar_doble_prefijo_aborta(tmp_path, monkeypatch):
+    """Adversarial 1: --codigo con el prefijo del activo (ES_...) debe
+    ABORTAR con mensaje claro, no crear MotorRiesgo/ES_ES_... en silencio."""
+    import scripts.nt_riesgo as nr
+
+    monkeypatch.setattr(nr, "MOTOR_DIR", tmp_path / "MotorRiesgo")
+    # CSV dummy: el guardia debe disparar ANTES de parsear nada
+    falso = tmp_path / "X_CME_MINI_ES1!_2026-07-04_abcde.csv"
+    falso.write_text("no,importa\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="prefijo del activo"):
+        asyncio.run(nr.integrar(falso, codigo="ES_ConfNormal_TC_TSR"))
+    assert not (tmp_path / "MotorRiesgo" / "ES_ES_ConfNormal_TC_TSR").exists()
+    # el mensaje sugiere el código correcto
+    with pytest.raises(SystemExit, match="ConfNormal_TC_TSR"):
+        asyncio.run(nr.integrar(falso, codigo="ES_ConfNormal_TC_TSR"))
+
+
+def test_avisos_master_viejo_y_export_nuevo(tmp_path):
+    """Adversarial 2 (unidad): master viejo o export nuevo sin integrar →
+    avisos que hacen imposible calcular sobre datos viejos sin verlo."""
+    from datetime import date
+
+    from scripts.nt_riesgo import _avisos_master
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    snaps = tmp_path / "snapshots"
+    snaps.mkdir()
+    (snaps / "export_2026-06-27.csv").write_text("x", encoding="utf-8")
+    man = {"integrado": "2026-06-27",
+           "export": {"snapshot": "export_2026-06-27.csv"}}
+
+    # caso limpio: sin exports nuevos, master fresco → sin avisos
+    avisos = _avisos_master(man, "ES", date(2026, 6, 28), exports, snaps)
+    assert avisos == []
+
+    # el incidente real: export nuevo en ListaDeOperaciones sin integrar
+    # + master de días atrás
+    (exports / "Lux_CME_MINI_ES1!_2026-07-04_d0bf8.csv").write_text(
+        "x", encoding="utf-8")
+    avisos = _avisos_master(man, "ES", date(2026, 7, 5), exports, snaps)
+    assert any("export más nuevo" in a and "2026-07-04" in a
+               for a in avisos)
+    assert any("¿integraste el export nuevo?" in a for a in avisos)
+
+    # snapshot más nuevo que el master → estado inconsistente
+    (snaps / "export_2026-07-04.csv").write_text("y", encoding="utf-8")
+    avisos = _avisos_master(man, "ES", date(2026, 7, 5), exports, snaps)
+    assert any("inconsistente" in a for a in avisos)
+
+    # otro instrumento NO dispara el aviso de export nuevo
+    avisos_nq = _avisos_master(man, "NQ", date(2026, 6, 28), exports, snaps)
+    assert not any("export más nuevo" in a for a in avisos_nq)
+
+
+# ---------------------------------------------------------------------------
 # MR-4: comparador de secciones (a mano)
 # ---------------------------------------------------------------------------
 
@@ -488,6 +547,58 @@ class TestESReal:
         assert 3.5 <= tm["pf_out"] <= 4.1
         el = res["robustez"]["elegido"]
         assert el["walk_forward"]["bloques"]["out"]["pf"] >= 3.0
+
+    def test_calcular_imprime_identidad_master(self, corrida, capsys):
+        """Adversarial 2 (end-to-end): calcular anuncia ARRIBA la identidad
+        del master (fecha export, nº trades, sha, HOLC) antes de calcular."""
+        import scripts.nt_riesgo as nr
+
+        motor_dir, _res = corrida
+        original = nr.MOTOR_DIR
+        nr.MOTOR_DIR = motor_dir
+        try:
+            asyncio.run(nr.calcular("ES_test", fecha="2026-07-04"))
+        finally:
+            nr.MOTOR_DIR = original
+        salida = capsys.readouterr().out
+        assert "MASTER EN USO" in salida
+        man = json.loads((motor_dir / "ES_test" / "manifest.json")
+                         .read_text(encoding="utf-8"))
+        assert man["integrado"] in salida                       # fecha export
+        assert f"{man['trades']['n']} trades" in salida         # nº trades
+        assert man["export"]["sha256_master"][:12] in salida    # sha
+        assert man["holc"]["ultima_barra"][:10] in salida       # HOLC
+        # la identidad va ANTES de los estudios
+        assert salida.index("MASTER EN USO") < salida.index("ESTUDIOS DE")
+
+    def test_md_elegido_rotulado_junto_al_head_to_head(self, corrida):
+        """Adversarial 3: el ELEGIDO aparece rotulado en la sección de
+        robustez (§4), también cuando NO es ninguno de los dos líderes del
+        head-to-head (el caso confuso del incidente)."""
+        import copy
+
+        from scripts.mr_report import render_md
+
+        _, res = corrida
+        md = render_md(res)
+        sec4 = md.split("## 4.")[1].split("## 5.")[0]
+        assert "ELEGIDO" in sec4
+        assert res["robustez"]["elegido"]["nombre"] in sec4
+
+        # el incidente: elegido ≠ ambos líderes (p. ej. balanceada) → debe
+        # aparecer como columna rotulada del head-to-head, no como
+        # contradicción silenciosa
+        res2 = copy.deepcopy(res)
+        h2h = res2["robustez"]["head_to_head"]
+        otra = next(t for t in res2["robustez"]["tabla"]
+                    if t["nombre"] not in (h2h["lider_net"]["nombre"],
+                                           h2h["lider_score"]["nombre"]))
+        res2["robustez"]["elegido"]["nombre"] = otra["nombre"]
+        sec4b = render_md(res2).split("## 4.")[1].split("## 5.")[0]
+        h2h_txt = sec4b.split("4.1")[1].split("###")[0] if "4.1" in sec4b \
+            else sec4b
+        assert "ELEGIDO" in h2h_txt
+        assert otra["nombre"] in h2h_txt
 
     def test_recrear_bit_a_bit(self, corrida):
         """MR-4: recrear reproduce la corrida IDÉNTICA desde el snapshot
