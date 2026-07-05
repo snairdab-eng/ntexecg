@@ -21,6 +21,34 @@ _ENTRY_ROLES = {"entry_long", "entry_short", "reversal_to_long", "reversal_to_sh
 _EXIT_ROLES = {"exit_long", "exit_short"}
 
 
+def _short_size_factor(config: dict) -> float | None:
+    """Factor de tamaño para ENTRADAS CORTAS (MR-5c, opt-in): motor de
+    largos → cortos reducidos, no eliminados. Válido: 0 < f ≤ 1 (bool
+    excluido — True es int). Ausente/inválido → None (simétrico)."""
+    v = config.get("short_size_factor")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 1:
+        return None
+    return float(v)
+
+
+def _apportion(quantities: list[int], factor: float) -> list[int]:
+    """Reparte el factor sobre el vector de piernas CONSERVANDO el total
+    objetivo (round(total·f), mínimo 1) — método del mayor resto. A empate
+    ganan las piernas de MENOR índice (las someras: la participación es la
+    prioridad declarada del estudio)."""
+    total = sum(q for q in quantities if q > 0)
+    target = max(1, int(round(total * factor)))
+    raw = [q * factor if q > 0 else 0.0 for q in quantities]
+    floors = [int(x) for x in raw]
+    resto = max(0, target - sum(floors))
+    orden = sorted(range(len(raw)),
+                   key=lambda i: (-(raw[i] - floors[i]), i))
+    out = list(floors)
+    for i in orden[:resto]:
+        out[i] += 1
+    return out
+
+
 class PayloadBuilder:
     """Builds TradersPost-ready payload dicts from a signal + pipeline result."""
 
@@ -40,11 +68,19 @@ class PayloadBuilder:
         # signal_role is used as a secondary signal for reversal/entry classification.
         is_exit = signal.action == "exit" or signal.signal_role in _EXIT_ROLES
 
+        # MR-5c — asimetría de lado: cortos reducidos (mínimo 1 — reducidos,
+        # NO eliminados). Solo entradas; las salidas cierran completo.
+        quantity = signal.quantity
+        factor = _short_size_factor(config)
+        if (factor is not None and not is_exit and signal.action == "sell"
+                and quantity):
+            quantity = max(1, int(round(quantity * factor)))
+
         payload: dict = {
             "ticker": signal.mapped_symbol,      # mapped contract, not ticker_received
             "action": signal.action,
             "signalPrice": float(signal.price) if signal.price is not None else None,
-            "quantity": signal.quantity,
+            "quantity": quantity,
         }
         # "sentiment" is only valid for entries (buy/sell). TradersPost rejects it
         # with action == "exit" (invalid-sentiment-action), so omit it on exits.
@@ -90,6 +126,8 @@ class PayloadBuilder:
             "sl_multiplier": config.get("sl_atr_multiplier"),
             "provider": pipeline_result.market_data_provider,
         }
+        if factor is not None and not is_exit and signal.action == "sell":
+            payload["extras"]["short_size_factor"] = factor
 
         return payload
 
@@ -132,6 +170,14 @@ class PayloadBuilder:
                 "Scaled entry without sl_price is forbidden "
                 f"(strategy={signal.strategy_id})"
             )
+
+        # MR-5c — asimetría de lado en la escalera: el reparto por mayor
+        # resto conserva el total objetivo y el pareo pierna↔nivel (las
+        # piernas en 0 se saltan). Solo cortos; tras las validaciones (la
+        # reducción nunca viola max_micro_contracts).
+        factor = _short_size_factor(config)
+        if factor is not None and signal.action == "sell":
+            quantities = _apportion(quantities, factor)
 
         base_price = float(signal.price) if signal.price is not None else None
         atr = (float(pipeline_result.atr_value)
@@ -185,6 +231,8 @@ class PayloadBuilder:
                 "sl_multiplier": config.get("sl_atr_multiplier"),
                 "provider": pipeline_result.market_data_provider,
             }
+            if factor is not None and signal.action == "sell":
+                leg["extras"]["short_size_factor"] = factor
             payloads.append(leg)
 
         if not payloads:

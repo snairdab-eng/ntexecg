@@ -268,6 +268,14 @@ class ConfigResolver:
                     if (isinstance(_tv, (int, float))
                             and not isinstance(_tv, bool) and _tv > 0):
                         config[_tk] = float(_tv)
+                # MR-5c — asimetría de lado (motor de largos): factor de
+                # tamaño de ENTRADAS CORTAS, 0 < f ≤ 1, opt-in. Ausente =
+                # simétrico. Las salidas nunca se reducen.
+                _ssf = (strategy_profile.pipeline_config_json or {}).get(
+                    "short_size_factor")
+                if (isinstance(_ssf, (int, float))
+                        and not isinstance(_ssf, bool) and 0 < _ssf <= 1):
+                    config["short_size_factor"] = float(_ssf)
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run
