@@ -455,12 +455,19 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(res, indent=1, ensure_ascii=False),
                    encoding="utf-8")
-    man["ultima_corrida"] = out.name
+
+    # MR-3 — entregables de la corrida (md + csv + heatmap + recomendación)
+    from scripts.mr_report import generar_entregables
+    entregables = generar_entregables(res, base_dir / "runs")
+
+    man["ultima_corrida"] = entregables["md"].name
     man_path.write_text(json.dumps(man, indent=1, ensure_ascii=False),
                         encoding="utf-8")
 
     _print_resumen_estudios(clave, res)
     print(f"\n✅ Estudios → {out}")
+    for tipo, p in entregables.items():
+        print(f"   {tipo:14} {p if p else '— (matplotlib no disponible)'}")
     return res
 
 
@@ -535,6 +542,37 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
               f" {c['gate']['estado']}{marca}")
     print(f"  ({len(aprobadas)} aprobadas de {len(res['configs'])} configs; "
           f"descartados por diseño: SL duro ×ATR, sesión, time-stop)")
+
+    rob = res.get("robustez")
+    if rob:
+        h2h = rob.get("head_to_head")
+        if h2h:
+            print("\n▎Head-to-head (walk-forward):")
+            for rol, t in (("líder net  ", h2h["lider_net"]),
+                           ("líder score", h2h["lider_score"])):
+                bl = t["bloques"]
+                print(f"  {rol}: {t['nombre'][:44]:44} PF OOS "
+                      f"{bl['out']['pf']} (Δ{bl['out']['delta_pf']:+}) · "
+                      f"H1 {bl['h1']['pf']} / H2 {bl['h2']['pf']} → "
+                      f"{t['veredicto']}")
+        estres = rob.get("estres_pierna_profunda")
+        if estres:
+            c = estres["contribucion"]
+            print(f"▎Estrés pierna profunda ({estres['micros']} MES @ "
+                  f"{estres['depth_atr']}×): {estres['n_fills']} fills "
+                  f"({estres['fills_por_bloque']['in']}in/"
+                  f"{estres['fills_por_bloque']['out']}out · "
+                  f"H1 {estres['fills_por_bloque']['h1']}/"
+                  f"H2 {estres['fills_por_bloque']['h2']}) · "
+                  f"aporta {c['total_usd']:+,.0f} "
+                  f"({c['ganadores']}W/{c['perdedores']}L)")
+        if rob["elegido"]:
+            el = rob["elegido"]
+            wf = el["walk_forward"]["bloques"]["out"]
+            print(f"▎ELEGIDO: {el['nombre']} — PF OOS {wf['pf']} "
+                  f"(Δ{wf['delta_pf']:+}) · {el['walk_forward']['veredicto']}")
+        else:
+            print("▎ELEGIDO: ninguno (nada validado por el walk-forward)")
 
 
 # ---------------------------------------------------------------------------

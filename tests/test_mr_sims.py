@@ -115,6 +115,36 @@ def test_senal_mas_backstop_pariedad_con_sweep():
 
 
 # ---------------------------------------------------------------------------
+# Barrido conjunto de la escalera (Directiva 3.1: 3 grados de libertad,
+# total FIJO en 10 micros)
+# ---------------------------------------------------------------------------
+
+def test_ladder_grid_conjunto():
+    from scripts.mr_sims import TOTAL_MICROS, ladder_grid
+
+    grid = ladder_grid()
+    assert len(grid) > 200                      # barrido real, no 3 ejemplos
+    n_piernas = set()
+    for nombre, legs, tags in grid:
+        # total SIEMPRE 10 micros = 1 mini (comparable 1:1 con la base)
+        assert sum(w for _, w in legs) == pytest.approx(1.0)
+        micros = [round(w * TOTAL_MICROS) for _, w in legs]
+        assert sum(micros) == TOTAL_MICROS
+        # profundidades estrictamente crecientes
+        depths = [d for d, _ in legs]
+        assert depths == sorted(depths) and len(set(depths)) == len(depths)
+        n_piernas.add(len(legs))
+        if depths[0] <= 0.5:
+            assert "alta_participacion" in tags
+    assert n_piernas == {2, 3}                  # (c) nº de piernas: 2 y 3
+    # (b) distribución no fijada al 60/40: hay 70/30, 50/50 y 40/30/30
+    dists = {tuple(round(w * TOTAL_MICROS) for _, w in legs)
+             for _, legs, _ in grid}
+    for esperado in ((7, 3), (5, 5), (4, 3, 3)):
+        assert esperado in dists
+
+
+# ---------------------------------------------------------------------------
 # TP nominal (a mano)
 # ---------------------------------------------------------------------------
 
@@ -185,6 +215,77 @@ def test_reconcile_fills_deltas():
 
 
 # ---------------------------------------------------------------------------
+# MR-3: walk-forward y estrés de la pierna profunda (a mano)
+# ---------------------------------------------------------------------------
+
+def _sts_wf():
+    """8 trades: 4 in / 4 out; mitades = primeros 4 / últimos 4."""
+    return [st(i, in_sample=i <= 4, atr=4.0,
+               pnl_usd=100.0 if i % 2 else -100.0)
+            for i in range(1, 9)]
+
+
+def test_walk_forward_validado():
+    from scripts.mr_sims import walk_forward_config
+
+    sts = _sts_wf()
+    base = [(s, s.native_pnl_usd, True, False) for s in sts]
+    # config: dobla los ganadores → PF 2.0 en todos los bloques (base 1.0)
+    cfg = [(s, s.native_pnl_usd * (2 if s.native_pnl_usd > 0 else 1),
+            True, False) for s in sts]
+    wf = walk_forward_config(sts, cfg, base)
+    for blk in ("in", "out", "h1", "h2"):
+        assert wf["bloques"][blk]["pf"] == 2.0
+        assert wf["bloques"][blk]["pf_base"] == 1.0
+        assert wf["bloques"][blk]["delta_pf"] == 1.0
+    # n chico → banderas, pero el veredicto es validado
+    assert wf["veredicto"] == "validado (con banderas)"
+    assert "n_bajo" in wf["flags"] and "robustez_fragil" in wf["flags"]
+
+
+def test_walk_forward_no_generaliza():
+    from scripts.mr_sims import walk_forward_config
+
+    sts = _sts_wf()
+    base = [(s, s.native_pnl_usd, True, False) for s in sts]
+    # config: mejora in-sample pero EMPEORA out (el espejismo clásico)
+    cfg = [(s, s.native_pnl_usd * (2 if s.native_pnl_usd > 0
+                                   and s.in_sample else 1)
+            * (2 if s.native_pnl_usd < 0 and not s.in_sample else 1),
+            True, False) for s in sts]
+    wf = walk_forward_config(sts, cfg, base)
+    assert wf["bloques"]["in"]["delta_pf"] > 0
+    assert wf["bloques"]["out"]["delta_pf"] < 0
+    assert wf["veredicto"] == "no generaliza OOS"
+
+
+def test_deep_leg_stress_conteos():
+    from scripts.mr_sims import deep_leg_stress
+
+    legs = ((1.0, 0.3), (7.0, 0.7))
+    sts = [
+        # llena la profunda (mae 28 = 7.0×ATR), nativo +$500 (+10 pts):
+        # pierna 7×: (10 + 28) pts · 0.7 · $50 = $1,330
+        st(1, atr=4.0, mae=28.0, pnl_usd=500.0),
+        # no llena la profunda (mae 1×ATR)
+        st(2, atr=4.0, mae=4.0, pnl_usd=200.0, in_sample=False),
+        # stopped (mae 120 ≥ 100 pts): pierna 7×: −(100−28)·0.7·$50 = −$2,520
+        st(3, atr=4.0, mae=120.0, pnl_usd=-3000.0, in_sample=False),
+    ]
+    e = deep_leg_stress(sts, legs, backstop_usd=5000.0, ppt=PPT)
+    assert e["depth_atr"] == 7.0 and e["micros"] == 7
+    assert e["n_fills"] == 2
+    assert e["fills_por_bloque"]["in"] == 1
+    assert e["fills_por_bloque"]["out"] == 1
+    c = e["contribucion"]
+    assert c["ganadores"] == 1 and c["perdedores"] == 1
+    assert c["mejor_usd"] == pytest.approx(1330.0)
+    assert c["peor_usd"] == pytest.approx(-2520.0)
+    # contrafactual "sin pierna profunda" existe por bloque
+    assert set(e["pf_por_bloque_con_vs_sin"]) == {"in", "out", "h1", "h2"}
+
+
+# ---------------------------------------------------------------------------
 # Integración ES real: paridad con resim_rows + calcular end-to-end
 # ---------------------------------------------------------------------------
 
@@ -214,7 +315,8 @@ class TestESReal:
         assert en_disco["meta"]["fecha"] == "2026-07-04"
         man = json.loads((motor_dir / "ES_test" / "manifest.json")
                          .read_text(encoding="utf-8"))
-        assert man["ultima_corrida"] == "estudios_2026-07-04.json"
+        # desde MR-3 la última corrida apunta al entregable legible (.md)
+        assert man["ultima_corrida"] == "Riesgo_ES_test_2026-07-04.md"
 
     def test_backstop_recorta_riesgo(self, corrida):
         _, res = corrida
@@ -279,6 +381,90 @@ class TestESReal:
                 sel = [s for s in sts if s.in_sample == ins]
                 fired = 100 * sum(1 for s in sel if s.mfe_atr >= tp) / len(sel)
                 assert abs(fired - r[blk]["tp_pct"]) <= 2.0, (tp, blk)
+
+    def test_entregables_mr3(self, corrida):
+        """Los 4 entregables del SPEC §8 existen y no son triviales."""
+        motor_dir, res = corrida
+        runs = motor_dir / "ES_test" / "runs"
+        stem = "ES_test_2026-07-04"
+        md = runs / f"Riesgo_{stem}.md"
+        assert md.exists() and md.stat().st_size > 4000
+        texto = md.read_text(encoding="utf-8")
+        for seccion in ("LÍNEA BASE", "ANÁLISIS DE CONTROL DE RIESGO",
+                        "CONFIGURACIONES", "ROBUSTEZ", "RECOMENDACIÓN",
+                        "Estrés de gap", "PF OOS"):
+            assert seccion in texto, seccion
+        csv_p = runs / f"configs_{stem}.csv"
+        assert csv_p.exists()
+        import csv as _csv
+        with open(csv_p, encoding="utf-8-sig", newline="") as fh:
+            filas = list(_csv.DictReader(fh))
+        assert len(filas) == len(res["configs"])
+        try:
+            import matplotlib  # noqa: F401
+            assert (runs / f"heatmap_{stem}.png").stat().st_size > 20000
+        except ImportError:
+            pass
+        assert (runs / f"recomendacion_{stem}.json").exists()
+
+    def test_recomendacion_contrato_dispatch(self, corrida):
+        """recomendacion.json = contrato estudio→dispatch (Directiva 3.4):
+        backstop $/pts, escalera completa, TP por lado, sizing, confianza
+        OOS y reproducibilidad."""
+        motor_dir, res = corrida
+        doc = json.loads(
+            (motor_dir / "ES_test" / "runs" /
+             "recomendacion_ES_test_2026-07-04.json")
+            .read_text(encoding="utf-8"))
+        for key in ("config", "escalera", "backstop", "tp_nominal_atr",
+                    "confianza_oos", "sizing", "fail_closed", "fuente",
+                    "instrumento", "descartados"):
+            assert key in doc, key
+        esc = doc["escalera"]
+        assert esc["anclaje"] == "precio_senal"
+        assert sum(p["micros"] for p in esc["piernas"]) == 10
+        assert esc["n_piernas"] == len(esc["piernas"])
+        assert doc["backstop"]["pts"] == pytest.approx(
+            doc["backstop"]["usd_por_mini"] / 50.0)
+        assert doc["sizing"]["modo"] == "tamano_fijo"
+        assert doc["confianza_oos"]["pf_out"] is not None
+        assert doc["fuente"]["master_sha256"]
+
+    def test_robustez_walk_forward(self, corrida):
+        """Head-to-head presente, estrés de la pierna profunda con fills
+        suficientes, y elegido decidido por OOS."""
+        _, res = corrida
+        rob = res["robustez"]
+        assert rob["head_to_head"] is not None
+        for rol in ("lider_net", "lider_score"):
+            bl = rob["head_to_head"][rol]["bloques"]
+            assert set(bl) == {"in", "out", "h1", "h2"}
+        e = rob["estres_pierna_profunda"]
+        assert e is not None
+        assert e["n_fills"] >= 15            # no son unos pocos aciertos
+        assert min(e["fills_por_bloque"]["h1"],
+                   e["fills_por_bloque"]["h2"]) >= 5   # reparte en mitades
+        assert rob["elegido"] is not None
+        wf = rob["elegido"]["walk_forward"]
+        assert wf["veredicto"].startswith("validado")
+        assert wf["bloques"]["out"]["delta_pf"] > 0    # decide el OOS
+
+    def test_aceptacion_estructura_referencia(self, corrida):
+        """Validación de aceptación sobre el export actual: backstop en la
+        banda 80–110 pts, motor-largo, TP-meta L5.5/S1.0 con PF OOS en la
+        banda ~3.5–4 de la referencia (numéricos solo para el export
+        2026-06-27 conocido)."""
+        _, res = corrida
+        b = res["backstop"]["optimo"]
+        assert 80.0 <= b["backstop_pts"] <= 110.0
+        assert res["ls"]["lectura"].startswith("motor de LARGOS")
+        if "2026-06-27" not in _ES_CSV[-1]:
+            pytest.skip("export distinto al 2026-06-27 — solo estructura")
+        tm = res["tp"]["tp_meta_mejor"]
+        assert (tm["tp_long"], tm["tp_short"]) == (5.5, 1.0)
+        assert 3.5 <= tm["pf_out"] <= 4.1
+        el = res["robustez"]["elegido"]
+        assert el["walk_forward"]["bloques"]["out"]["pf"] >= 3.0
 
     def test_gating_coherente(self, corrida):
         _, res = corrida

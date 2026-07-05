@@ -11,9 +11,11 @@ Estudios (SPEC §5 + Directiva 3):
                             ×ATR corrido SOLO para mostrarlo DESCARTADO.
   2. backstop_sweep       — backstop catastrófico en $ fijos (el airbag),
                             con estrés de gap (el hueco puede atravesarlo).
-  3. eval_config / build_configs — escalera por MAE (balanceada, Config A,
-                            60/40 con variantes de ALTA PARTICIPACIÓN de
-                            primera clase) ± backstop ± TP.
+  3. eval_config / build_configs — escalera por MAE: barrido CONJUNTO sobre
+                            profundidades ×ATR × distribución de contratos ×
+                            nº de piernas (2-3), total FIJO en 10 micros
+                            (ladder_grid; alta participación de primera
+                            clase) + balanceada + Config A, ± backstop ± TP.
   4. tp_nominal_study     — dónde cierra LuxAlgo sus ganadoras (por lado) →
                             TP NOMINAL por encima del p95/p99 (que cierre
                             LuxAlgo; el TP solo satisface TradersPost).
@@ -267,10 +269,55 @@ BALANCEADA = tuple((d, 0.1) for d in (0.5, 1.0, 2.0, 3.0, 3.5, 4.5,
                                       5.0, 5.5, 6.0, 6.5))
 CONFIG_A = ((6.5, 0.6), (7.0, 0.4))
 SENAL = ((0.0, 1.0),)
-# Alta participación (Directiva 3.1, PRIMERA CLASE): 60% a mercado/somero +
-# 40% en pullback ×ATR — el edge está en participar en la mayoría.
-ALTA_PART_D1 = (0.0, 0.25, 0.5)
-ALTA_PART_D2 = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.5)
+
+# ── Barrido CONJUNTO de la escalera (Directiva 3.1 actualizada) ──
+# Tres grados de libertad: (a) profundidades ×ATR de cada pierna, (b) la
+# DISTRIBUCIÓN de contratos por pierna (60/40 era solo un ejemplo), y (c) el
+# nº de piernas (2 o 3). El TOTAL es SIEMPRE 10 micros = 1 mini, para
+# comparar 1:1 contra la línea base de LuxAlgo — el barrido reparte esos 10,
+# nunca cambia el tamaño. Alta participación (primera pierna a mercado o
+# somera ≤0.5×) de PRIMERA CLASE.
+TOTAL_MICROS = 10
+LADDER_D1_2 = (0.0, 0.25, 0.5, 1.0)
+LADDER_D2_2 = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.5, 7.0)
+LADDER_DIST_2 = ((7, 3), (6, 4), (5, 5), (4, 6), (3, 7))
+LADDER_D1_3 = (0.0, 0.25, 0.5)
+LADDER_D2_3 = (0.5, 1.0, 1.5, 2.0)
+LADDER_D3_3 = (1.5, 2.0, 3.0, 4.0, 5.0, 6.5)
+LADDER_DIST_3 = ((5, 3, 2), (4, 3, 3), (3, 3, 4))
+
+
+def ladder_grid() -> list[tuple[str, tuple, tuple]]:
+    """[(nombre, legs, etiquetas)] del barrido conjunto. Pesos = micros/10
+    (la suma de contratos es SIEMPRE TOTAL_MICROS)."""
+    out: list[tuple[str, tuple, tuple]] = []
+
+    def add(depths: tuple, dist: tuple) -> None:
+        assert sum(dist) == TOTAL_MICROS
+        legs = tuple((d, c / TOTAL_MICROS) for d, c in zip(depths, dist))
+        nombre = (f"{'+'.join(str(c) for c in dist)} MES @ "
+                  f"{'/'.join(f'{d:g}' for d in depths)}× + backstop")
+        tags = ["barrido", f"{len(depths)}_piernas"]
+        if depths[0] <= 0.5:
+            tags.append("alta_participacion")
+        out.append((nombre, legs, tuple(tags)))
+
+    for d1 in LADDER_D1_2:
+        for d2 in LADDER_D2_2:
+            if d2 <= d1:
+                continue
+            for dist in LADDER_DIST_2:
+                add((d1, d2), dist)
+    for d1 in LADDER_D1_3:
+        for d2 in LADDER_D2_3:
+            if d2 <= d1:
+                continue
+            for d3 in LADDER_D3_3:
+                if d3 <= d2:
+                    continue
+                for dist in LADDER_DIST_3:
+                    add((d1, d2, d3), dist)
+    return out
 
 
 def ladder_outcome(st: SimTrade, legs: tuple, b_pts: float | None,
@@ -300,6 +347,24 @@ def ladder_outcome(st: SimTrade, legs: tuple, b_pts: float | None,
     return usd, filled_w, ambiguous
 
 
+def config_outcomes(sts: list[SimTrade], legs: tuple,
+                    b_pts: float | None, tp_by_side: dict | None,
+                    ppt: float, hc: HaircutCfg,
+                    solo_lado: str | None = None,
+                    ) -> list[tuple[SimTrade, float, bool, bool]]:
+    """Serie CRONOLÓGICA completa de una config: [(trade, usd, participó,
+    ambiguo)] con 0.0 en lo no-participado — la única fuente para
+    eval_config, el walk-forward y el estrés de piernas."""
+    out: list[tuple[SimTrade, float, bool, bool]] = []
+    for st in sts:
+        if solo_lado and st.side != solo_lado:
+            out.append((st, 0.0, False, False))
+            continue
+        usd, fw, amb = ladder_outcome(st, legs, b_pts, tp_by_side, ppt, hc)
+        out.append((st, usd if fw > 0 else 0.0, fw > 0, amb))
+    return out
+
+
 def eval_config(sts: list[SimTrade], nombre: str, legs: tuple,
                 backstop_usd: float | None, ppt: float,
                 tp_by_side: dict | None = None,
@@ -311,33 +376,27 @@ def eval_config(sts: list[SimTrade], nombre: str, legs: tuple,
     WR reportado = sobre trades PARTICIPADOS (documentado)."""
     hc = hc or HaircutCfg()
     b_pts = backstop_usd / ppt if backstop_usd else None
-    outcomes: list[tuple[SimTrade, float, bool]] = []
-    ambiguos = 0
-    for st in sts:
-        if solo_lado and st.side != solo_lado:
-            outcomes.append((st, 0.0, False))
-            continue
-        usd, fw, amb = ladder_outcome(st, legs, b_pts, tp_by_side, ppt, hc)
-        participo = fw > 0
-        ambiguos += amb
-        outcomes.append((st, usd if participo else 0.0, participo))
+    outcomes = config_outcomes(sts, legs, b_pts, tp_by_side, ppt, hc,
+                               solo_lado)
+    ambiguos = sum(1 for *_, amb in outcomes if amb)
 
     def blk(sel):
-        return metrics_usd([u for _, u, _ in sel])
+        return metrics_usd([u for _, u, _, _ in sel])
 
     total = blk(outcomes)
-    participados = [(st, u) for st, u, p in outcomes if p]
+    participados = [(st, u) for st, u, p, _ in outcomes if p]
     n_part = len(participados)
     if n_part:
         total["wr_pct"] = round(
             100 * sum(1 for _, u in participados if u > 0) / n_part, 1)
     inb = blk([o for o in outcomes if o[0].in_sample])
     outb = blk([o for o in outcomes if not o[0].in_sample])
-    n_part_out = sum(1 for st, _, p in outcomes
+    n_part_out = sum(1 for st, _, p, _ in outcomes
                      if p and not st.in_sample)
     return {
         "nombre": nombre,
         "legs": [{"depth_atr": d, "peso": round(w, 4)} for d, w in legs],
+        "n_piernas": sum(1 for d, w in legs if w > 0),
         "backstop_usd": backstop_usd,
         "tp_por_lado_atr": tp_by_side,
         "solo_lado": solo_lado,
@@ -366,14 +425,10 @@ def build_configs(sts: list[SimTrade], ppt: float, backstop_usd: float,
 
     add("señal + backstop (sin escalera)", SENAL)
     add("balanceada + backstop", BALANCEADA, tags=("referencia",))
-    add("Config A (60%@6.5× + 40%@7.0×) + backstop", CONFIG_A,
+    add("Config A (6+4 MES @ 6.5/7.0×) + backstop", CONFIG_A,
         tags=("referencia", "profunda"))
-    for d1 in ALTA_PART_D1:
-        for d2 in ALTA_PART_D2:
-            if d2 <= d1:
-                continue
-            add(f"60%@{d1}× + 40%@{d2}× + backstop",
-                ((d1, 0.6), (d2, 0.4)), tags=("alta_participacion",))
+    for nombre, legs, tags in ladder_grid():
+        add(nombre, legs, tags=tags)
     if tp_nominal:
         add("balanceada + backstop + TP nominal (px arriba)", BALANCEADA,
             tp=tp_nominal, tags=("recomendable", "tp_nominal"))
@@ -579,6 +634,230 @@ def gate_config(cfg: dict, base: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# MR-3 — Robustez walk-forward + estrés de la pierna profunda
+# ---------------------------------------------------------------------------
+
+# SPEC §9.4: mitades del walk-forward con menos de ~40 trades → frágil.
+FRAGIL_HALF_N = 40
+
+
+def _wf_blocks(sts: list[SimTrade]) -> dict[str, list[int]]:
+    """Bloques del walk-forward: in/out (split 70/30 del Lab) + mitades
+    temporales H1/H2 (estabilidad 'ambas mitades' de la referencia §4)."""
+    half = len(sts) // 2
+    return {
+        "in": [i for i, st in enumerate(sts) if st.in_sample],
+        "out": [i for i, st in enumerate(sts) if not st.in_sample],
+        "h1": list(range(half)),
+        "h2": list(range(half, len(sts))),
+    }
+
+
+def walk_forward_config(sts: list[SimTrade], cfg_outcomes: list,
+                        base_outcomes: list) -> dict:
+    """Robustez por bloque (ΔPF vs la base del MISMO bloque). El número que
+    manda es OOS; H1/H2 responden '¿aguanta ambas mitades?'. Nunca se
+    concluye por in-sample."""
+    blocks = _wf_blocks(sts)
+    out: dict = {"bloques": {}}
+    for name, idxs in blocks.items():
+        m = metrics_usd([cfg_outcomes[i][1] for i in idxs])
+        mb = metrics_usd([base_outcomes[i][1] for i in idxs])
+        n_part = sum(1 for i in idxs if cfg_outcomes[i][2])
+        d_pf = (round(m["pf"] - mb["pf"], 2)
+                if m.get("pf") is not None and mb.get("pf") is not None
+                else None)
+        flags = []
+        if n_part < LOW_N_OUT:
+            flags.append("n_bajo")
+        # SPEC §9.4: MITADES del walk-forward con < ~40 trades → frágil
+        # (el bloque OOS es 30% por diseño; su tamaño ya está en `n`).
+        if name in ("h1", "h2") and len(idxs) < FRAGIL_HALF_N:
+            flags.append("robustez_fragil")
+        out["bloques"][name] = {
+            "n": len(idxs), "n_participados": n_part,
+            "pf": m.get("pf"), "pf_base": mb.get("pf"), "delta_pf": d_pf,
+            "net_usd": m.get("net_usd"), "max_dd_usd": m.get("max_dd_usd"),
+            "flags": flags,
+        }
+    # Veredicto (semántica de la referencia §4): supera la base FUERA DE
+    # MUESTRA y es RENTABLE en ambas mitades (estable, no colapsa). NO se
+    # exige ΔPF>0 por mitad: un backstop cede PF en la mitad afortunada por
+    # construcción (el seguro se paga cuando no hace falta) — ese Δ queda a
+    # la vista en los bloques, pero la decisión es OOS.
+    dp_out = out["bloques"]["out"]["delta_pf"]
+    pf_h1 = out["bloques"]["h1"]["pf"]
+    pf_h2 = out["bloques"]["h2"]["pf"]
+    flags_all = sorted({f for b in out["bloques"].values()
+                        for f in b["flags"]})
+    if dp_out is None or pf_h1 is None or pf_h2 is None:
+        out["veredicto"] = "sin datos comparables"
+    elif dp_out > 0 and pf_h1 >= 1.0 and pf_h2 >= 1.0:
+        out["veredicto"] = ("validado" if not flags_all
+                            else "validado (con banderas)")
+    elif dp_out > 0:
+        out["veredicto"] = "mixto — pierde en una mitad"
+    else:
+        out["veredicto"] = "no generaliza OOS"
+    out["flags"] = flags_all
+    return out
+
+
+def deep_leg_stress(sts: list[SimTrade], legs: tuple,
+                    backstop_usd: float | None, ppt: float,
+                    hc: HaircutCfg | None = None,
+                    tp_by_side: dict | None = None) -> dict:
+    """Estrés de la pierna MÁS PROFUNDA de una config: ¿cuántos trades la
+    llenan (por bloque)?, ¿su contribución son pocos aciertos afortunados?,
+    ¿el PF aguanta SIN ella (contrafactual: nunca llena)?"""
+    hc = hc or HaircutCfg()
+    b_pts = backstop_usd / ppt if backstop_usd else None
+    d_max, w_max = max(legs, key=lambda lw: lw[0])
+    blocks = _wf_blocks(sts)
+
+    fills_idx = [i for i, st in enumerate(sts) if st.mae_atr >= d_max]
+    contrib: list[float] = []
+    for i in fills_idx:
+        st = sts[i]
+        stopped = b_pts is not None and st.mae_pts >= b_pts
+        tp_atr = (tp_by_side or {}).get(st.side)
+        tp_hit = (not stopped and tp_atr is not None
+                  and st.mfe_atr >= tp_atr)
+        if stopped:
+            pnl_pts = -(b_pts + hc.gap_pts - d_max * st.atr_pts)
+        elif tp_hit:
+            pnl_pts = (tp_atr + d_max) * st.atr_pts
+        else:
+            pnl_pts = st.native_pnl_pts(ppt) + d_max * st.atr_pts
+        contrib.append(w_max * (pnl_pts - hc.slip_pts) * ppt)
+
+    con = config_outcomes(sts, legs, b_pts, tp_by_side, ppt, hc)
+    sin = config_outcomes(sts, tuple((d, w) for d, w in legs if d < d_max),
+                          b_pts, tp_by_side, ppt, hc)
+    pf_con_sin: dict = {}
+    for name, idxs in blocks.items():
+        m_con = metrics_usd([con[i][1] for i in idxs])
+        m_sin = metrics_usd([sin[i][1] for i in idxs])
+        pf_con_sin[name] = {"pf_con": m_con.get("pf"),
+                            "pf_sin": m_sin.get("pf"),
+                            "net_con": m_con.get("net_usd"),
+                            "net_sin": m_sin.get("net_usd")}
+
+    fills_set = set(fills_idx)
+    wins = sum(1 for v in contrib if v > 0)
+    return {
+        "depth_atr": d_max,
+        "micros": round(w_max * TOTAL_MICROS),
+        "n_fills": len(fills_idx),
+        "fills_por_bloque": {name: sum(1 for i in idxs if i in fills_set)
+                             for name, idxs in blocks.items()},
+        "contribucion": {
+            "total_usd": round(sum(contrib), 2),
+            "ganadores": wins,
+            "perdedores": len(contrib) - wins,
+            "mediana_usd": (round(median(contrib), 2) if contrib else None),
+            "peor_usd": round(min(contrib), 2) if contrib else None,
+            "mejor_usd": round(max(contrib), 2) if contrib else None,
+        },
+        "pf_por_bloque_con_vs_sin": pf_con_sin,
+        "flags": (["n_bajo_fills"]
+                  if len(fills_idx) < LOW_N_OUT else []),
+    }
+
+
+def robustez_study(sts: list[SimTrade], configs: list[dict], ppt: float,
+                   hc: HaircutCfg | None = None) -> dict:
+    """Walk-forward sobre las configs candidatas + head-to-head de los DOS
+    líderes del barrido (por net y por score) + estrés de la pierna profunda
+    del líder por score. Elegido = máximo score entre los VALIDADOS por el
+    walk-forward (nunca por in-sample)."""
+    hc = hc or HaircutCfg()
+    base_out = config_outcomes(sts, SENAL, None, None, ppt, hc)
+
+    def outcomes_de(cfg: dict) -> list:
+        legs = tuple((l["depth_atr"], l["peso"]) for l in cfg["legs"])
+        b_pts = (cfg["backstop_usd"] / ppt if cfg["backstop_usd"] else None)
+        return config_outcomes(sts, legs, b_pts, cfg["tp_por_lado_atr"],
+                               ppt, hc, cfg["solo_lado"])
+
+    utiles = [c for c in configs if "informativo" not in c["etiquetas"]
+              and not c["solo_lado"]]
+    barrido = [c for c in utiles if "barrido" in c["etiquetas"]]
+    lider_net = (max(barrido, key=lambda c: c["total"]["net_usd"])
+                 if barrido else None)
+    lider_score = (max(barrido, key=lambda c: c["gate"]["score"] or -9e18)
+                   if barrido else None)
+
+    candidatos: list[dict] = []
+    vistos: set[str] = set()
+
+    def push(c: dict | None) -> None:
+        if c is not None and c["nombre"] not in vistos:
+            vistos.add(c["nombre"])
+            candidatos.append(c)
+
+    push(lider_score)
+    push(lider_net)
+    for c in sorted(utiles, key=lambda c: -(c["gate"]["score"] or -9e18))[:6]:
+        push(c)
+    for c in sorted(utiles, key=lambda c: -c["total"]["net_usd"])[:3]:
+        push(c)
+    for c in utiles:
+        if "referencia" in c["etiquetas"] or c["nombre"].startswith("señal"):
+            push(c)
+
+    wf_por_nombre: dict[str, dict] = {}
+    tabla = []
+    for c in candidatos:
+        wf = walk_forward_config(sts, outcomes_de(c), base_out)
+        wf_por_nombre[c["nombre"]] = wf
+        tabla.append({"nombre": c["nombre"],
+                      "participacion_pct": c["participacion_pct"],
+                      "score": c["gate"]["score"], **wf})
+
+    head_to_head = None
+    if (lider_net and lider_score
+            and lider_net["nombre"] != lider_score["nombre"]):
+        head_to_head = {
+            "lider_net": {"nombre": lider_net["nombre"],
+                          **wf_por_nombre[lider_net["nombre"]]},
+            "lider_score": {"nombre": lider_score["nombre"],
+                            **wf_por_nombre[lider_score["nombre"]]},
+        }
+
+    estres = None
+    if lider_score:
+        legs = tuple((l["depth_atr"], l["peso"]) for l in lider_score["legs"])
+        if max(d for d, _ in legs) >= 4.0:
+            estres = deep_leg_stress(sts, legs, lider_score["backstop_usd"],
+                                     ppt, hc, lider_score["tp_por_lado_atr"])
+            estres["config"] = lider_score["nombre"]
+
+    validados = [t for t in tabla if t["veredicto"].startswith("validado")]
+    por_nombre = {c["nombre"]: c for c in candidatos}
+    elegido = None
+    if validados:
+        mejor = max(validados,
+                    key=lambda t: por_nombre[t["nombre"]]["gate"]["score"]
+                    or -9e18)
+        elegido = {"nombre": mejor["nombre"],
+                   "config": por_nombre[mejor["nombre"]],
+                   "walk_forward": wf_por_nombre[mejor["nombre"]]}
+    return {
+        "tabla": tabla,
+        "head_to_head": head_to_head,
+        "estres_pierna_profunda": estres,
+        "elegido": elegido,
+        "nota": ("veredicto = supera la base FUERA DE MUESTRA (ΔPF out > 0) "
+                 "y rentable en AMBAS mitades (PF ≥ 1, estable); el ΔPF por "
+                 "mitad queda a la vista — el backstop cede PF en la mitad "
+                 "afortunada por construcción (el precio del seguro). "
+                 "Elegido = máximo score (net/maxDD) entre validados — "
+                 "nunca por in-sample"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Orquestador MR-2
 # ---------------------------------------------------------------------------
 
@@ -610,6 +889,43 @@ def run_studies(sts: list[SimTrade], ppt: float,
         cfg["gate"] = gate_config(cfg, base_cfg)
     configs.sort(key=lambda c: c["total"].get("net_usd") or -9e18,
                  reverse=True)
+
+    # ── MR-3: robustez walk-forward + recomendación (número OOS manda) ──
+    ls = ls_asymmetry(sts)
+    robustez = robustez_study(sts, configs, ppt, hc) if configs else None
+    recomendacion = None
+    if robustez and robustez["elegido"]:
+        el = robustez["elegido"]
+        cfg = el["config"]
+        wf_out = el["walk_forward"]["bloques"]["out"]
+        recomendacion = {
+            "config": cfg["nombre"],
+            "escalera": {
+                "anclaje": "precio_senal",
+                "n_piernas": cfg["n_piernas"],
+                "piernas": [{"depth_atr": l["depth_atr"],
+                             "micros": round(l["peso"] * TOTAL_MICROS)}
+                            for l in cfg["legs"]],
+                "total_micros": TOTAL_MICROS,
+            },
+            "backstop": ({"usd_por_mini": b_opt,
+                          "pts": round(b_opt / ppt, 2),
+                          "usd_por_micro": round(b_opt / TOTAL_MICROS, 2),
+                          "tipo": "stop_precio_fijo_desde_senal"}
+                         if b_opt else None),
+            "tp_nominal_atr": tp_nominal,
+            "confianza_oos": {
+                "pf_out": wf_out["pf"],
+                "delta_pf_out": wf_out["delta_pf"],
+                "veredicto": el["walk_forward"]["veredicto"],
+                "flags": el["walk_forward"]["flags"],
+                "nota": "número OOS — el in-sample NUNCA decide",
+            },
+            "metricas": {"total": cfg["total"], "out": cfg["out"],
+                         "participacion_pct": cfg["participacion_pct"]},
+            "gestion_por_lado": ls.get("lectura"),
+        }
+
     return {
         "universo": {"n": len(sts),
                      "n_atr_estimado": sum(1 for st in sts
@@ -620,8 +936,10 @@ def run_studies(sts: list[SimTrade], ppt: float,
         "mae_floor": mae_floor,
         "backstop": backstop,
         "tp": tp,
-        "ls": ls_asymmetry(sts),
+        "ls": ls,
         "configs": configs,
+        "robustez": robustez,
+        "recomendacion": recomendacion,
         "reconciliacion_fills": (reconcile_fills(sts, lab_fill_rates)
                                  if lab_fill_rates else None),
         "descartados_por_diseno": [
