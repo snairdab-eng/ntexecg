@@ -115,6 +115,29 @@ Esta fase **cambia stops y estructura de entrada en producción** → listón de
 adversariales, backup, paper/demo primero. **Ya NO requiere equity** (la corrección del operador lo
 eliminó) — nada la bloquea salvo validar antes los parámetros con el estudio.
 
+**Estructura VALIDADA por el estudio (aceptación cerrada 2026-07-04, ES · 2 muestras).** El motor
+reprodujo la referencia al centavo (base $28,175 / PF 1.62 / DD $11,750 / peor −$10,162; motor-largos
+exacto 2.60/1.12; backstop ~90 pts; TP-meta L5.5/S1.0 en banda). Al re-correr sobre la 2ª muestra el
+**ganador exacto se movió** (híbrido `3+7@1/7×` ↔ balanceada; casi-empate PF OOS 3.8–3.9) → el **split
+exacto está dentro del ruido**, y **los exports se DESLIZAN, no se acumulan** (el 07-04 dropeó 12
+trades del 06-27). Por tanto MR-5 porta la **ESTRUCTURA ROBUSTA** (estable en ambas muestras), NO el
+ganador de una muestra:
+- **PORTAR (estable en las 2 muestras):** backstop **90 pts de precio fijo** (≈$450/micro; −37% DD,
+  peor ~−$3.2–3.6k, beneficio de riesgo constante aunque el net varíe); **escalera participativa +
+  backstop** (PF OOS ~3.8–3.9, participación ~80–86%); **motor de largos** (cortos con tamaño/TP
+  reducido); **TP nominal alto en largos** (que cierre LuxAlgo).
+- **AFINABLE en la pestaña de config, NO hardcodear:** el split exacto de la escalera (híbrido vs
+  balanceada = empate); y el **TP nominal de cortos** (inestable: p99 corto saltó 14.5×→8.0× entre
+  muestras; la referencia ya avisó que el TP-corto no generaliza).
+- **Principio:** portar la estructura, no el decimal de una muestra; los valores afinables viven en la
+  config de la estrategia, no en código. Re-confirmar conforme entren más muestras/datos demo.
+
+**Pendiente antes de MR-5 (robustez del motor, no bloqueante):** `integrar` debe rechazar/avisar el
+doble-prefijo de activo (`ES_ES_…`); `calcular` debe imprimir arriba la identidad del master (fecha /
+nº trades / sha) y avisar si el folder no corresponde a una integración reciente; y reconciliar en el
+reporte el `elegido` vs el `head-to-head`. (Un motor de riesgo no debe correr en silencio sobre datos
+que no son — pasó una vez, se blinda.)
+
 ## Fases sugeridas
 - **MR-1 · Ingesta + persistencia** reusando el parser/ATR/stitch del Lab: `integrar`/`estado`,
   estructura `MotorRiesgo/<ACTIVO>_<codigo>/`, snapshots, manifest reforzado. Cuadrar el PnL de la
