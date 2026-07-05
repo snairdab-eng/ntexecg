@@ -206,6 +206,45 @@ def render_md(res: dict) -> str:
              + " · ".join(res["descartados_por_diseno"]) + ".")
     L.append("")
 
+    corte = res.get("corte_fills")
+    if corte:
+        L.append(f"**e) Corte de tiempo de llenado (cancel_after "
+                 f"{corte['cancel_after_s']:.0f}s — máx duro de TradersPost "
+                 f"3600s):** en producción la orden límite se CANCELA a los "
+                 f"cancel_after segundos; una pierna cuenta como llena solo "
+                 f"si el pullback la tocó a tiempo (t_pb_touch del Lab). "
+                 f"**Los fills con corte son más bajos que el «alguna vez "
+                 f"llena» — a propósito: son los reales.**")
+        L.append("")
+        L.append("| nivel ×ATR | fill% sin corte | **fill% con corte** | "
+                 "retención | t med | t p90 | cancel_after sugerido |")
+        L.append("|---:|---:|---:|---:|---:|---:|---:|")
+        for r in corte["niveles"]:
+            L.append(f"| {r['nivel_atr']}× | "
+                     f"{_f(r['fill_sin_corte_pct'], 1)}% | "
+                     f"**{_f(r['fill_con_corte_pct'], 1)}%** | "
+                     f"{_f(r['retencion'])} | "
+                     f"{_f(r['t_med_min'], 0)}m | {_f(r['t_p90_min'], 0)}m | "
+                     f"{r['cancel_after_sugerido_s'] or '—'}s |")
+        L.append("")
+        L.append(f"→ **Tope natural de profundidad: "
+                 f"{corte['tope_natural_atr']}×ATR** (el nivel más hondo "
+                 f"con fill ≥10% y retención ≥50% dentro del corte). "
+                 f"{corte['n_sin_datos_tiempo']} trade(s) sin datos de "
+                 f"tiempo usan el MAE (optimista, marcado).")
+        comp = res.get("comparativa_sin_corte")
+        if comp and comp["top_net"]:
+            L.append("")
+            L.append("*Comparativa SIN corte (el modelo original, solo "
+                     "estudio — la recomendación sale del barrido CON "
+                     "corte):* " + " · ".join(
+                         f"{t['nombre']} (net {_usd(t['net_usd'])}, "
+                         f"score {_f(t['score'])})"
+                         for t in comp["top_net"][:3])
+                     + f" · líder score sin corte: "
+                       f"{comp['lider_score_sin_corte']}.")
+        L.append("")
+
     # 4 — configs (mapa de calor en tabla)
     L.append("---")
     L.append("")
@@ -380,6 +419,15 @@ def render_md(res: dict) -> str:
                  f"{conf['veredicto']}{_flags_md(conf['flags'])}. "
                  f"*{conf['nota']}.*")
         L.append(f"- **Gestión por lado:** {reco['gestion_por_lado']}.")
+        if reco.get("cancel_after_seconds") is not None:
+            L.append(f"- **cancel_after coherente con el ladder: "
+                     f"{reco['cancel_after_seconds']}s** (p90 del toque de "
+                     f"la pierna más profunda incluida, estimador NX-17, "
+                     f"tope 3600) → `entry_reserve_timeout_seconds`.")
+        if reco.get("corte"):
+            L.append(f"- *{reco['corte']['nota']} — corte del estudio: "
+                     f"{reco['corte']['cancel_after_s_estudio']:.0f}s; tope "
+                     f"natural {reco['corte']['tope_natural_atr']}×ATR.*")
         L.append(f"- Sizing: **tamaño fijo** (10 micros = 1 mini) — sin "
                  f"equity. El operador aplica/afina en la pestaña de config "
                  f"de la estrategia; `recomendacion_*.json` es el puente.")
@@ -600,6 +648,11 @@ def write_recomendacion(res: dict, path: Path) -> None:
             "confianza_oos": reco["confianza_oos"],
             "metricas": reco["metricas"],
             "gestion_por_lado": reco["gestion_por_lado"],
+            # corte de fills (cancel_after): el ladder recomendado y su
+            # entry_reserve_timeout_seconds coherente salen del barrido CON
+            # corte — los fills reales de producción.
+            "cancel_after_seconds": reco.get("cancel_after_seconds"),
+            "corte": reco.get("corte"),
         })
     else:
         doc["sin_recomendacion"] = True

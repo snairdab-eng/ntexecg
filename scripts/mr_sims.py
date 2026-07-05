@@ -43,10 +43,11 @@ import math
 from dataclasses import dataclass
 from statistics import median
 
-# Núcleo compartido (Directiva 1): agregación unit-agnóstica del Lab y el
-# MISMO estimador de percentiles que el estudio de pullback vivo.
+# Núcleo compartido (Directiva 1): agregación unit-agnóstica del Lab y los
+# MISMOS estimadores que el estudio de pullback vivo (pctl y el cancel_after
+# de NX-17: min(3600, p90·60+60) — no se inventa un segundo p90).
 from app.services.lab_metrics import LOW_N_OUT, aggregate
-from scripts.pullback_timing import pctl
+from scripts.pullback_timing import pctl, suggest_cancel_after
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,10 @@ class SimTrade:
     mfe_pts: float           # excursión favorable máx (pts, ≥0)
     native_pnl_usd: float    # desenlace nativo de LuxAlgo ($ del contrato)
     atr_estimado: bool = False
+    # Minutos al primer toque por nivel ("1.0" → min, el t_pb_touch del Lab,
+    # ventana 180 min). None = sin datos de tiempo (cola con ATR estimado o
+    # estudio sin pullback) → los fills con corte caen al MAE (aprox).
+    pb_touch_min: dict | None = None
 
     @property
     def mae_atr(self) -> float:
@@ -128,6 +133,9 @@ def from_trades(trades, ppt: float, estimated_ids: set[int] | None = None,
             mfe_pts=t.mfe_pct / 100.0 * t.entry_price,
             native_pnl_usd=t.pnl_usd,
             atr_estimado=t.number in est,
+            # dict vacío = pullback_study no corrió / trade sin barras →
+            # None (fallback MAE con el corte, marcado aprox)
+            pb_touch_min=dict(t.t_pb_touch) if t.t_pb_touch else None,
         ))
     return out
 
@@ -320,19 +328,52 @@ def ladder_grid() -> list[tuple[str, tuple, tuple]]:
     return out
 
 
+# Máximo duro de TradersPost para cancelAfter (verificado en su doc:
+# "cancelAfter must be between 1 and 3600 seconds") — el corte del estudio
+# nunca puede prometer más que esto.
+CANCEL_AFTER_MAX_S = 3600.0
+
+
+def leg_filled(st: SimTrade, depth: float,
+               cancel_after_s: float | None = None) -> tuple[bool, bool]:
+    """(llena, aprox) de una pierna límite a `depth`×ATR.
+
+    Sin corte (None): MAE de todo el trade (límite trabajando hasta la
+    salida — el modelo original del estudio). Con corte: el toque cacheado
+    del Lab (t_pb_touch, MINUTOS) debe llegar dentro de cancel_after
+    (SEGUNDOS) — en producción TradersPost cancela la orden a los
+    cancel_after s (máx duro 3600). Trade sin datos de tiempo (cola con ATR
+    estimado) → fallback al MAE, marcado aprox (optimista, contado aparte)."""
+    if depth <= 0:
+        return True, False
+    if st.mae_atr < depth:
+        return False, False                # nunca tocó (ni sin corte)
+    if cancel_after_s is None:
+        return True, False
+    if st.pb_touch_min is None:
+        return True, True                  # sin tiempos → MAE (aprox)
+    t_min = st.pb_touch_min.get(str(float(depth)))
+    if t_min is None:
+        return False, False                # tocó, pero fuera de la ventana
+    return t_min * 60.0 <= cancel_after_s, False
+
+
 def ladder_outcome(st: SimTrade, legs: tuple, b_pts: float | None,
                    tp_atr_by_side: dict | None, ppt: float,
-                   hc: HaircutCfg) -> tuple[float, float, bool]:
+                   hc: HaircutCfg,
+                   cancel_after_s: float | None = None,
+                   ) -> tuple[float, float, bool]:
     """(pnl_usd, peso_llenado, ambigüedad pierna↔TP) de un trade.
-    Fills por MAE (todo el trade); stop manda sobre TP (conservador)."""
+    Fills por MAE (todo el trade) o con corte de cancel_after (leg_filled);
+    stop manda sobre TP (conservador)."""
     tp_atr = (tp_atr_by_side or {}).get(st.side)
     stopped = b_pts is not None and st.mae_pts >= b_pts
     tp_hit = (not stopped and tp_atr is not None and st.mfe_atr >= tp_atr)
     acc = filled_w = 0.0
     ambiguous = False
     for d, w in legs:
-        if d > 0 and st.mae_atr < d:
-            continue                       # la pierna nunca llenó
+        if not leg_filled(st, d, cancel_after_s)[0]:
+            continue                       # la pierna no llenó (a tiempo)
         filled_w += w
         if stopped:
             pnl_pts = -(b_pts + hc.gap_pts - d * st.atr_pts)
@@ -351,6 +392,7 @@ def config_outcomes(sts: list[SimTrade], legs: tuple,
                     b_pts: float | None, tp_by_side: dict | None,
                     ppt: float, hc: HaircutCfg,
                     solo_lado: str | None = None,
+                    cancel_after_s: float | None = None,
                     ) -> list[tuple[SimTrade, float, bool, bool]]:
     """Serie CRONOLÓGICA completa de una config: [(trade, usd, participó,
     ambiguo)] con 0.0 en lo no-participado — la única fuente para
@@ -360,7 +402,8 @@ def config_outcomes(sts: list[SimTrade], legs: tuple,
         if solo_lado and st.side != solo_lado:
             out.append((st, 0.0, False, False))
             continue
-        usd, fw, amb = ladder_outcome(st, legs, b_pts, tp_by_side, ppt, hc)
+        usd, fw, amb = ladder_outcome(st, legs, b_pts, tp_by_side, ppt, hc,
+                                      cancel_after_s)
         out.append((st, usd if fw > 0 else 0.0, fw > 0, amb))
     return out
 
@@ -370,14 +413,15 @@ def eval_config(sts: list[SimTrade], nombre: str, legs: tuple,
                 tp_by_side: dict | None = None,
                 hc: HaircutCfg | None = None,
                 solo_lado: str | None = None,
-                etiquetas: tuple = ()) -> dict:
+                etiquetas: tuple = (),
+                cancel_after_s: float | None = None) -> dict:
     """Evalúa una config sobre TODO el universo (no-participado = 0.0 para
     que net/DD sean comparables 1:1 contra la base en el mismo periodo).
     WR reportado = sobre trades PARTICIPADOS (documentado)."""
     hc = hc or HaircutCfg()
     b_pts = backstop_usd / ppt if backstop_usd else None
     outcomes = config_outcomes(sts, legs, b_pts, tp_by_side, ppt, hc,
-                               solo_lado)
+                               solo_lado, cancel_after_s)
     ambiguos = sum(1 for *_, amb in outcomes if amb)
 
     def blk(sel):
@@ -412,7 +456,8 @@ def eval_config(sts: list[SimTrade], nombre: str, legs: tuple,
 
 def build_configs(sts: list[SimTrade], ppt: float, backstop_usd: float,
                   tp_nominal: dict | None, tp_meta: dict | None,
-                  hc: HaircutCfg | None = None) -> list[dict]:
+                  hc: HaircutCfg | None = None,
+                  cancel_after_s: float | None = None) -> list[dict]:
     """La parrilla de configs del estudio. Alta participación de primera
     clase (la 60/40 la DECIDE el estudio — Directiva 3.1); TP-meta marcado
     informativo (la recomendación honra 'que cierre LuxAlgo')."""
@@ -421,7 +466,7 @@ def build_configs(sts: list[SimTrade], ppt: float, backstop_usd: float,
 
     def add(nombre, legs, b=backstop_usd, tp=None, lado=None, tags=()):
         cfgs.append(eval_config(sts, nombre, legs, b, ppt, tp, hc,
-                                lado, tags))
+                                lado, tags, cancel_after_s))
 
     add("señal + backstop (sin escalera)", SENAL)
     add("balanceada + backstop", BALANCEADA, tags=("referencia",))
@@ -444,6 +489,67 @@ def build_configs(sts: list[SimTrade], ppt: float, backstop_usd: float,
     return cfgs
 
 
+def all_ladder_depths() -> tuple:
+    """TODAS las profundidades ×ATR que usa el barrido (grid + balanceada +
+    Config A) — los niveles que el pullback del Lab debe rastrear para que
+    el corte de cancel_after tenga el toque cacheado de cada pierna."""
+    ds = {d for _, legs, _ in ladder_grid() for d, _ in legs if d > 0}
+    ds |= {d for d, _ in BALANCEADA} | {d for d, _ in CONFIG_A}
+    return tuple(sorted(ds))
+
+
+def fills_cutoff_study(sts: list[SimTrade],
+                       cancel_after_s: float) -> dict:
+    """Fill%% por profundidad: "alguna vez llena" (MAE, el modelo original)
+    vs DENTRO de cancel_after (t_pb_touch ≤ corte) — dónde mueren los fills
+    en producción. HONESTIDAD: los números con corte son MÁS BAJOS por
+    construcción; esos son los reales (TradersPost cancela la entrada a los
+    cancel_after s, máximo duro 3600)."""
+    niveles = []
+    n = len(sts)
+    n_aprox = sum(1 for st in sts if st.pb_touch_min is None)
+    for lvl in all_ladder_depths():
+        ever = sum(1 for st in sts if st.mae_atr >= lvl)
+        corte = sum(1 for st in sts if leg_filled(st, lvl, cancel_after_s)[0])
+        touches = [st.pb_touch_min[str(float(lvl))] for st in sts
+                   if st.pb_touch_min is not None
+                   and str(float(lvl)) in st.pb_touch_min]
+        niveles.append({
+            "nivel_atr": lvl,
+            "fill_sin_corte_pct": round(100 * ever / n, 1) if n else None,
+            "fill_con_corte_pct": round(100 * corte / n, 1) if n else None,
+            "n_sin_corte": ever,
+            "n_con_corte": corte,
+            "retencion": round(corte / ever, 2) if ever else None,
+            "t_med_min": (round(pctl(touches, 0.5), 0)
+                          if touches else None),
+            "t_p90_min": (round(pctl(touches, 0.9), 0)
+                          if touches else None),
+            "cancel_after_sugerido_s": suggest_cancel_after(touches),
+        })
+    # Tope natural: el nivel más hondo que aún llena de forma significativa
+    # dentro del corte (fill ≥ 10% del universo Y retiene ≥ la mitad de sus
+    # fills sin corte).
+    tope = None
+    for row in niveles:
+        if (row["fill_con_corte_pct"] is not None
+                and row["fill_con_corte_pct"] >= 10.0
+                and (row["retencion"] or 0) >= 0.5):
+            tope = row["nivel_atr"]
+    return {
+        "cancel_after_s": cancel_after_s,
+        "niveles": niveles,
+        "tope_natural_atr": tope,
+        "n_sin_datos_tiempo": n_aprox,
+        "nota": ("fills con corte = los REALES de producción (TradersPost "
+                 "cancela la entrada a los cancel_after s; máx duro 3600). "
+                 "Más bajos que el 'alguna vez llena' por construcción — "
+                 "ese es el punto, no maquillaje. Trades sin datos de "
+                 "tiempo (cola con ATR estimado) usan el MAE (optimista, "
+                 "contados en n_sin_datos_tiempo)."),
+    }
+
+
 # ---------------------------------------------------------------------------
 # 4. TP nominal por ENCIMA del cierre de LuxAlgo (+ TP-meta informativo)
 # ---------------------------------------------------------------------------
@@ -459,7 +565,8 @@ def _ceil_half(x: float) -> float:
 def tp_nominal_study(sts: list[SimTrade], ppt: float,
                      hc: HaircutCfg | None = None,
                      meta_legs: tuple = SENAL,
-                     meta_b_usd: float | None = None) -> dict:
+                     meta_b_usd: float | None = None,
+                     cancel_after_s: float | None = None) -> dict:
     """Mide DÓNDE CIERRA LuxAlgo sus ganadoras (excursión al cierre, ×ATR,
     por lado) y fija el TP NOMINAL por encima del p99 — para que casi nunca
     dispare antes que LuxAlgo (solo satisface TradersPost). El TP-meta
@@ -507,7 +614,8 @@ def tp_nominal_study(sts: list[SimTrade], ppt: float,
     for L in TP_META_GRID_L:
         for S in TP_META_GRID_S:
             r = eval_config(sts, f"TP-meta L{L}/S{S}", meta_legs,
-                            meta_b_usd, ppt, {"long": L, "short": S}, hc)
+                            meta_b_usd, ppt, {"long": L, "short": S}, hc,
+                            cancel_after_s=cancel_after_s)
             grid.append({"tp_long": L, "tp_short": S,
                          "net_usd": r["total"].get("net_usd"),
                          "pf": r["total"].get("pf"),
@@ -706,7 +814,8 @@ def walk_forward_config(sts: list[SimTrade], cfg_outcomes: list,
 def deep_leg_stress(sts: list[SimTrade], legs: tuple,
                     backstop_usd: float | None, ppt: float,
                     hc: HaircutCfg | None = None,
-                    tp_by_side: dict | None = None) -> dict:
+                    tp_by_side: dict | None = None,
+                    cancel_after_s: float | None = None) -> dict:
     """Estrés de la pierna MÁS PROFUNDA de una config: ¿cuántos trades la
     llenan (por bloque)?, ¿su contribución son pocos aciertos afortunados?,
     ¿el PF aguanta SIN ella (contrafactual: nunca llena)?"""
@@ -715,7 +824,8 @@ def deep_leg_stress(sts: list[SimTrade], legs: tuple,
     d_max, w_max = max(legs, key=lambda lw: lw[0])
     blocks = _wf_blocks(sts)
 
-    fills_idx = [i for i, st in enumerate(sts) if st.mae_atr >= d_max]
+    fills_idx = [i for i, st in enumerate(sts)
+                 if leg_filled(st, d_max, cancel_after_s)[0]]
     contrib: list[float] = []
     for i in fills_idx:
         st = sts[i]
@@ -731,9 +841,11 @@ def deep_leg_stress(sts: list[SimTrade], legs: tuple,
             pnl_pts = st.native_pnl_pts(ppt) + d_max * st.atr_pts
         contrib.append(w_max * (pnl_pts - hc.slip_pts) * ppt)
 
-    con = config_outcomes(sts, legs, b_pts, tp_by_side, ppt, hc)
+    con = config_outcomes(sts, legs, b_pts, tp_by_side, ppt, hc,
+                          cancel_after_s=cancel_after_s)
     sin = config_outcomes(sts, tuple((d, w) for d, w in legs if d < d_max),
-                          b_pts, tp_by_side, ppt, hc)
+                          b_pts, tp_by_side, ppt, hc,
+                          cancel_after_s=cancel_after_s)
     pf_con_sin: dict = {}
     for name, idxs in blocks.items():
         m_con = metrics_usd([con[i][1] for i in idxs])
@@ -766,11 +878,17 @@ def deep_leg_stress(sts: list[SimTrade], legs: tuple,
 
 
 def robustez_study(sts: list[SimTrade], configs: list[dict], ppt: float,
-                   hc: HaircutCfg | None = None) -> dict:
+                   hc: HaircutCfg | None = None,
+                   cancel_after_s: float | None = None,
+                   tope_natural_atr: float | None = None) -> dict:
     """Walk-forward sobre las configs candidatas + head-to-head de los DOS
     líderes del barrido (por net y por score) + estrés de la pierna profunda
     del líder por score. Elegido = máximo score entre los VALIDADOS por el
-    walk-forward (nunca por in-sample)."""
+    walk-forward (nunca por in-sample) CUYAS piernas respetan el tope
+    natural del corte de fills — una pierna más honda que el tope llena
+    <10% de las veces o pierde >50% de sus fills al cancel_after: no es una
+    pierna de producción, es lotería de régimen. Sin ninguno dentro del
+    tope, cae al mejor validado global con bandera."""
     hc = hc or HaircutCfg()
     base_out = config_outcomes(sts, SENAL, None, None, ppt, hc)
 
@@ -778,7 +896,7 @@ def robustez_study(sts: list[SimTrade], configs: list[dict], ppt: float,
         legs = tuple((l["depth_atr"], l["peso"]) for l in cfg["legs"])
         b_pts = (cfg["backstop_usd"] / ppt if cfg["backstop_usd"] else None)
         return config_outcomes(sts, legs, b_pts, cfg["tp_por_lado_atr"],
-                               ppt, hc, cfg["solo_lado"])
+                               ppt, hc, cfg["solo_lado"], cancel_after_s)
 
     utiles = [c for c in configs if "informativo" not in c["etiquetas"]
               and not c["solo_lado"]]
@@ -830,19 +948,36 @@ def robustez_study(sts: list[SimTrade], configs: list[dict], ppt: float,
         legs = tuple((l["depth_atr"], l["peso"]) for l in lider_score["legs"])
         if max(d for d, _ in legs) >= 4.0:
             estres = deep_leg_stress(sts, legs, lider_score["backstop_usd"],
-                                     ppt, hc, lider_score["tp_por_lado_atr"])
+                                     ppt, hc, lider_score["tp_por_lado_atr"],
+                                     cancel_after_s)
             estres["config"] = lider_score["nombre"]
 
     validados = [t for t in tabla if t["veredicto"].startswith("validado")]
     por_nombre = {c["nombre"]: c for c in candidatos}
+
+    def _max_depth(nombre: str) -> float:
+        return max((l["depth_atr"]
+                    for l in por_nombre[nombre]["legs"] if l["peso"] > 0),
+                   default=0.0)
+
     elegido = None
     if validados:
-        mejor = max(validados,
+        dentro_tope = ([t for t in validados
+                        if _max_depth(t["nombre"]) <= tope_natural_atr]
+                       if tope_natural_atr is not None else validados)
+        pool = dentro_tope or validados
+        mejor = max(pool,
                     key=lambda t: por_nombre[t["nombre"]]["gate"]["score"]
                     or -9e18)
         elegido = {"nombre": mejor["nombre"],
                    "config": por_nombre[mejor["nombre"]],
                    "walk_forward": wf_por_nombre[mejor["nombre"]]}
+        if tope_natural_atr is not None and not dentro_tope:
+            elegido["flag_tope"] = ("excede_tope_natural — ningún validado "
+                                    "dentro del tope; revisar")
+        elif (tope_natural_atr is not None
+              and _max_depth(mejor["nombre"]) <= tope_natural_atr):
+            elegido["tope_natural_atr"] = tope_natural_atr
     return {
         "tabla": tabla,
         "head_to_head": head_to_head,
@@ -864,11 +999,19 @@ def robustez_study(sts: list[SimTrade], configs: list[dict], ppt: float,
 def run_studies(sts: list[SimTrade], ppt: float,
                 hc: HaircutCfg | None = None,
                 lab_fill_rates: dict[float, float | None] | None = None,
+                cancel_after_s: float | None = CANCEL_AFTER_MAX_S,
                 ) -> dict:
     """Corre TODOS los estudios MR-2 y devuelve el dict completo (lo persiste
     nt_riesgo.calcular en runs/estudios_<fecha>.json; MR-3 lo convierte en
-    reporte + heatmap + recomendación)."""
+    reporte + heatmap + recomendación).
+
+    cancel_after_s (default 3600 = máximo duro de TradersPost): el barrido
+    PRINCIPAL corre con el corte de tiempo de llenado — los fills realistas
+    de producción. None = modelo original sin corte (solo para estudio)."""
     hc = hc or HaircutCfg()
+    if cancel_after_s is not None:
+        cancel_after_s = min(float(cancel_after_s), CANCEL_AFTER_MAX_S)
+    ca = cancel_after_s
     base_cfg = eval_config(sts, "LÍNEA BASE (señal, sin nada)", SENAL,
                            None, ppt, None, hc)
     mae_floor = mae_floor_study(sts, ppt, hc)
@@ -878,21 +1021,52 @@ def run_studies(sts: list[SimTrade], ppt: float,
     # TP-meta se busca sobre el stack balanceada+backstop (como la
     # referencia): el TP interactúa con las piernas, no con la señal sola.
     tp = tp_nominal_study(sts, ppt, hc, meta_legs=BALANCEADA,
-                          meta_b_usd=b_opt)
+                          meta_b_usd=b_opt, cancel_after_s=ca)
     tp_nominal = tp["tp_nominal_atr"] or None
     tp_meta = ({"long": tp["tp_meta_mejor"]["tp_long"],
                 "short": tp["tp_meta_mejor"]["tp_short"]}
                if tp["tp_meta_mejor"] else None)
-    configs = (build_configs(sts, ppt, b_opt, tp_nominal, tp_meta, hc)
+    configs = (build_configs(sts, ppt, b_opt, tp_nominal, tp_meta, hc, ca)
                if b_opt else [])
     for cfg in configs:
         cfg["gate"] = gate_config(cfg, base_cfg)
     configs.sort(key=lambda c: c["total"].get("net_usd") or -9e18,
                  reverse=True)
 
+    # Corte de fills + comparativa contra el modelo sin corte (honestidad:
+    # los números con corte son más bajos — son los de producción).
+    corte_fills = fills_cutoff_study(sts, ca) if ca is not None else None
+    comparativa_sin_corte = None
+    if ca is not None and b_opt:
+        sin = build_configs(sts, ppt, b_opt, tp_nominal, tp_meta, hc, None)
+        for cfg in sin:
+            cfg["gate"] = gate_config(cfg, base_cfg)
+        sin.sort(key=lambda c: c["total"].get("net_usd") or -9e18,
+                 reverse=True)
+        utiles_sin = [c for c in sin if "informativo" not in c["etiquetas"]
+                      and not c["solo_lado"]]
+        comparativa_sin_corte = {
+            "nota": ("el modelo original ('alguna vez llena') — SOLO para "
+                     "comparar; la recomendación sale del barrido CON corte"),
+            "top_net": [{
+                "nombre": c["nombre"],
+                "net_usd": c["total"].get("net_usd"),
+                "pf": c["total"].get("pf"),
+                "max_dd_usd": c["total"].get("max_dd_usd"),
+                "participacion_pct": c["participacion_pct"],
+                "score": c["gate"]["score"],
+            } for c in utiles_sin[:5]],
+            "lider_score_sin_corte": (max(
+                utiles_sin, key=lambda c: c["gate"]["score"] or -9e18)
+                ["nombre"] if utiles_sin else None),
+        }
+
     # ── MR-3: robustez walk-forward + recomendación (número OOS manda) ──
     ls = ls_asymmetry(sts)
-    robustez = robustez_study(sts, configs, ppt, hc) if configs else None
+    robustez = (robustez_study(
+        sts, configs, ppt, hc, ca,
+        corte_fills["tope_natural_atr"] if corte_fills else None)
+        if configs else None)
     recomendacion = None
     if robustez and robustez["elegido"]:
         el = robustez["elegido"]
@@ -925,6 +1099,27 @@ def run_studies(sts: list[SimTrade], ppt: float,
                          "participacion_pct": cfg["participacion_pct"]},
             "gestion_por_lado": ls.get("lectura"),
         }
+        # cancel_after COHERENTE con el ladder elegido: p90 del toque de la
+        # pierna más profunda incluida (MISMO estimador que el estudio vivo,
+        # NX-17: min(3600, p90·60+60)) — lo que hay que poner en
+        # entry_reserve_timeout_seconds para que las piernas del elegido
+        # alcancen a llenar dentro del máximo duro de TradersPost.
+        d_max = max((l["depth_atr"] for l in cfg["legs"]
+                     if l["peso"] > 0 and l["depth_atr"] > 0), default=None)
+        cancel_coherente = None
+        if d_max is not None:
+            touches = [st.pb_touch_min[str(float(d_max))] for st in sts
+                       if st.pb_touch_min is not None
+                       and str(float(d_max)) in st.pb_touch_min]
+            cancel_coherente = suggest_cancel_after(touches)
+        recomendacion["cancel_after_seconds"] = cancel_coherente
+        if ca is not None and corte_fills:
+            recomendacion["corte"] = {
+                "cancel_after_s_estudio": ca,
+                "tope_natural_atr": corte_fills["tope_natural_atr"],
+                "nota": ("métricas CON corte de fills = las reales de "
+                         "producción (más bajas que sin corte, a propósito)"),
+            }
 
     return {
         "universo": {"n": len(sts),
@@ -938,6 +1133,8 @@ def run_studies(sts: list[SimTrade], ppt: float,
         "tp": tp,
         "ls": ls,
         "configs": configs,
+        "corte_fills": corte_fills,
+        "comparativa_sin_corte": comparativa_sin_corte,
         "robustez": robustez,
         "recomendacion": recomendacion,
         "reconciliacion_fills": (reconcile_fills(sts, lab_fill_rates)

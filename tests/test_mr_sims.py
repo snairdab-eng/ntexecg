@@ -215,6 +215,100 @@ def test_reconcile_fills_deltas():
 
 
 # ---------------------------------------------------------------------------
+# Corte de cancel_after (fills realistas de producción) — respuesta conocida
+# ---------------------------------------------------------------------------
+
+def st_pb(number=1, mae_atr=8.0, pb=None, atr=4.0, pnl_usd=0.0,
+          in_sample=True):
+    """SimTrade con toques de pullback cacheados (pb: {nivel: minutos})."""
+    return SimTrade(
+        number=number, side="long", in_sample=in_sample, entry_price=7000.0,
+        atr_pts=atr, mae_pts=mae_atr * atr, mfe_pts=0.0,
+        native_pnl_usd=pnl_usd,
+        pb_touch_min=({str(float(k)): v for k, v in pb.items()}
+                      if pb is not None else None),
+    )
+
+
+def test_corte_leg_filled_unidades_min_vs_seg():
+    """t_pb_touch está en MINUTOS, cancel_after en SEGUNDOS — el corte
+    convierte bien: toque a 30 min pasa un corte de 3600s (1800s ≤ 3600s);
+    a 90 min NO (5400s > 3600s) pero sí con corte de 5460s."""
+    from scripts.mr_sims import leg_filled
+
+    t30 = st_pb(pb={7.0: 30.0})
+    t90 = st_pb(pb={7.0: 90.0})
+    assert leg_filled(t30, 7.0, 3600.0) == (True, False)
+    assert leg_filled(t90, 7.0, 3600.0) == (False, False)
+    assert leg_filled(t90, 7.0, 5460.0) == (True, False)
+    assert leg_filled(t90, 7.0, None) == (True, False)     # sin corte: MAE
+
+
+def test_corte_excluye_toque_fuera_de_ventana():
+    """MAE dice que tocó, pero el toque cacheado no existe en el nivel
+    (llegó después de la ventana) → con corte NO llena; sin corte sí."""
+    from scripts.mr_sims import leg_filled
+
+    t = st_pb(mae_atr=8.0, pb={0.5: 5.0})       # solo el somero a tiempo
+    assert leg_filled(t, 7.0, 3600.0) == (False, False)
+    assert leg_filled(t, 7.0, None) == (True, False)
+    assert leg_filled(t, 0.5, 3600.0) == (True, False)
+
+
+def test_corte_sin_datos_de_tiempo_cae_a_mae_aprox():
+    """Cola con ATR estimado (sin barras → sin tiempos): fallback al MAE,
+    marcado aprox — optimista pero contado aparte, no escondido."""
+    from scripts.mr_sims import leg_filled
+
+    t = st_pb(mae_atr=8.0, pb=None)
+    assert leg_filled(t, 7.0, 3600.0) == (True, True)
+    assert leg_filled(t, 9.0, 3600.0) == (False, False)    # MAE < 9 manda
+
+
+def test_corte_ladder_outcome_pierna_cancelada():
+    """La pierna cuyo toque llega tarde NO contribuye al desenlace."""
+    t = st_pb(mae_atr=8.0, pb={1.0: 10.0, 7.0: 90.0}, pnl_usd=500.0)
+    legs = ((1.0, 0.3), (7.0, 0.7))
+    sin_corte, fw_sin, _ = ladder_outcome(t, legs, None, None, PPT, HC0)
+    con_corte, fw_con, _ = ladder_outcome(t, legs, None, None, PPT, HC0,
+                                          cancel_after_s=3600.0)
+    assert fw_sin == pytest.approx(1.0)
+    assert fw_con == pytest.approx(0.3)          # la 7× se canceló
+    # pierna 1×: (10 + 1·4) pts · 0.3 · $50 = $210
+    assert con_corte == pytest.approx(210.0)
+    assert con_corte < sin_corte
+
+
+def test_corte_fill_pct_menor_o_igual_por_construccion():
+    from scripts.mr_sims import fills_cutoff_study
+
+    sts = [st_pb(1, mae_atr=8.0, pb={0.5: 10.0, 7.0: 30.0}),
+           st_pb(2, mae_atr=8.0, pb={0.5: 20.0, 7.0: 90.0}),
+           st_pb(3, mae_atr=8.0, pb={0.5: 200.0}),
+           st_pb(4, mae_atr=0.3, pb={0.25: 5.0})]
+    r = fills_cutoff_study(sts, 3600.0)
+    for row in r["niveles"]:
+        assert row["fill_con_corte_pct"] <= row["fill_sin_corte_pct"], row
+    por = {row["nivel_atr"]: row for row in r["niveles"]}
+    # 0.5×: 3 tocan (mae≥0.5) pero solo 2 a tiempo (10m, 20m; 200m no)
+    assert por[0.5]["n_sin_corte"] == 3 and por[0.5]["n_con_corte"] == 2
+    # 7×: 3 tocan por MAE (st1/st2/st3, mae 8×), solo 1 a tiempo (30m;
+    # 90m > 60m; st3 tocó fuera de la ventana → sin clave cacheada)
+    assert por[7.0]["n_sin_corte"] == 3 and por[7.0]["n_con_corte"] == 1
+    assert r["cancel_after_s"] == 3600.0
+
+
+def test_corte_tope_en_run_studies_clamp():
+    """run_studies topa cancel_after al máximo duro de TradersPost (3600)."""
+    from scripts.mr_sims import CANCEL_AFTER_MAX_S, run_studies
+
+    sts = [st_pb(i, mae_atr=2.0, pb={0.5: 10.0}, pnl_usd=100.0,
+                 in_sample=i <= 14) for i in range(1, 21)]
+    res = run_studies(sts, PPT, cancel_after_s=7200.0)
+    assert res["corte_fills"]["cancel_after_s"] == CANCEL_AFTER_MAX_S
+
+
+# ---------------------------------------------------------------------------
 # MR-3: walk-forward y estrés de la pierna profunda (a mano)
 # ---------------------------------------------------------------------------
 
@@ -522,10 +616,12 @@ class TestESReal:
             bl = rob["head_to_head"][rol]["bloques"]
             assert set(bl) == {"in", "out", "h1", "h2"}
         e = rob["estres_pierna_profunda"]
-        assert e is not None
-        assert e["n_fills"] >= 15            # no son unos pocos aciertos
-        assert min(e["fills_por_bloque"]["h1"],
-                   e["fills_por_bloque"]["h2"]) >= 5   # reparte en mitades
+        if e is not None:                    # solo si el líder tiene pierna ≥4×
+            assert e["n_fills"] >= 1
+            # con el corte los fills profundos son pocos: si bajan de 15,
+            # la bandera lo dice — no se esconde
+            if e["n_fills"] < 15:
+                assert "n_bajo_fills" in e["flags"]
         assert rob["elegido"] is not None
         wf = rob["elegido"]["walk_forward"]
         assert wf["veredicto"].startswith("validado")
@@ -618,6 +714,32 @@ class TestESReal:
         assert all(v is True for v in r["archivos"].values())
         assert (motor_dir / "ES_test" / "runs" / "recrear_2026-07-04"
                 / "estudios_2026-07-04.json").exists()
+
+    def test_corte_fills_es_real(self, corrida):
+        """El corte sobre datos reales: fill%% con corte ≤ sin corte en TODOS
+        los niveles; el ELEGIDO no incluye profundidades más hondas que el
+        tope natural (piernas que no llenan a tiempo en producción); y el
+        cancel_after coherente del ladder queda dentro del máximo duro."""
+        _, res = corrida
+        corte = res["corte_fills"]
+        assert corte is not None and corte["cancel_after_s"] == 3600.0
+        for row in corte["niveles"]:
+            assert row["fill_con_corte_pct"] <= row["fill_sin_corte_pct"], row
+        assert corte["tope_natural_atr"] is not None
+
+        el = res["robustez"]["elegido"]
+        max_d = max(l["depth_atr"] for l in el["config"]["legs"]
+                    if l["peso"] > 0)
+        assert max_d <= corte["tope_natural_atr"]
+
+        reco = res["recomendacion"]
+        assert reco["cancel_after_seconds"] is not None
+        assert reco["cancel_after_seconds"] <= 3600
+        assert reco["corte"]["tope_natural_atr"] == corte["tope_natural_atr"]
+        # comparativa sin corte presente (honestidad: los dos números a la
+        # vista, el realista manda)
+        assert res["comparativa_sin_corte"] is not None
+        assert res["comparativa_sin_corte"]["top_net"]
 
     def test_gating_coherente(self, corrida):
         _, res = corrida

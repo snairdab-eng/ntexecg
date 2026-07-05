@@ -667,7 +667,7 @@ def resim_sl_tp(
 
 def pullback_study(
     trades: list[Trade], keys5: list[datetime], idx5: dict, bars5: dict,
-    window_min: int = 180,
+    window_min: int = 180, levels: tuple = PULLBACK_LEVELS,
 ) -> dict[float, dict]:
     """Para cada nivel L×ATR: qué trades lo TOCARON dentro de la ventana de
     entrada (una límite a L habría llenado), a los cuántos minutos, y el
@@ -678,7 +678,7 @@ def pullback_study(
     PRE-señal y una límite no puede llenarse antes de existir."""
     per: dict[float, dict] = {
         L: {"touch_min": [], "filled": [], "unfilled": []}
-        for L in PULLBACK_LEVELS
+        for L in levels
     }
     for t in trades:
         # `not atr_entry` cubre None Y 0.0 (sesión de rango verdadero nulo,
@@ -687,7 +687,7 @@ def pullback_study(
             continue
         i = idx5[t.aligned_ts] + 1      # la barra alineada es pre-señal
         end = t.aligned_ts + timedelta(minutes=window_min)
-        pending = set(PULLBACK_LEVELS)
+        pending = set(levels)
         touched: dict[float, float] = {}
         for k in keys5[i:]:
             if k > end or not pending:
@@ -705,7 +705,7 @@ def pullback_study(
         # B4.3 — el toque por trade va al cache (fills de piernas para el
         # modelo de sizing a riesgo del visor; B5 lo reusa).
         t.t_pb_touch = {str(L): m for L, m in sorted(touched.items())}
-        for L in PULLBACK_LEVELS:
+        for L in levels:
             if L in touched:
                 per[L]["touch_min"].append(touched[L])
                 per[L]["filled"].append(t)
@@ -713,7 +713,7 @@ def pullback_study(
                 per[L]["unfilled"].append(t)
 
     out: dict[float, dict] = {}
-    for L in PULLBACK_LEVELS:
+    for L in levels:
         filled, unfilled = per[L]["filled"], per[L]["unfilled"]
         tm = per[L]["touch_min"]
         total = len(filled) + len(unfilled)

@@ -76,7 +76,14 @@ from scripts.lab_analyze import (
 )
 from scripts.lab_manifest import csv_instrument
 # ── Simuladores MR-2 (núcleo puro del motor — scripts/mr_sims.py) ──
-from scripts.mr_sims import HaircutCfg, from_trades, metrics_usd, run_studies
+from scripts.mr_sims import (
+    CANCEL_AFTER_MAX_S,
+    HaircutCfg,
+    all_ladder_depths,
+    from_trades,
+    metrics_usd,
+    run_studies,
+)
 
 MOTOR_DIR = Path("MotorRiesgo")
 MANIFEST_VERSION = 1
@@ -458,7 +465,8 @@ def _avisos_master(man: dict, activo: str, hoy: date,
 
 async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
                    fecha: str | None = None,
-                   hc: HaircutCfg | None = None) -> dict:
+                   hc: HaircutCfg | None = None,
+                   cancel_after_s: float | None = CANCEL_AFTER_MAX_S) -> dict:
     """Corre los estudios MR-2 sobre el master de `clave` y escribe
     runs/estudios_<fecha>.json (MR-3 lo convertirá en .md + heatmap +
     recomendación). Determinista: la fecha viene del parámetro (recrear)."""
@@ -492,16 +500,21 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
         trades, activo, stitch)
     split_in_out(trades, oos)
 
-    # Pullback del Lab (ventana 180 min) para RECONCILIAR los fill-rates de
-    # la escalera — misma caminata B4.0 que el visor (solo trades con barras).
+    # Pullback del Lab (ventana 180 min) — reconciliación de fill-rates Y
+    # los tiempos-al-toque (t_pb_touch) que alimentan el corte de
+    # cancel_after: niveles = grilla del Lab ∪ TODAS las profundidades del
+    # barrido de escalera (misma caminata B4.0, sin recolectar tiempos
+    # nuevos).
     keys5 = sorted(bars)
     idx5 = {k: i for i, k in enumerate(keys5)}
     covered = [t for t in trades if t.aligned_ts in idx5]
-    pb = pullback_study(covered, keys5, idx5, bars)
-    lab_rates = {lvl: d["fill_rate"] for lvl, d in pb.items()}
+    niveles = tuple(sorted(set(PULLBACK_LEVELS) | set(all_ladder_depths())))
+    pb = pullback_study(covered, keys5, idx5, bars, levels=niveles)
+    lab_rates = {lvl: d["fill_rate"] for lvl, d in pb.items()
+                 if lvl in PULLBACK_LEVELS}
 
     sts = from_trades(trades, ppt, {t.number for t in estimated})
-    res = run_studies(sts, ppt, hc, lab_rates)
+    res = run_studies(sts, ppt, hc, lab_rates, cancel_after_s)
     res["meta"] = {
         "clave": clave, "activo": activo, "codigo": man["codigo"],
         "fecha": fecha, "oos": oos, "usd_por_punto": ppt,
@@ -513,6 +526,7 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
         "atr_estimado": len(estimated),
         "grids_version": grids_fingerprint(),
         "motor_commit": _git_commit(),
+        "cancel_after_s": cancel_after_s,
         "tz": tz_detail,
     }
     out = base_dir / "runs" / f"estudios_{fecha}.json"
@@ -586,6 +600,29 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
         print(f"\n▎Reconciliación fills escalera↔pullback Lab: "
               f"Δ máx en niveles someros (≤2×ATR) = "
               f"{rec['max_delta_somero_pp']} pp")
+
+    corte = res.get("corte_fills")
+    if corte:
+        print(f"\n▎Corte de fills (cancel_after {corte['cancel_after_s']:.0f}s"
+              f" — los REALES de producción; sin corte = optimista):")
+        print(f"  {'nivel':>6} {'sin corte':>10} {'con corte':>10} "
+              f"{'retención':>10} {'t_med':>7} {'t_p90':>7}")
+        for r in corte["niveles"]:
+            print(f"  {r['nivel_atr']:>5}× {r['fill_sin_corte_pct']:>9}% "
+                  f"{r['fill_con_corte_pct']:>9}% "
+                  f"{r['retencion'] if r['retencion'] is not None else '—':>10} "
+                  f"{r['t_med_min'] if r['t_med_min'] is not None else '—':>6}m "
+                  f"{r['t_p90_min'] if r['t_p90_min'] is not None else '—':>6}m")
+        print(f"  Tope natural de profundidad: "
+              f"{corte['tope_natural_atr']}×ATR · "
+              f"{corte['n_sin_datos_tiempo']} trade(s) sin datos de tiempo "
+              f"(MAE aprox)")
+    comp = res.get("comparativa_sin_corte")
+    if comp and comp["top_net"]:
+        t0 = comp["top_net"][0]
+        print(f"▎Comparativa SIN corte (solo estudio): mejor net "
+              f"{t0['nombre']} (${t0['net_usd']:,.0f}) · líder score "
+              f"{comp['lider_score_sin_corte']}")
 
     print("\n▎Configs (top por net; gating = supera base + sobrevive OOS):")
     print(f"  {'config':52} {'net':>10} {'PF':>5} {'DD':>8} {'peor':>8} "
@@ -701,12 +738,17 @@ async def recrear(clave: str, fecha: str) -> dict:
     keys5 = sorted(bars)
     idx5 = {k: i for i, k in enumerate(keys5)}
     covered = [t for t in trades if t.aligned_ts in idx5]
-    pb = pullback_study(covered, keys5, idx5, bars)
-    lab_rates = {lvl: d["fill_rate"] for lvl, d in pb.items()}
+    niveles = tuple(sorted(set(PULLBACK_LEVELS) | set(all_ladder_depths())))
+    pb = pullback_study(covered, keys5, idx5, bars, levels=niveles)
+    lab_rates = {lvl: d["fill_rate"] for lvl, d in pb.items()
+                 if lvl in PULLBACK_LEVELS}
 
     sts = from_trades(trades, mo["usd_por_punto"],
                       {t.number for t in estimated})
-    res = run_studies(sts, mo["usd_por_punto"], hc, lab_rates)
+    # cancel_after de la corrida ORIGINAL (corridas viejas sin el campo →
+    # None = modelo sin corte, fiel a lo que se corrió entonces)
+    res = run_studies(sts, mo["usd_por_punto"], hc, lab_rates,
+                      mo.get("cancel_after_s"))
     # meta con el MISMO orden de claves que `calcular` (el original) para
     # que la serialización sea comparable byte a byte
     res["meta"] = {**mo,
@@ -716,6 +758,7 @@ async def recrear(clave: str, fecha: str) -> dict:
                    "holc_ultima_barra": holc_last,
                    "grids_version": grids_fingerprint(),
                    "motor_commit": _git_commit(),
+                   "cancel_after_s": mo.get("cancel_after_s"),
                    "tz": tz_detail}
 
     out_dir = runs / f"recrear_{fecha}"
@@ -866,6 +909,10 @@ def main() -> None:
     p_cal.add_argument("--gap-pts", type=float, default=0.0,
                        help="haircut: deslizamiento del backstop en pts "
                             "(el estrés 0/10/25 se reporta siempre)")
+    p_cal.add_argument("--cancel-after", type=float, default=3600.0,
+                       help="corte de fills de la escalera en SEGUNDOS "
+                            "(default y tope 3600 = máx de TradersPost); "
+                            "0 = sin corte (solo estudio)")
 
     p_rec = sub.add_parser(
         "recrear", help="reproducir una corrida bit a bit (MR-4)")
@@ -884,8 +931,13 @@ def main() -> None:
     elif args.cmd == "calcular":
         hc = HaircutCfg(comision_rt_usd=args.comision,
                         slip_pts=args.slip_pts, gap_pts=args.gap_pts)
+        ca = args.cancel_after if args.cancel_after > 0 else None
+        if ca is not None and ca > CANCEL_AFTER_MAX_S:
+            print(f"⚠ --cancel-after {ca:.0f}s > máximo duro de TradersPost "
+                  f"({CANCEL_AFTER_MAX_S:.0f}s) — topado a 3600.")
+            ca = CANCEL_AFTER_MAX_S
         asyncio.run(calcular(args.clave, args.stitch_db, args.oos,
-                             args.fecha, hc))
+                             args.fecha, hc, ca))
     elif args.cmd == "recrear":
         asyncio.run(recrear(args.clave, args.fecha))
     elif args.cmd == "estado":
