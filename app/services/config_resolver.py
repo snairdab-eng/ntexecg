@@ -247,6 +247,17 @@ class ConfigResolver:
                     "entry_reserve_timeout_seconds")
                 if isinstance(_rt, (int, float)) and _rt > 0:
                     config["entry_reserve_timeout_seconds"] = int(_rt)
+                # MR-5a — backstop: stop de PRECIO FIJO anclado a la señal
+                # (puntos en la unidad de precio del activo; viene del
+                # recomendacion.json del Motor de Riesgo). Reemplaza el SL
+                # k×ATR en L5 para esta estrategia. Ausente/ inválido → la
+                # lógica ATR actual (retrocompat; bool excluido — True es
+                # int en Python).
+                _bk = (strategy_profile.pipeline_config_json or {}).get(
+                    "backstop_points")
+                if (isinstance(_bk, (int, float))
+                        and not isinstance(_bk, bool) and _bk > 0):
+                    config["backstop_points"] = float(_bk)
                 updates = {
                     "mode": strategy_profile.mode,
                     # Kill-switch semantics (Fase 2): any level that says dry_run

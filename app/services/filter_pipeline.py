@@ -279,6 +279,9 @@ class FilterPipeline:
                 "reason": calc["reason"],
                 "sl_price": calc["sl_price"],
                 "tp_price": calc["tp_price"],
+                # MR-5a: "backstop_fixed" (stop de precio fijo desde la
+                # señal) o "atr" (k×ATR de siempre) — visible en el audit.
+                "sl_mode": calc.get("sl_mode"),
             }
             if not calc["passed"]:
                 return PipelineResult(
