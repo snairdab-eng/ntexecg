@@ -18,11 +18,17 @@ Comandos (MR-1):
       Sobrescribe master, archiva snapshot inmutable, enriquece con ATR,
       escribe manifest reforzado y CUADRA la línea base al dólar contra el
       `PyG acumuladas USD` final del export (bloqueante si no coincide).
+  calcular <clave> [--stitch-db] [--oos 0.3] [--fecha] [--comision]
+                   [--slip-pts] [--gap-pts]                       (MR-2)
+      Corre los estudios de riesgo (scripts/mr_sims.py: backstop sweep,
+      escalera por MAE con alta participación, TP nominal por encima del
+      cierre de LuxAlgo, asimetría L/S, gating, reconciliación de fills
+      con el pullback del Lab) y persiste runs/estudios_<fecha>.json.
   estado [<clave>]
       Resumen por carpeta MotorRiesgo/: nº trades, rango, cobertura HOLC,
       última integración, última corrida.
 
-`calcular` / `recrear` llegan en MR-2+ (fases del SPEC §10).
+`recrear` llega en MR-4 (fases del SPEC §10).
 
 Uso (NTDEV):  .venv\\Scripts\\python.exe -m scripts.nt_riesgo integrar ...
 Uso (server): .venv/bin/python -m scripts.nt_riesgo integrar ... --stitch-db
@@ -48,7 +54,7 @@ except (AttributeError, OSError):
     pass
 
 # ── Núcleo del Lab (una sola fuente de verdad — Directiva 1) ──
-from app.services.lab_metrics import PULLBACK_LEVELS, SL_GRID, TP_GRID, aggregate
+from app.services.lab_metrics import PULLBACK_LEVELS, SL_GRID, TP_GRID
 from app.services.market_data_service import _calc_atr
 from scripts.lab_analyze import (
     _ATR_LOOKBACK,
@@ -60,9 +66,13 @@ from scripts.lab_analyze import (
     enrich_with_bars,
     load_holc,
     parse_luxalgo_csv,
+    pullback_study,
+    split_in_out,
     stitch_from_db,
 )
 from scripts.lab_manifest import csv_instrument
+# ── Simuladores MR-2 (núcleo puro del motor — scripts/mr_sims.py) ──
+from scripts.mr_sims import HaircutCfg, from_trades, metrics_usd, run_studies
 
 MOTOR_DIR = Path("MotorRiesgo")
 MANIFEST_VERSION = 1
@@ -74,39 +84,6 @@ USD_PER_POINT_KNOWN = {"ES": 50.0, "NQ": 20.0, "RTY": 50.0, "YM": 5.0,
                        "GC": 100.0, "CL": 1000.0}
 
 _FECHA_EN_NOMBRE = re.compile(r"_(\d{4}-\d{2}-\d{2})_")
-
-
-# ---------------------------------------------------------------------------
-# Métricas de línea base en USD (reusa lab_metrics.aggregate, que es
-# unit-agnóstico: entra USD → sale USD; aquí solo se renombra y se añade lo
-# que el núcleo no trae — brutas y DD% sobre high-water mark, SPEC §6)
-# ---------------------------------------------------------------------------
-
-def metrics_usd(pnls: list[float]) -> dict:
-    m = aggregate(pnls)          # claves *_pct, valores en las unidades de entrada
-    if m["n"] == 0:
-        return {"n": 0}
-    wins = [p for p in pnls if p > 0]
-    losses = [p for p in pnls if p < 0]
-    cum = peak = 0.0
-    for p in pnls:
-        cum += p
-        peak = max(peak, cum)
-    max_dd = abs(m["max_dd_pct"])
-    return {
-        "n": m["n"],
-        "ganadores": len(wins),
-        "wr_pct": m["wr"],
-        "pf": m["pf"],
-        "ganancia_bruta_usd": round(sum(wins), 2),
-        "perdida_bruta_usd": round(abs(sum(losses)), 2),
-        "net_usd": round(sum(pnls), 2),
-        "max_dd_usd": round(max_dd, 2),
-        # Convención NTEXECG: DD% = MaxDD$ / pico de equity del periodo (HWM)
-        "max_dd_pct_hwm": (round(100 * max_dd / peak, 2) if peak > 0 else None),
-        "peor_trade_usd": m["worst_pct"],
-        "promedio_usd": m["expectancy_pct"],
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +220,39 @@ def _git_commit() -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Carga compartida (integrar y calcular): HOLC + costura + TZ + ATR
+# ---------------------------------------------------------------------------
+
+async def _enriquecer(trades: list[Trade], activo: str, stitch: bool,
+                      ) -> tuple[dict, int, dict, int, list[Trade]]:
+    """(bars, offset, tz_detail, sin_cobertura, estimados) — HOLC + costura
+    opcional, validación TZ BLOQUEANTE, ATR(14) vivo y ATR estimado de cola.
+    Todo del núcleo del Lab."""
+    bars = load_holc(activo, "5m")
+    if stitch:
+        bars = await stitch_from_db(bars, activo, "5m")
+    off, sanity, tz_detail = detect_tz_offset(trades, bars)
+    print(f"· TZ offset {off:+d} min · sanity {sanity*100:.0f}% · "
+          f"HOLC hasta {max(bars)}{' (+costura DB)' if stitch else ''}")
+    if sanity < _MIN_SANITY:
+        raise SystemExit(
+            f"⛔ BLOQUEADO: sanity TZ {sanity*100:.0f}% < "
+            f"{_MIN_SANITY*100:.0f}% — no se puede confiar la alineación.")
+    uncovered = enrich_with_bars(trades, bars, off)
+    estimated = estimate_tail_atr(trades, bars, off)
+    sin_cobertura = uncovered - len(estimated)
+    if estimated:
+        print(f"⚠ {len(estimated)} trade(s) posteriores al HOLC → ATR "
+              f"ESTIMADO (última barra {estimated[0].atr_entry:.2f})."
+              + ("" if stitch else " Con --stitch-db la cola se cose y el "
+                                   "caveat desaparece."))
+    if sin_cobertura:
+        print(f"⚠ {sin_cobertura} trade(s) sin cobertura de barras "
+              f"(inicio del HOLC): sin ATR.")
+    return bars, off, tz_detail, sin_cobertura, estimated
+
+
+# ---------------------------------------------------------------------------
 # integrar
 # ---------------------------------------------------------------------------
 
@@ -315,34 +325,13 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
             for k in faltantes[:5]:
                 print(f"    - {k}")
 
-    # 3) HOLC + costura opcional + validación TZ BLOQUEANTE (núcleo del Lab)
-    bars = load_holc(activo, "5m")
-    stitched = False
-    if stitch:
-        bars = await stitch_from_db(bars, activo, "5m")
-        stitched = True
+    # 3-4) HOLC + costura + TZ bloqueante + ATR (núcleo del Lab, compartido
+    # con `calcular`)
+    bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
+        trades, activo, stitch)
+    stitched = stitch
     holc_last = max(bars)
-    off, sanity, tz_detail = detect_tz_offset(trades, bars)
-    print(f"· TZ offset {off:+d} min · sanity {sanity*100:.0f}% · "
-          f"HOLC hasta {holc_last}{' (+costura DB)' if stitched else ''}")
-    if sanity < _MIN_SANITY:
-        raise SystemExit(
-            f"⛔ BLOQUEADO: sanity TZ {sanity*100:.0f}% < "
-            f"{_MIN_SANITY*100:.0f}% — no se puede confiar la alineación.")
-
-    # 4) ATR(14) vivo + ATR estimado para la cola (marcado — SPEC §9.2)
-    uncovered = enrich_with_bars(trades, bars, off)
-    estimated = estimate_tail_atr(trades, bars, off)
     estimated_ids = {t.number for t in estimated}
-    sin_cobertura = uncovered - len(estimated)
-    if estimated:
-        print(f"⚠ {len(estimated)} trade(s) posteriores al HOLC → ATR "
-              f"ESTIMADO (última barra {estimated[0].atr_entry:.2f})."
-              + ("" if stitched else " Con --stitch-db la cola se cose y el "
-                                     "caveat desaparece."))
-    if sin_cobertura:
-        print(f"⚠ {sin_cobertura} trade(s) sin cobertura de barras "
-              f"(inicio del HOLC): sin ATR.")
 
     # 5) Persistencia: snapshot inmutable + master + enriched + manifest
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -410,6 +399,145 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# calcular (MR-2): corre los estudios de riesgo y persiste el resultado
+# ---------------------------------------------------------------------------
+
+def _fmt_usd(v) -> str:
+    return f"${v:,.2f}" if v is not None else "—"
+
+
+async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
+                   fecha: str | None = None,
+                   hc: HaircutCfg | None = None) -> dict:
+    """Corre los estudios MR-2 sobre el master de `clave` y escribe
+    runs/estudios_<fecha>.json (MR-3 lo convertirá en .md + heatmap +
+    recomendación). Determinista: la fecha viene del parámetro (recrear)."""
+    hc = hc or HaircutCfg()
+    base_dir = MOTOR_DIR / clave
+    man_path = base_dir / "manifest.json"
+    if not man_path.exists():
+        raise SystemExit(f"⛔ No hay listado integrado en {base_dir} — "
+                         f"corre `integrar` primero.")
+    man = json.loads(man_path.read_text(encoding="utf-8"))
+    activo = man["activo"]
+    ppt = man["usd_por_punto"]["usado"]
+    fecha = fecha or date.today().isoformat()
+
+    trades = parse_luxalgo_csv(base_dir / "master.csv")
+    bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
+        trades, activo, stitch)
+    split_in_out(trades, oos)
+
+    # Pullback del Lab (ventana 180 min) para RECONCILIAR los fill-rates de
+    # la escalera — misma caminata B4.0 que el visor (solo trades con barras).
+    keys5 = sorted(bars)
+    idx5 = {k: i for i, k in enumerate(keys5)}
+    covered = [t for t in trades if t.aligned_ts in idx5]
+    pb = pullback_study(covered, keys5, idx5, bars)
+    lab_rates = {lvl: d["fill_rate"] for lvl, d in pb.items()}
+
+    sts = from_trades(trades, ppt, {t.number for t in estimated})
+    res = run_studies(sts, ppt, hc, lab_rates)
+    res["meta"] = {
+        "clave": clave, "activo": activo, "codigo": man["codigo"],
+        "fecha": fecha, "oos": oos, "usd_por_punto": ppt,
+        "master_sha256": man["export"]["sha256_master"],
+        "holc_ultima_barra": max(bars).isoformat(),
+        "stitch_db": stitch,
+        "n_trades_listado": len(trades),
+        "sin_cobertura": sin_cobertura,
+        "atr_estimado": len(estimated),
+        "grids_version": grids_fingerprint(),
+        "motor_commit": _git_commit(),
+        "tz": tz_detail,
+    }
+    out = base_dir / "runs" / f"estudios_{fecha}.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps(res, indent=1, ensure_ascii=False),
+                   encoding="utf-8")
+    man["ultima_corrida"] = out.name
+    man_path.write_text(json.dumps(man, indent=1, ensure_ascii=False),
+                        encoding="utf-8")
+
+    _print_resumen_estudios(clave, res)
+    print(f"\n✅ Estudios → {out}")
+    return res
+
+
+def _print_resumen_estudios(clave: str, res: dict) -> None:
+    base = res["linea_base"]["total"]
+    print(f"\n════ ESTUDIOS DE RIESGO — {clave} "
+          f"(universo {res['universo']['n']} trades, "
+          f"{res['universo']['n_atr_estimado']} con ATR estimado) ════")
+    print(f"\nLínea base: net {_fmt_usd(base['net_usd'])} · PF {base['pf']} "
+          f"· DD {_fmt_usd(base['max_dd_usd'])} · "
+          f"peor {_fmt_usd(base['peor_trade_usd'])}")
+
+    g = res["mae_floor"]["ganadoras_mae_atr"]
+    print(f"\n▎Suelo del SL (MAE×ATR ganadoras): mediana {g['mediana']} · "
+          f"p90 {g['p90']} · p95 {g['p95']} · máx {g['max']}")
+    print(f"  {res['mae_floor']['veredicto']}")
+
+    b = res["backstop"]["optimo"]
+    if b:
+        print(f"\n▎Backstop óptimo: {_fmt_usd(b['backstop_usd'])} = "
+              f"{b['backstop_pts']:.0f} pts ≈ {b['x_atr_mediana']}×ATR · "
+              f"toca {b['tocados']} · Δnet {_fmt_usd(b['delta_net_usd'])} · "
+              f"ΔDD {b['delta_dd_pct']}% · peor c/gap {b['peor_con_gap_usd']}")
+    else:
+        print("\n▎Backstop: NINGÚN nivel del grid suma vs base (revisar).")
+
+    print("\n▎TP nominal (por ENCIMA del cierre de LuxAlgo — que cierre "
+          "LuxAlgo):")
+    for lado, d in res["tp"]["por_lado"].items():
+        c = d["cierre_atr"]
+        print(f"  {lado:5}: cierra p95 {c['p95']}× / p99 {c['p99']}× → "
+              f"TP nominal {d['tp_nominal_atr']}×ATR "
+              f"(dispararía en {d['tp_nominal_dispararia_pct']}% de los "
+              f"trades) · en la mesa {_fmt_usd(d['en_la_mesa_usd'])}")
+    tm = res["tp"]["tp_meta_mejor"]
+    if tm:
+        print(f"  TP-meta INFORMATIVO óptimo: L{tm['tp_long']}/"
+              f"S{tm['tp_short']} (net {_fmt_usd(tm['net_usd'])}, "
+              f"PF out {tm['pf_out']}) — no es la recomendación")
+
+    ls = res["ls"]
+    print(f"\n▎Asimetría L/S — {ls['lectura']}:")
+    for lado in ("long", "short"):
+        m = ls[lado]
+        print(f"  {lado:5}: n {m['n']} · net {_fmt_usd(m['net_usd'])} · "
+              f"PF {m['pf']} · WR {m['wr_pct']}% · "
+              f"peor {_fmt_usd(m['peor_trade_usd'])} · "
+              f"give-backs≥3×ATR {m['giveback_perdedores_3atr']}")
+
+    rec = res.get("reconciliacion_fills")
+    if rec:
+        print(f"\n▎Reconciliación fills escalera↔pullback Lab: "
+              f"Δ máx en niveles someros (≤2×ATR) = "
+              f"{rec['max_delta_somero_pp']} pp")
+
+    print("\n▎Configs (top por net; gating = supera base + sobrevive OOS):")
+    print(f"  {'config':52} {'net':>10} {'PF':>5} {'DD':>8} {'peor':>8} "
+          f"{'part%':>6}  estado")
+    aprobadas = [c for c in res["configs"] if c["gate"]["estado"] == "aprobada"]
+    alta = [c for c in aprobadas if "alta_participacion" in c["etiquetas"]]
+    top = res["configs"][:6]
+    # la mejor de alta participación SIEMPRE visible (Directiva 3.1)
+    if alta and alta[0] not in top:
+        top.append(alta[0])
+    for c in top:
+        t = c["total"]
+        marca = " ⚠n" if c["low_n_out"] else ""
+        print(f"  {c['nombre'][:52]:52} {t['net_usd']:>10,.0f} "
+              f"{t['pf'] if t['pf'] is not None else '—':>5} "
+              f"{t['max_dd_usd']:>8,.0f} {t['peor_trade_usd']:>8,.0f} "
+              f"{c['participacion_pct']:>6} "
+              f" {c['gate']['estado']}{marca}")
+    print(f"  ({len(aprobadas)} aprobadas de {len(res['configs'])} configs; "
+          f"descartados por diseño: SL duro ×ATR, sesión, time-stop)")
+
+
+# ---------------------------------------------------------------------------
 # estado
 # ---------------------------------------------------------------------------
 
@@ -429,7 +557,9 @@ def estado(clave: str | None = None) -> list[dict]:
                      else f"⚠ {h['atr_estimado']} ATR estimado"
                           + (f", {h['sin_cobertura']} sin ATR"
                              if h["sin_cobertura"] else ""))
-        runs = sorted(p.parent.glob("runs/Riesgo_*.md"))
+        ultima = m.get("ultima_corrida")
+        runs = ([p.parent / "runs" / ultima] if ultima
+                else sorted(p.parent.glob("runs/*")))
         print(f"▸ {p.parent.name}")
         print(f"    trades      {t['n']}  ({t['desde'][:10]} → "
               f"{t['hasta'][:10]})")
@@ -466,22 +596,44 @@ def main() -> None:
     p_int.add_argument("--fecha", default=None,
                        help="fecha del export (default: del nombre del CSV)")
 
+    p_cal = sub.add_parser("calcular",
+                           help="correr los estudios de riesgo (MR-2)")
+    p_cal.add_argument("clave", help="carpeta, p.ej. ES_ConfNormal_TC_TSR")
+    p_cal.add_argument("--stitch-db", action="store_true",
+                       help="coser la cola HOLC desde Postgres (solo lectura)")
+    p_cal.add_argument("--oos", type=float, default=0.3,
+                       help="fracción out-of-sample (default 0.3, como el Lab)")
+    p_cal.add_argument("--fecha", default=None,
+                       help="fecha de la corrida (default: hoy; `recrear` "
+                            "la pasará explícita)")
+    p_cal.add_argument("--comision", type=float, default=0.0,
+                       help="haircut: $ por contrato round-turn (default 0 = "
+                            "paridad referencia)")
+    p_cal.add_argument("--slip-pts", type=float, default=0.0,
+                       help="haircut: fricción en pts por pierna llenada")
+    p_cal.add_argument("--gap-pts", type=float, default=0.0,
+                       help="haircut: deslizamiento del backstop en pts "
+                            "(el estrés 0/10/25 se reporta siempre)")
+
     p_est = sub.add_parser("estado", help="resumen de los listados integrados")
     p_est.add_argument("clave", nargs="?", default=None,
-                       help="carpeta específica, p.ej. ES_confluencia")
+                       help="carpeta específica, p.ej. ES_ConfNormal_TC_TSR")
 
-    for nombre in ("calcular", "recrear"):
-        sub.add_parser(nombre, help="(MR-2+ — aún no implementado)")
+    sub.add_parser("recrear", help="(MR-4 — aún no implementado)")
 
     args = ap.parse_args()
     if args.cmd == "integrar":
         asyncio.run(integrar(args.csv, args.codigo, args.activo,
                              args.stitch_db, args.fecha))
+    elif args.cmd == "calcular":
+        hc = HaircutCfg(comision_rt_usd=args.comision,
+                        slip_pts=args.slip_pts, gap_pts=args.gap_pts)
+        asyncio.run(calcular(args.clave, args.stitch_db, args.oos,
+                             args.fecha, hc))
     elif args.cmd == "estado":
         estado(args.clave)
     else:
-        raise SystemExit(f"`{args.cmd}` llega en MR-2+ (fases del SPEC §10); "
-                         f"MR-1 = integrar/estado.")
+        raise SystemExit("`recrear` llega en MR-4 (fases del SPEC §10).")
 
 
 if __name__ == "__main__":
