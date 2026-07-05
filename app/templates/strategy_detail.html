@@ -14,8 +14,14 @@
             </h1>
             <p class="text-gray-400 text-sm mt-1">{{ strategy.name }}</p>
         </div>
-        <a href="/ui/strategies/{{ strategy.strategy_id }}/clone"
-           class="bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-2 rounded text-sm">📄 Clonar</a>
+        <div class="flex items-center gap-2">
+            <!-- Puente a la otra vista de la MISMA estrategia: el estudio de
+                 riesgo (Motor de Riesgo) recomienda; aquí se afina/aplica -->
+            <a href="/ui/riesgo?strategy={{ strategy.strategy_id }}"
+               class="bg-indigo-800 hover:bg-indigo-700 text-white px-3 py-2 rounded text-sm">📊 Estudio de riesgo →</a>
+            <a href="/ui/strategies/{{ strategy.strategy_id }}/clone"
+               class="bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-2 rounded text-sm">📄 Clonar</a>
+        </div>
     </div>
 
     <!-- Status actions -->

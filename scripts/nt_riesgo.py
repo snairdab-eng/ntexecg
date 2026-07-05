@@ -43,6 +43,7 @@ import csv
 import glob
 import hashlib
 import json
+import os
 import re
 import shutil
 import statistics
@@ -85,7 +86,9 @@ from scripts.mr_sims import (
     run_studies,
 )
 
-MOTOR_DIR = Path("MotorRiesgo")
+# Override por env (igual que HOLC_DIR en el Lab): la pestaña web lanza el
+# motor en subproceso y los tests lo apuntan a un dir temporal.
+MOTOR_DIR = Path(os.environ.get("MOTOR_RIESGO_DIR") or "MotorRiesgo")
 MANIFEST_VERSION = 1
 
 # $/punto conocidos por instrumento (SPEC §6) — se VERIFICAN contra el export

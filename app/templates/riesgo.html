@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{% block title %}Riesgo{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-4" x-data="riesgoApp()">
+
+    <div class="flex items-center justify-between flex-wrap gap-2">
+        <div>
+            <h1 class="text-xl font-semibold text-gray-100">Motor de Riesgo
+                <span class="text-xs text-gray-500">(estudio offline — aplicar a la estrategia viva es un paso aparte)</span></h1>
+            <p class="text-xs text-gray-500 mt-1">Los números salen del motor tal cual (<code>nt_riesgo calcular</code>): lo que ves = lo que dice <code>MotorRiesgo/&lt;clave&gt;/runs/Riesgo_*.md</code>. Fills con corte de <b>cancel_after</b> — los reales de producción, no los inflados.</p>
+        </div>
+        {% if groups %}
+        <div class="flex items-start gap-3 flex-wrap text-xs">
+            {% for sym, sids in groups.items() %}
+            <div class="flex items-center gap-1 flex-wrap">
+                <span class="text-gray-500 font-semibold">{{ sym }}:</span>
+                {% for sid in sids %}
+                <a href="/ui/riesgo?strategy={{ sid }}"
+                   class="px-2 py-1 rounded font-mono transition {% if sid == key %}bg-blue-700 text-white{% else %}bg-gray-800 text-gray-300 hover:bg-gray-700{% endif %}">{{ sid }}</a>
+                {% endfor %}
+            </div>
+            {% endfor %}
+            <button @click="nueva = !nueva"
+                    class="px-2 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-white">＋ nueva estrategia</button>
+        </div>
+        {% else %}
+        <button @click="nueva = true"
+                class="px-3 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-white text-sm">＋ nueva estrategia</button>
+        {% endif %}
+    </div>
+
+    <!-- ＋ NUEVA estrategia: subir su lista la da de alta (manifest confirmado
+         por UI) y la integra — de primera clase, como en Estrategias -->
+    <div x-show="nueva" x-cloak class="bg-gray-900 border border-emerald-800 rounded p-4 space-y-3">
+        <div class="text-sm font-semibold text-emerald-300">Nueva estrategia — sube su lista de operaciones</div>
+        <p class="text-xs text-gray-500">El símbolo se detecta del <b>nombre original</b> del export (patrón <code>_&lt;SYM&gt;1!_</code>). Elige una estrategia viva o escribe un id nuevo; al subir queda en el manifest (confirmada) e integrada — luego dale Calcular.</p>
+        <form class="flex items-center gap-2 flex-wrap text-xs" @submit.prevent="uploadNueva($event)">
+            {% if vivas_nuevas %}
+            <select x-model="nuevaSel" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+                <option value="">— estrategia viva (sin estudio) —</option>
+                {% for v in vivas_nuevas %}
+                <option value="{{ v.strategy_id }}">{{ v.strategy_id }} · {{ v.asset_symbol }} ({{ v.status }})</option>
+                {% endfor %}
+            </select>
+            <span class="text-gray-600">o</span>
+            {% endif %}
+            <input type="text" x-model="nuevaId" placeholder="id nuevo, p. ej. NQ5m_ConfFuerte"
+                   class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200 font-mono w-56">
+            <input type="file" name="file" accept=".csv" required
+                   class="text-gray-400 file:bg-gray-700 file:text-gray-200 file:border-0 file:rounded file:px-2 file:py-1">
+            <button type="submit" :disabled="busy"
+                    class="px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50">Subir e integrar</button>
+        </form>
+        <div x-show="msgNueva" x-text="msgNueva" class="text-xs" :class="okNueva ? 'text-emerald-300' : 'text-red-300'"></div>
+    </div>
+
+    {% if key %}
+    <!-- ══ DATOS: identidad del master + subir/actualizar + Calcular ══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="text-sm font-semibold text-gray-200">Datos — <span class="font-mono">{{ key }}</span>
+                <span class="text-xs text-gray-500">→ carpeta <code>{{ clave }}</code></span></div>
+            {% if link_vivo %}
+            <a href="{{ link_vivo }}" class="text-xs px-2 py-1 rounded bg-indigo-800 hover:bg-indigo-700 text-white">⚙ Config en vivo (Estrategias) →</a>
+            {% else %}
+            <span class="text-xs text-gray-600">sin estrategia viva con este id (solo estudio)</span>
+            {% endif %}
+        </div>
+
+        {% if motor %}
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">Master en uso (export)</div>
+                <div class="text-gray-200 font-semibold">{{ motor.integrado }}</div>
+                <div class="text-gray-500 truncate" title="{{ motor.export.archivo }}">{{ motor.export.archivo }}</div>
+            </div>
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">Trades</div>
+                <div class="text-gray-200 font-semibold">{{ motor.trades.n }}</div>
+                <div class="text-gray-500">{{ motor.trades.desde[:10] }} → {{ motor.trades.hasta[:10] }}</div>
+            </div>
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">sha256 master</div>
+                <div class="text-gray-200 font-mono">{{ motor.export.sha256_master[:12] }}…</div>
+                <div class="text-gray-500">cuadre al dólar {{ '✅' if motor.cuadre.ok else '⛔' }}</div>
+            </div>
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">HOLC (al integrar)</div>
+                <div class="text-gray-200">{{ motor.holc.ultima_barra[:16] }}</div>
+                <div class="text-gray-500">{% if motor.holc.atr_estimado %}⚠ {{ motor.holc.atr_estimado }} ATR estimado{% else %}✓ completo{% endif %}</div>
+            </div>
+        </div>
+        {% for a in avisos %}
+        <div class="bg-amber-900/30 border border-amber-700 rounded p-2 text-xs text-amber-200">⚠ {{ a }}</div>
+        {% endfor %}
+        {% else %}
+        <div class="bg-amber-900/30 border border-amber-700 rounded p-3 text-xs text-amber-200">
+            <b>Sin listado integrado para {{ key }}.</b> Sube su lista de operaciones (abajo) — el motor la integra (cuadre al dólar bloqueante) y luego Calcular corre el estudio.
+        </div>
+        {% endif %}
+
+        <div class="flex items-center gap-3 flex-wrap text-xs border-t border-gray-800 pt-3">
+            <form class="flex items-center gap-2 flex-wrap" @submit.prevent="upload($event)">
+                <span class="text-gray-500">Actualizar lista{% if manifest_entry %} (actual: <code>{{ manifest_entry.csv }}</code>){% endif %}:</span>
+                <input type="file" name="file" accept=".csv" required
+                       class="text-gray-400 file:bg-gray-700 file:text-gray-200 file:border-0 file:rounded file:px-2 file:py-1">
+                <button type="submit" :disabled="busy"
+                        class="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-100 disabled:opacity-50">Subir e integrar</button>
+            </form>
+            <button @click="calcular()" :disabled="busy || job === 'running'"
+                    class="px-4 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-white font-semibold disabled:opacity-50"
+                    x-text="job === 'running' ? '⏳ calculando…' : '▶ Calcular'"></button>
+            <span x-show="msg" x-text="msg" class="text-xs" :class="ok ? 'text-emerald-300' : 'text-red-300'"></span>
+        </div>
+        <pre x-show="tail" x-cloak x-text="tail" class="bg-gray-950 rounded p-2 text-xs text-red-200 whitespace-pre-wrap max-h-48 overflow-auto"></pre>
+    </div>
+
+    {% if estudio %}
+    <!-- ══ LÍNEA BASE (la lista cruda) ══ -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <div class="text-sm font-semibold text-gray-200 mb-2">Línea base — la lista cruda (1 mini @ señal)
+            <span class="text-xs text-gray-500">corrida {{ estudio.fecha }}</span></div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+            {% for lbl, v, fmt in [
+                ('Net total', estudio.base.net_usd, 'usd'),
+                ('Profit Factor', estudio.base.pf, 'num'),
+                ('WinRate', estudio.base.wr_pct, 'pct'),
+                ('Max Drawdown', estudio.base.max_dd_usd, 'usd'),
+                ('Peor trade', estudio.base.peor_trade_usd, 'usd'),
+            ] %}
+            <div class="bg-gray-950 rounded p-3 border border-gray-800">
+                <div class="text-xs text-gray-500">{{ lbl }}</div>
+                <div class="text-lg font-bold text-gray-100">
+                    {%- if fmt == 'usd' -%}${{ '{:,.0f}'.format(v) }}{%- elif fmt == 'pct' -%}{{ v }}%{%- else -%}{{ v }}{%- endif -%}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="text-xs text-gray-500 mt-2">PF fuera de muestra de la base: <b class="text-gray-300">{{ estudio.base_pf_oos }}</b> · {{ estudio.ls }}</div>
+    </div>
+
+    <!-- ══ BASE → RECOMENDADA (el corazón) ══ -->
+    {% if estudio.comparacion %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="text-sm font-semibold text-gray-200">Base → Recomendada
+                <span class="text-xs font-normal text-blue-300 font-mono">{{ estudio.elegido }}</span></div>
+            <span class="text-xs px-2 py-0.5 rounded {% if estudio.veredicto and estudio.veredicto.startswith('validado') %}bg-emerald-900 text-emerald-300{% else %}bg-amber-900 text-amber-300{% endif %}">
+                {{ estudio.veredicto }}{% if estudio.flags %} ⚠{{ estudio.flags|join(',') }}{% endif %}</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            {% for k in estudio.comparacion %}
+            <div class="bg-gray-950 rounded p-3 border {% if k.destacar %}border-blue-600 ring-1 ring-blue-600/50{% else %}border-gray-800{% endif %}">
+                <div class="text-xs text-gray-500">{{ k.label }}</div>
+                <div class="text-sm text-gray-400">
+                    {%- if k.fmt == 'usd' -%}${{ '{:,.0f}'.format(k.base) if k.base is not none else '—' }}{%- elif k.base is not none -%}{{ k.base }}{%- else -%}—{%- endif -%}
+                    <span class="text-gray-600 mx-1">→</span>
+                    <b class="text-gray-100 text-base">
+                    {%- if k.fmt == 'usd' -%}${{ '{:,.0f}'.format(k.reco) if k.reco is not none else '—' }}{%- elif k.reco is not none -%}{{ k.reco }}{%- else -%}—{%- endif -%}
+                    </b>
+                </div>
+                {% if k.delta is not none %}
+                <div class="text-xs font-semibold mt-1 {% if k.good %}text-emerald-400{% elif k.good == false %}text-red-400{% else %}text-gray-500{% endif %}">
+                    Δ {{ '{:+,.0f}'.format(k.delta) if k.fmt == 'usd' else '{:+.2f}'.format(k.delta) }}
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        <div class="bg-amber-900/20 border border-amber-800 rounded p-2 text-xs text-amber-200">
+            ★ el número de confianza es el <b>OOS</b> (el in-sample nunca decide) · métricas con <b>corte de cancel_after {{ '%.0f'|format(estudio.corte.cancel_after_s) }}s</b> (fills reales de producción — más bajos que el "alguna vez llena", a propósito) · tope natural de profundidad {{ estudio.corte.tope_natural_atr }}×ATR · {{ estudio.n_aprobadas }}/{{ estudio.n_configs }} configs aprobadas.
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ══ HEATMAP (lo genera el motor — grado publicación) ══ -->
+    {% if estudio.heatmap %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4">
+        <div class="text-sm font-semibold text-gray-200 mb-2">Candidatas del walk-forward
+            <a href="/ui/riesgo/reporte?strategy={{ key }}" target="_blank" class="text-xs font-normal text-blue-400 hover:underline ml-2">reporte completo (md) →</a></div>
+        <img src="/ui/riesgo/heatmap?strategy={{ key }}" alt="heatmap"
+             class="w-full rounded bg-white/95 p-1">
+    </div>
+    {% endif %}
+
+    <!-- ══ RECOMENDACIÓN + JSON de activación ══ -->
+    {% if estudio.reco %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 grid md:grid-cols-2 gap-4">
+        <div class="space-y-2 text-sm">
+            <div class="font-semibold text-gray-200">Recomendación — {{ estudio.reco.config }}</div>
+            <ul class="text-xs text-gray-300 space-y-1.5">
+                {% if estudio.reco.backstop %}
+                <li>🛡 <b>Backstop:</b> {{ estudio.reco.backstop.pts|round(0)|int }} pts = ${{ '{:,.0f}'.format(estudio.reco.backstop.usd_por_mini) }}/mini — stop de <b>precio fijo</b> desde la señal (no ×ATR).</li>
+                {% endif %}
+                <li>🪜 <b>Escalera:</b>
+                    {% for p in estudio.reco.escalera.piernas %}{{ p.micros }} MES @ {{ p.depth_atr }}×ATR{{ ' + ' if not loop.last }}{% endfor %}
+                    (anclada a la señal, total {{ estudio.reco.escalera.total_micros }} micros = 1 mini).</li>
+                <li>🎯 <b>TP nominal:</b> L {{ estudio.reco.tp_nominal_atr.long }}× / S {{ estudio.reco.tp_nominal_atr.short }}×ATR — por encima del p99 del cierre; <b>que cierre LuxAlgo</b> (solo satisface TradersPost).</li>
+                {% if estudio.reco.cancel_after_seconds %}
+                <li>⏱ <b>cancel_after coherente:</b> {{ estudio.reco.cancel_after_seconds }}s (p90 del toque de la pierna más profunda; máx duro TradersPost 3600s).</li>
+                {% endif %}
+                <li>📐 <b>Sizing:</b> tamaño fijo, sin equity. <b>Gestión por lado:</b> {{ estudio.ls }} — <code>short_size_factor</code> es afinable del operador (no lo fija el estudio).</li>
+                <li>✅ <b>Confianza:</b> PF OOS <b>{{ estudio.reco.confianza_oos.pf_out }}</b> (Δ{{ estudio.reco.confianza_oos.delta_pf_out }}) · {{ estudio.reco.confianza_oos.veredicto }}.</li>
+            </ul>
+            {% if link_vivo %}
+            <a href="{{ link_vivo }}" class="inline-block text-xs px-2 py-1 rounded bg-indigo-800 hover:bg-indigo-700 text-white">⚙ afinar/aplicar en la config viva →</a>
+            {% endif %}
+        </div>
+        <div class="space-y-1">
+            <div class="flex items-center justify-between">
+                <div class="text-xs text-gray-500">Para el <code>pipeline_config_json</code> de la estrategia (merge, no reemplazo) — aplicar es un paso aparte:</div>
+                <button @click="copiar()" class="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200" x-text="copiado ? '✓ copiado' : 'copiar'"></button>
+            </div>
+            <pre id="activacion-json" class="bg-gray-950 rounded p-3 text-xs text-emerald-200 overflow-auto max-h-80">{{ estudio.activacion }}</pre>
+        </div>
+    </div>
+    {% endif %}
+
+    {% elif motor %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-6 text-center text-sm text-gray-400">
+        Listado integrado ({{ motor.trades.n }} trades) pero <b>sin estudio todavía</b> — dale <b>▶ Calcular</b> arriba.
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-6 text-center text-sm text-gray-400">
+        Sin estrategias en el manifest — da de alta la primera con <b>＋ nueva estrategia</b> (sube su lista de operaciones).
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function riesgoApp() {
+    return {
+        busy: false, msg: '', ok: true, tail: '', copiado: false,
+        nueva: false, nuevaSel: '', nuevaId: '', msgNueva: '', okNueva: true,
+        job: {{ "'" + job + "'" if job else 'null' }},
+
+        async _subir(strategy, fileInput) {
+            const fd = new FormData();
+            fd.append('strategy', strategy);
+            fd.append('file', fileInput.files[0]);
+            this.busy = true;
+            try {
+                const r = await fetch('/ui/riesgo/upload', { method: 'POST', body: fd });
+                const j = await r.json();
+                return { ok: r.ok, j };
+            } finally { this.busy = false; }
+        },
+        async upload(ev) {
+            const input = ev.target.querySelector('input[type=file]');
+            if (!input.files.length) return;
+            this.msg = '⏳ subiendo e integrando…'; this.ok = true; this.tail = '';
+            const { ok, j } = await this._subir('{{ key }}', input);
+            if (ok) {
+                this.msg = '✅ integrado: ' + j.n_trades + ' trades (export ' + j.integrado + ') — dale Calcular';
+                setTimeout(() => location.reload(), 1200);
+            } else {
+                this.ok = false; this.msg = '⛔ ' + (j.error || 'error');
+                this.tail = j.detalle || '';
+            }
+        },
+        async uploadNueva(ev) {
+            const id = (this.nuevaSel || this.nuevaId || '').trim();
+            const input = ev.target.querySelector('input[type=file]');
+            if (!id) { this.okNueva = false; this.msgNueva = 'elige o escribe un strategy_id'; return; }
+            if (!input.files.length) return;
+            this.msgNueva = '⏳ dando de alta e integrando…'; this.okNueva = true;
+            const { ok, j } = await this._subir(id, input);
+            if (ok) {
+                this.msgNueva = '✅ ' + id + ' integrada (' + j.n_trades + ' trades)';
+                setTimeout(() => location.href = '/ui/riesgo?strategy=' + id, 900);
+            } else {
+                this.okNueva = false;
+                this.msgNueva = '⛔ ' + (j.error || 'error') + (j.detalle ? ' — ' + j.detalle.slice(-300) : '');
+            }
+        },
+        async calcular() {
+            this.msg = ''; this.tail = '';
+            const r = await fetch('/ui/riesgo/calcular', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ strategy: '{{ key }}' }) });
+            const j = await r.json();
+            if (!r.ok) { this.ok = false; this.msg = '⛔ ' + (j.error || 'error'); return; }
+            this.job = 'running'; this._poll();
+        },
+        async _poll() {
+            const r = await fetch('/ui/riesgo/calcular/status?strategy={{ key }}');
+            const j = await r.json();
+            this.job = j.status;
+            if (j.status === 'running') { setTimeout(() => this._poll(), 2000); return; }
+            if (j.status === 'done') { location.reload(); }
+            else { this.ok = false; this.msg = '⛔ el cálculo falló'; this.tail = j.tail || ''; }
+        },
+        copiar() {
+            const el = document.getElementById('activacion-json');
+            navigator.clipboard.writeText(el.textContent).then(() => {
+                this.copiado = true; setTimeout(() => this.copiado = false, 1500);
+            });
+        },
+    };
+}
+</script>
+{% endblock %}
