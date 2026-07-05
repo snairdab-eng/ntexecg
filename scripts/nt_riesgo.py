@@ -24,11 +24,13 @@ Comandos (MR-1):
       escalera por MAE con alta participación, TP nominal por encima del
       cierre de LuxAlgo, asimetría L/S, gating, reconciliación de fills
       con el pullback del Lab) y persiste runs/estudios_<fecha>.json.
+  recrear <clave> <fecha>                                          (MR-4)
+      Reproduce la corrida `fecha` desde el snapshot archivado con los
+      parámetros exactos de su manifest, escribe runs/recrear_<fecha>/ y
+      compara sección por sección y archivo por archivo (bit a bit).
   estado [<clave>]
       Resumen por carpeta MotorRiesgo/: nº trades, rango, cobertura HOLC,
       última integración, última corrida.
-
-`recrear` llega en MR-4 (fases del SPEC §10).
 
 Uso (NTDEV):  .venv\\Scripts\\python.exe -m scripts.nt_riesgo integrar ...
 Uso (server): .venv/bin/python -m scripts.nt_riesgo integrar ... --stitch-db
@@ -576,6 +578,156 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# recrear (MR-4): reproducir una corrida bit a bit desde snapshot + manifest
+# ---------------------------------------------------------------------------
+
+def _comparar_secciones(orig: dict, nuevo: dict) -> list[str]:
+    """Secciones del estudio que difieren (canónico, sort_keys). `meta` se
+    compara SIN motor_commit: el commit registra procedencia; el candado de
+    determinismo son los datos y resultados."""
+    difs = []
+    for k in sorted(set(orig) | set(nuevo)):
+        if k == "meta":
+            continue
+        if (json.dumps(orig.get(k), sort_keys=True)
+                != json.dumps(nuevo.get(k), sort_keys=True)):
+            difs.append(k)
+    mo = {x: v for x, v in orig.get("meta", {}).items()
+          if x != "motor_commit"}
+    mn = {x: v for x, v in nuevo.get("meta", {}).items()
+          if x != "motor_commit"}
+    if json.dumps(mo, sort_keys=True) != json.dumps(mn, sort_keys=True):
+        difs.append("meta")
+    return difs
+
+
+async def recrear(clave: str, fecha: str) -> dict:
+    """MR-4 — reproduce la corrida `fecha` desde el snapshot archivado con
+    los parámetros EXACTOS de su manifest (SPEC §2/§9.3, Directiva 3.5:
+    mismo código + mismos datos = idéntico bit a bit). Escribe la
+    recreación en runs/recrear_<fecha>/ (no toca los originales) y compara
+    sección por sección y archivo por archivo."""
+    base_dir = MOTOR_DIR / clave
+    runs = base_dir / "runs"
+    orig_path = runs / f"estudios_{fecha}.json"
+    if not orig_path.exists():
+        raise SystemExit(f"⛔ No existe {orig_path} — nada que recrear.")
+    orig = json.loads(orig_path.read_text(encoding="utf-8"))
+    mo = orig["meta"]
+
+    snap = next((p for p in sorted((base_dir / "snapshots").glob("*.csv"))
+                 if _sha256(p) == mo["master_sha256"]), None)
+    if snap is None:
+        raise SystemExit("⛔ Ningún snapshot coincide con el sha256 del "
+                         "master de la corrida — no se puede recrear.")
+    print(f"🔁 recrear {clave} · corrida {fecha}")
+    print(f"· snapshot {snap.name} (sha ✓ = master de la corrida)")
+    print(f"· parámetros originales: oos {mo['oos']} · "
+          f"stitch {'sí' if mo['stitch_db'] else 'no'} · "
+          f"haircut {orig['haircut']}")
+
+    hc = HaircutCfg(**orig["haircut"])
+    trades = parse_luxalgo_csv(snap)
+    bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
+        trades, mo["activo"], mo["stitch_db"])
+    holc_last = max(bars).isoformat()
+    if holc_last != mo["holc_ultima_barra"]:
+        print(f"⚠ El HOLC cambió desde la corrida original "
+              f"({mo['holc_ultima_barra']} → {holc_last}): la recreación "
+              f"puede diferir en la cola — deriva de DATOS, no de código.")
+    split_in_out(trades, mo["oos"])
+    keys5 = sorted(bars)
+    idx5 = {k: i for i, k in enumerate(keys5)}
+    covered = [t for t in trades if t.aligned_ts in idx5]
+    pb = pullback_study(covered, keys5, idx5, bars)
+    lab_rates = {lvl: d["fill_rate"] for lvl, d in pb.items()}
+
+    sts = from_trades(trades, mo["usd_por_punto"],
+                      {t.number for t in estimated})
+    res = run_studies(sts, mo["usd_por_punto"], hc, lab_rates)
+    # meta con el MISMO orden de claves que `calcular` (el original) para
+    # que la serialización sea comparable byte a byte
+    res["meta"] = {**mo,
+                   "n_trades_listado": len(trades),
+                   "sin_cobertura": sin_cobertura,
+                   "atr_estimado": len(estimated),
+                   "holc_ultima_barra": holc_last,
+                   "grids_version": grids_fingerprint(),
+                   "motor_commit": _git_commit(),
+                   "tz": tz_detail}
+
+    out_dir = runs / f"recrear_{fecha}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"estudios_{fecha}.json").write_text(
+        json.dumps(res, indent=1, ensure_ascii=False), encoding="utf-8")
+    from scripts.mr_report import generar_entregables
+    generar_entregables(res, out_dir)
+
+    difs = _comparar_secciones(orig, res)
+    commit_orig = mo.get("motor_commit")
+    commit_hoy = _git_commit()
+
+    def comparar_texto(o: Path, n: Path):
+        """True | 'salvo_commit' | False | None. Los entregables registran
+        el commit del motor como PROCEDENCIA: si es lo único que cambia,
+        los resultados son idénticos (se reporta aparte)."""
+        if not (o.exists() and n.exists()):
+            return None
+        to, tn = o.read_bytes(), n.read_bytes()
+        if to == tn:
+            return True
+        if commit_orig and commit_hoy:
+            so = to.decode("utf-8").replace(commit_orig, "«COMMIT»")
+            sn = tn.decode("utf-8").replace(commit_hoy, "«COMMIT»")
+            if so == sn:
+                return "salvo_commit"
+        return False
+
+    stem = f"{clave}_{fecha}"
+    archivos = {nombre: comparar_texto(runs / nombre, out_dir / nombre)
+                for nombre in (f"estudios_{fecha}.json", f"Riesgo_{stem}.md",
+                               f"configs_{stem}.csv",
+                               f"recomendacion_{stem}.json")}
+    png = f"heatmap_{stem}.png"
+    png_ok = ((runs / png).read_bytes() == (out_dir / png).read_bytes()
+              if (runs / png).exists() and (out_dir / png).exists()
+              else None)
+
+    identico = (not difs
+                and all(v in (True, "salvo_commit")
+                        for v in archivos.values() if v is not None))
+    bit_a_bit = identico and all(v is True for v in archivos.values()
+                                 if v is not None)
+    print("\n— comparación con la corrida original —")
+    n_sec = len([k for k in orig if k != "meta"]) + 1
+    print(f"  secciones del estudio    "
+          f"{'✓ idénticas' if not difs else '✗ difieren: ' + ', '.join(difs)}"
+          f" ({n_sec - len(difs)}/{n_sec})")
+    marcas = {True: "✓ bit a bit", "salvo_commit": "✓ (salvo commit)",
+              False: "✗ DIFIERE", None: "— no comparado"}
+    for nombre, ok in archivos.items():
+        print(f"  {nombre:44} {marcas[ok]}")
+    print(f"  {png:44} "
+          f"{'✓ bit a bit' if png_ok else '— no comparado' if png_ok is None else '✗ difiere (informativo)'}")
+    if identico and bit_a_bit:
+        print(f"\n✅ RECREACIÓN IDÉNTICA BIT A BIT — determinismo "
+              f"verificado (recreado en {out_dir})")
+    elif identico:
+        print(f"\n✅ RESULTADOS IDÉNTICOS — solo difiere el commit del "
+              f"motor registrado como procedencia "
+              f"({commit_orig} → {commit_hoy}); bit a bit exacto requiere "
+              f"el mismo commit (Directiva 3.5: mismo código + mismos "
+              f"datos). Recreado en {out_dir}")
+    else:
+        print(f"\n⛔ LA RECREACIÓN DIFIERE — revisar deriva de datos "
+              f"(HOLC/stitch) o cambio de código (commit "
+              f"{commit_orig} → {commit_hoy})")
+    return {"identico": identico, "bit_a_bit": bit_a_bit,
+            "difs_secciones": difs, "archivos": archivos,
+            "png_identico": png_ok, "out_dir": out_dir}
+
+
+# ---------------------------------------------------------------------------
 # estado
 # ---------------------------------------------------------------------------
 
@@ -653,11 +805,15 @@ def main() -> None:
                        help="haircut: deslizamiento del backstop en pts "
                             "(el estrés 0/10/25 se reporta siempre)")
 
+    p_rec = sub.add_parser(
+        "recrear", help="reproducir una corrida bit a bit (MR-4)")
+    p_rec.add_argument("clave", help="carpeta, p.ej. ES_ConfNormal_TC_TSR")
+    p_rec.add_argument("fecha", help="fecha de la corrida a recrear "
+                                     "(runs/estudios_<fecha>.json)")
+
     p_est = sub.add_parser("estado", help="resumen de los listados integrados")
     p_est.add_argument("clave", nargs="?", default=None,
                        help="carpeta específica, p.ej. ES_ConfNormal_TC_TSR")
-
-    sub.add_parser("recrear", help="(MR-4 — aún no implementado)")
 
     args = ap.parse_args()
     if args.cmd == "integrar":
@@ -668,10 +824,10 @@ def main() -> None:
                         slip_pts=args.slip_pts, gap_pts=args.gap_pts)
         asyncio.run(calcular(args.clave, args.stitch_db, args.oos,
                              args.fecha, hc))
+    elif args.cmd == "recrear":
+        asyncio.run(recrear(args.clave, args.fecha))
     elif args.cmd == "estado":
         estado(args.clave)
-    else:
-        raise SystemExit("`recrear` llega en MR-4 (fases del SPEC §10).")
 
 
 if __name__ == "__main__":

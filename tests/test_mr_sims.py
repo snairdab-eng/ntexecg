@@ -286,6 +286,29 @@ def test_deep_leg_stress_conteos():
 
 
 # ---------------------------------------------------------------------------
+# MR-4: comparador de secciones (a mano)
+# ---------------------------------------------------------------------------
+
+def test_comparar_secciones_detecta_deriva():
+    from scripts.nt_riesgo import _comparar_secciones
+
+    a = {"meta": {"fecha": "2026-07-04", "motor_commit": "aaa"},
+         "backstop": {"optimo": 4500}, "ls": {"lectura": "largos"}}
+    # el commit del motor NO cuenta como deriva (es procedencia)
+    b = json.loads(json.dumps(a))
+    b["meta"]["motor_commit"] = "bbb"
+    assert _comparar_secciones(a, b) == []
+    # cualquier sección de resultados SÍ cuenta
+    c = json.loads(json.dumps(a))
+    c["backstop"]["optimo"] = 5000
+    assert _comparar_secciones(a, c) == ["backstop"]
+    # y la meta (datos/parámetros) también
+    d = json.loads(json.dumps(a))
+    d["meta"]["fecha"] = "2026-07-05"
+    assert _comparar_secciones(a, d) == ["meta"]
+
+
+# ---------------------------------------------------------------------------
 # Integración ES real: paridad con resim_rows + calcular end-to-end
 # ---------------------------------------------------------------------------
 
@@ -465,6 +488,25 @@ class TestESReal:
         assert 3.5 <= tm["pf_out"] <= 4.1
         el = res["robustez"]["elegido"]
         assert el["walk_forward"]["bloques"]["out"]["pf"] >= 3.0
+
+    def test_recrear_bit_a_bit(self, corrida):
+        """MR-4: recrear reproduce la corrida IDÉNTICA desde el snapshot
+        (mismo código + mismos datos — determinismo end-to-end)."""
+        import scripts.nt_riesgo as nr
+
+        motor_dir, _res = corrida
+        original = nr.MOTOR_DIR
+        nr.MOTOR_DIR = motor_dir
+        try:
+            r = asyncio.run(nr.recrear("ES_test", "2026-07-04"))
+        finally:
+            nr.MOTOR_DIR = original
+        assert r["difs_secciones"] == []
+        assert r["identico"] is True
+        assert r["bit_a_bit"] is True        # mismo commit dentro del test
+        assert all(v is True for v in r["archivos"].values())
+        assert (motor_dir / "ES_test" / "runs" / "recrear_2026-07-04"
+                / "estudios_2026-07-04.json").exists()
 
     def test_gating_coherente(self, corrida):
         _, res = corrida
