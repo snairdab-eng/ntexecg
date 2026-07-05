@@ -67,13 +67,20 @@ largos (#6/#87/#96); y **choca con "que cierre LuxAlgo"**).
      cuánto capturaría un TP-meta (los ~$18.9k en la mesa de la referencia, TP asimétrico 5.5×L/1.0×S —
      eso reproduce el hallazgo de la referencia), pero la **recomendación honra "que cierre LuxAlgo"** →
      TP nominal-arriba. Reusa `resim_rows` + split L/S.
-   - **La 60/40 la DECIDE el estudio (MR-2), no se fija a priori.** El barrido de la escalera **DEBE
-     incluir de primera clase las variantes de ALTA PARTICIPACIÓN** — primera pierna a **mercado o
-     somera** (llena casi siempre) + segunda en pullback ×ATR —, además de las profundas tipo
-     referencia (6@6.5×+4@7.0×, ~29%). Por cada variante reporta **participación, PF, MaxDD, net, peor
-     trade**, y el operador elige viendo el trade-off real. Prioridad declarada: **no bloquear la
-     mayoría de los trades** (el edge está en participar) → las variantes de alta participación NO son
-     nota al pie.
+   - **El estudio decide TODA la escalera, no solo las profundidades — "60/40" es solo un ejemplo.**
+     El barrido es **conjunto** sobre los TRES grados de libertad: (a) los **puntos ×ATR** de cada
+     pierna, (b) la **distribución de contratos** por pierna (60/40, 70/30, 50/50, 2+1, etc. — no se
+     fija), y (c) el **número de piernas** (2 o 3). "Jugar con esos números" es literal. **DEBE incluir
+     de primera clase las variantes de ALTA PARTICIPACIÓN** (primera pierna a mercado/somera que llena
+     casi siempre), además de las profundas. **El estudio corre SIEMPRE a 10 micros = 1 mini**
+     (para comparar **1:1 con la línea base de LuxAlgo**, que viene en 1 minicontrato); el barrido varía
+     solo la **distribución** de esos 10 (6+4, 7+3, 4+3+3…), las profundidades y el nº de piernas — el
+     **total NO cambia**. Por cada config reporta **participación, PF, MaxDD, net, peor trade**; el
+     operador elige. Prioridad declarada: **no bloquear la mayoría de los trades** (el edge está en
+     participar).
+   - **Separación estudio ↔ config:** el estudio **recomienda** (a 10 micros, comparable); la **pestaña
+     de config de la estrategia** es donde el operador **aplica y afina** los valores en vivo ("jugar
+     con los números" vive ahí, no en el estudio). `recomendacion.json` es el puente entre ambas.
 2. **La costura mata el asterisco del HOLC.** El SPEC marca los últimos 18 trades de ES con ATR
    estimado (HOLC al 22-jun). Con `--stitch-db` (cola de Postgres, ya en el server) se cosen hasta hoy
    → el caveat desaparece en vez de solo marcarse. Igual mantén la bandera para cuando no haya costura.
