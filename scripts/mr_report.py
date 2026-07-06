@@ -39,6 +39,30 @@ def _flags_md(flags: list) -> str:
     return f" ⚠{','.join(flags)}" if flags else ""
 
 
+# P1-2 (auditoría 2026-07-06) — presentación del backstop por instrumento.
+# SOLO display: el cálculo del stop en L5 sigue en unidad de precio. Para FX
+# la "unidad de precio" da decimales ilegibles (el yen: 0.00036 → "0 pts");
+# se expresa en $/mini + ticks. Tick sizes CME estándar (full-size).
+TICK_SIZE = {"ES": 0.25, "NQ": 0.25, "RTY": 0.1, "YM": 1.0,
+             "GC": 0.1, "CL": 0.01, "6E": 0.00005, "6J": 0.0000005}
+FX_INSTRUMENTS = {"6E", "6J"}
+
+
+def fmt_stop(activo: str, pts: float | None, usd_mini: float | None) -> str:
+    """Backstop legible por instrumento: FX en ticks/$ (nunca 'puntos');
+    índices/commodities en pts + $."""
+    if pts is None or usd_mini is None:
+        return "—"
+    if activo in FX_INSTRUMENTS:
+        tick = TICK_SIZE.get(activo)
+        ticks = round(pts / tick) if tick else None
+        out = f"${usd_mini:,.0f}/mini"
+        if ticks:
+            out += f" = {ticks:,} ticks ({pts:.6g} en precio)"
+        return out
+    return f"{pts:.0f} pts = ${usd_mini:,.0f}/mini"
+
+
 # ---------------------------------------------------------------------------
 # Mapa de calor por columna (terciles → 🟩🟨🟥, como la referencia)
 # ---------------------------------------------------------------------------
@@ -94,8 +118,12 @@ def render_md(res: dict) -> str:
     # 2 — línea base
     L.append("---")
     L.append("")
-    L.append("## 1. LÍNEA BASE (listado crudo · 1 mini @ señal · "
-             "scripted exit)")
+    L.append("## 1. LÍNEA BASE — CRUDO (la señal sin gestión · 1 mini @ "
+             "señal · scripted exit)")
+    L.append("*Estos números son del listado CRUDO: la señal sola, sin "
+             "backstop/escalera/TP. El crudo puede decaer fuera de muestra; "
+             "la comparación crudo↔con-config vive en §3/§4.*")
+    L.append("")
     L.append("| Métrica | Valor |")
     L.append("|---|---:|")
     L.append(f"| **Total PnL** | **{_usd(base['net_usd'], 2)}** |")
@@ -263,8 +291,8 @@ def render_md(res: dict) -> str:
         "wr": ([f["wr"] for f in filas], True),
     }
     emo = {k: _tercil_emoji(v, mayor) for k, (v, mayor) in cols.items()}
-    L.append("| # | Config | Net $ | **PF OOS** | Max DD | Peor | "
-             "Part% | WR% | gate |")
+    L.append("| # | Config | Net $ | **PF OOS (con config)** | Max DD | "
+             "Peor | Part% | WR% | gate |")
     L.append("|--:|---|---:|---:|---:|---:|---:|---:|---|")
     for i, f in enumerate(filas):
         L.append(
@@ -275,7 +303,7 @@ def render_md(res: dict) -> str:
             f"{emo['peor'][i]}{_usd(f['peor'])} | "
             f"{emo['part'][i]}{_f(f['part'], 1)} | "
             f"{emo['wr'][i]}{_f(f['wr'], 1)} | {f['gate']} |")
-    L.append(f"| — | LÍNEA BASE (señal) | {_usd(base['net_usd'])} | "
+    L.append(f"| — | CRUDO (señal, sin gestión) | {_usd(base['net_usd'])} | "
              f"{_f(_pf_base_oos(res))} | {_usd(base['max_dd_usd'])} | "
              f"{_usd(base['peor_trade_usd'])} | 100.0 | "
              f"{_f(base['wr_pct'], 1)} | — |")
@@ -288,20 +316,25 @@ def render_md(res: dict) -> str:
         L.append("")
         L.append("## 4. ROBUSTEZ (walk-forward — el número que manda es "
                  "el OOS)")
-        L.append("ΔPF vs la base del MISMO bloque; H1/H2 = mitades "
-                 "temporales («¿aguanta ambas mitades?»).")
+        L.append("Dos columnas EXPLÍCITAS para no confundir: **PF OOS "
+                 "crudo (señal)** = la señal sola en ese bloque (puede "
+                 "decaer fuera de muestra) vs **PF OOS con config** = la "
+                 "misma ventana CON la gestión puesta. ΔPF = con config − "
+                 "crudo, del MISMO bloque; H1/H2 = mitades temporales.")
         L.append("")
         elegido_nombre = (rob.get("elegido") or {}).get("nombre")
-        L.append("| Config | part% | PF in | **PF OOS** | ΔPF OOS | "
-                 "PF H1 | PF H2 | veredicto |")
-        L.append("|---|---:|---:|---:|---:|---:|---:|---|")
+        L.append("| Config | part% | PF in | PF OOS crudo (señal) | "
+                 "**PF OOS con config** | ΔPF OOS | PF H1 | PF H2 | "
+                 "veredicto |")
+        L.append("|---|---:|---:|---:|---:|---:|---:|---:|---|")
         for t in rob["tabla"]:
             bl = t["bloques"]
             marca = (" ◀ **ELEGIDO**" if t["nombre"] == elegido_nombre
                      else "")
             L.append(f"| {t['nombre']}{_flags_md(t['flags'])}{marca} | "
                      f"{_f(t['participacion_pct'], 1)} | "
-                     f"{_f(bl['in']['pf'])} | **{_f(bl['out']['pf'])}** | "
+                     f"{_f(bl['in']['pf'])} | {_f(bl['out']['pf_base'])} | "
+                     f"**{_f(bl['out']['pf'])}** | "
                      f"{_f(bl['out']['delta_pf'])} | {_f(bl['h1']['pf'])} | "
                      f"{_f(bl['h2']['pf'])} | {t['veredicto']} |")
         L.append("")
@@ -404,8 +437,8 @@ def render_md(res: dict) -> str:
                  f"{reco['escalera']['total_micros']} micros).")
         if reco["backstop"]:
             L.append(f"- **Airbag imprescindible:** backstop "
-                     f"**{_usd(reco['backstop']['usd_por_mini'])} = "
-                     f"{reco['backstop']['pts']:.0f} pts** desde la señal "
+                     f"**{fmt_stop(meta['activo'], reco['backstop']['pts'], reco['backstop']['usd_por_mini'])}** "
+                     f"desde la señal "
                      f"({_usd(reco['backstop']['usd_por_micro'])}/micro) — "
                      f"stop de PRECIO FIJO, no ×ATR.")
         tpn = reco["tp_nominal_atr"] or {}
@@ -413,9 +446,9 @@ def render_md(res: dict) -> str:
                  f"L {_f(tpn.get('long'), 1)}×ATR / "
                  f"S {_f(tpn.get('short'), 1)}×ATR — por encima del p99 "
                  f"del cierre; casi nunca dispara.")
-        L.append(f"- **Número de confianza: PF OOS "
+        L.append(f"- **Número de confianza: PF OOS con config "
                  f"{_f(conf['pf_out'])}** (ΔPF OOS "
-                 f"{_f(conf['delta_pf_out'])} vs base) · "
+                 f"{_f(conf['delta_pf_out'])} vs el CRUDO del mismo bloque) · "
                  f"{conf['veredicto']}{_flags_md(conf['flags'])}. "
                  f"*{conf['nota']}.*")
         L.append(f"- **Gestión por lado:** {reco['gestion_por_lado']}.")
@@ -530,7 +563,7 @@ def write_heatmap(res: dict, path: Path) -> bool:
         return False
     base = res["linea_base"]["total"]
     filas = filas + [{
-        "nombre": "LÍNEA BASE (señal, sin nada)",
+        "nombre": "CRUDO (señal, sin gestión)",
         "net": base.get("net_usd"), "pf_oos": _pf_base_oos(res),
         "dd": base.get("max_dd_usd"), "peor": base.get("peor_trade_usd"),
         "part": 100.0, "wr": base.get("wr_pct"), "gate": "—", "flags": [],

@@ -118,7 +118,7 @@
     {% if estudio %}
     <!-- ══ LÍNEA BASE (la lista cruda) ══ -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4">
-        <div class="text-sm font-semibold text-gray-200 mb-2">Línea base — la lista cruda (1 mini @ señal)
+        <div class="text-sm font-semibold text-gray-200 mb-2">CRUDO (baseline) — la señal sin gestión (1 mini @ señal)
             <span class="text-xs text-gray-500">corrida {{ estudio.fecha }}</span></div>
         <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
             {% for lbl, v, fmt in [
@@ -136,14 +136,43 @@
             </div>
             {% endfor %}
         </div>
-        <div class="text-xs text-gray-500 mt-2">PF fuera de muestra de la base: <b class="text-gray-300">{{ estudio.base_pf_oos }}</b> · {{ estudio.ls }}</div>
+        <div class="text-xs text-gray-500 mt-2">PF OOS del <b>CRUDO</b>: <b class="text-gray-300">{{ estudio.base_pf_oos }}</b> — la señal sola puede decaer fuera de muestra; la config aguanta/rescata (ver comparación) · {{ estudio.ls }}</div>
     </div>
 
-    <!-- ══ BASE → RECOMENDADA (el corazón) ══ -->
+    <!-- ══ P1-1: sin recomendación validada → motivo honesto, nunca en blanco ══ -->
+    {% if estudio.sin_reco %}
+    <div class="bg-amber-900/30 border border-amber-700 rounded p-4 space-y-2">
+        <div class="text-sm font-semibold text-amber-200">⚠ Sin recomendación validada — el CRUDO manda</div>
+        <p class="text-xs text-amber-100">Nada que recomendar: {{ estudio.sin_reco.motivo }}.</p>
+        {% if estudio.sin_reco.top %}
+        <div class="text-xs text-gray-400 pt-1">Top configs aprobadas por el gating, solo como referencia — <b class="text-amber-300">no validadas por OOS</b> (no aplicar sin más datos):</div>
+        <table class="w-full text-xs">
+            <thead><tr class="text-gray-500 text-left">
+                <th class="py-1">config</th><th class="text-right">net</th><th class="text-right">PF</th><th class="text-right">MaxDD</th><th class="text-right">part%</th><th class="text-right">score</th><th></th>
+            </tr></thead>
+            <tbody>
+            {% for c in estudio.sin_reco.top %}
+            <tr class="border-t border-gray-800 text-gray-300">
+                <td class="py-1 font-mono">{{ c.nombre }}</td>
+                <td class="text-right">${{ '{:,.0f}'.format(c.net_usd) if c.net_usd is not none else '—' }}</td>
+                <td class="text-right">{{ c.pf }}</td>
+                <td class="text-right">${{ '{:,.0f}'.format(c.max_dd_usd) if c.max_dd_usd is not none else '—' }}</td>
+                <td class="text-right">{{ c.participacion_pct }}</td>
+                <td class="text-right">{{ c.score }}</td>
+                <td class="text-amber-400 text-right">no validada por OOS</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- ══ CRUDO → CON CONFIG (el corazón) ══ -->
     {% if estudio.comparacion %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
         <div class="flex items-center justify-between flex-wrap gap-2">
-            <div class="text-sm font-semibold text-gray-200">Base → Recomendada
+            <div class="text-sm font-semibold text-gray-200">CRUDO (señal) → CON CONFIG recomendada
                 <span class="text-xs font-normal text-blue-300 font-mono">{{ estudio.elegido }}</span></div>
             <span class="text-xs px-2 py-0.5 rounded {% if estudio.veredicto and estudio.veredicto.startswith('validado') %}bg-emerald-900 text-emerald-300{% else %}bg-amber-900 text-amber-300{% endif %}">
                 {{ estudio.veredicto }}{% if estudio.flags %} ⚠{{ estudio.flags|join(',') }}{% endif %}</span>
@@ -151,7 +180,7 @@
         <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {% for k in estudio.comparacion %}
             <div class="bg-gray-950 rounded p-3 border {% if k.destacar %}border-blue-600 ring-1 ring-blue-600/50{% else %}border-gray-800{% endif %}">
-                <div class="text-xs text-gray-500">{{ k.label }}</div>
+                <div class="text-xs text-gray-500">{{ k.label }} <span class="text-gray-600">· crudo → con config</span></div>
                 <div class="text-sm text-gray-400">
                     {%- if k.fmt == 'usd' -%}${{ '{:,.0f}'.format(k.base) if k.base is not none else '—' }}{%- elif k.base is not none -%}{{ k.base }}{%- else -%}—{%- endif -%}
                     <span class="text-gray-600 mx-1">→</span>
@@ -189,8 +218,8 @@
         <div class="space-y-2 text-sm">
             <div class="font-semibold text-gray-200">Recomendación — {{ estudio.reco.config }}</div>
             <ul class="text-xs text-gray-300 space-y-1.5">
-                {% if estudio.reco.backstop %}
-                <li>🛡 <b>Backstop:</b> {{ estudio.reco.backstop.pts|round(0)|int }} pts = ${{ '{:,.0f}'.format(estudio.reco.backstop.usd_por_mini) }}/mini — stop de <b>precio fijo</b> desde la señal (no ×ATR).</li>
+                {% if estudio.backstop_fmt %}
+                <li>🛡 <b>Backstop:</b> {{ estudio.backstop_fmt }} — stop de <b>precio fijo</b> desde la señal (no ×ATR).</li>
                 {% endif %}
                 <li>🪜 <b>Escalera:</b>
                     {% for p in estudio.reco.escalera.piernas %}{{ p.micros }} MES @ {{ p.depth_atr }}×ATR{{ ' + ' if not loop.last }}{% endfor %}

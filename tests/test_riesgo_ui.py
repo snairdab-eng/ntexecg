@@ -50,6 +50,7 @@ def dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(rr, "MOTOR_DIR", tmp_path / "MotorRiesgo")
     monkeypatch.setattr(rr, "TRADES_DIR", tmp_path / "ListaDeOperaciones")
     rr.JOBS.clear()
+    rr._INTEGRAR_LOCKS.clear()
     return tmp_path
 
 
@@ -145,6 +146,22 @@ CSV_OK = (
 # Mapeo estrategia ↔ carpeta (puro)
 # ---------------------------------------------------------------------------
 
+def test_fmt_stop_fx_en_ticks_no_puntos():
+    """P1-2: FX se expresa en ticks/$ — el yen daba '0 pts' (0.00036 en
+    unidad de precio). Índices siguen en puntos. SOLO display."""
+    from scripts.mr_report import fmt_stop
+
+    yen = fmt_stop("6J", 0.00036, 4500.0)
+    assert "ticks" in yen and "$4,500" in yen
+    assert "0 pts" not in yen
+    assert "720" in yen                       # 0.00036 / 0.0000005
+    euro = fmt_stop("6E", 0.036, 4500.0)
+    assert "720 ticks" in euro                # 0.036 / 0.00005
+    es = fmt_stop("ES", 90.0, 4500.0)
+    assert es == "90 pts = $4,500/mini"
+    assert fmt_stop("ES", None, 4500.0) == "—"
+
+
 def test_derive_codigo_y_clave():
     assert rr.clave_de("ES5m_ConfNormal_TC_TSR", "ES") == \
         "ES_ConfNormal_TC_TSR"
@@ -174,7 +191,8 @@ async def test_pagina_renderiza_estudio(client: AsyncClient, dirs: Path,
     assert r.status_code == 200
     html = r.text
     assert "28,175" in html                       # línea base
-    assert "Base → Recomendada" in html           # comparación
+    assert "CON CONFIG recomendada" in html       # comparación rotulada
+    assert "CRUDO" in html                        # etiqueta P1-5
     assert "PF OOS" in html                       # número de confianza
     assert "35,478" in html                       # recomendada
     assert "cancel_after" in html                 # corte / honestidad
@@ -198,6 +216,108 @@ async def test_pagina_sin_estudio_y_sin_master(client: AsyncClient,
     r2 = await client.get("/ui/riesgo?strategy=ES5m_Test")
     assert "sin estudio todavía" in r2.text
     assert "Calcular" in r2.text
+
+
+# ---------------------------------------------------------------------------
+# P1-1 — banner "sin recomendación validada" (nunca en blanco)
+# ---------------------------------------------------------------------------
+
+ESTUDIO_SIN_RECO = {
+    "linea_base": {
+        "total": {"n": 40, "net_usd": 5200.0, "pf": 1.9, "wr_pct": 70.0,
+                  "max_dd_usd": 1200.0, "peor_trade_usd": -800.0},
+        "in": {}, "out": {"pf": 2.1},
+    },
+    "recomendacion": None,
+    "backstop": {"optimo": {"backstop_usd": 3000.0}},
+    "corte_fills": {"cancel_after_s": 3600.0, "tope_natural_atr": 1.0,
+                    "niveles": []},
+    "ls": {"lectura": "sin asimetría dominante"},
+    "configs": [
+        {"nombre": "7+3 MES @ 0.25/0.5× + backstop", "n_piernas": 2,
+         "etiquetas": ["barrido", "alta_participacion"],
+         "participacion_pct": 88.0,
+         "total": {"net_usd": 5900.0, "pf": 2.2, "max_dd_usd": 900.0,
+                   "peor_trade_usd": -600.0},
+         "gate": {"estado": "aprobada", "score": 6.5}},
+        {"nombre": "señal + backstop (sin escalera)", "n_piernas": 1,
+         "etiquetas": [], "participacion_pct": 100.0,
+         "total": {"net_usd": 5300.0, "pf": 1.95, "max_dd_usd": 1100.0,
+                   "peor_trade_usd": -700.0},
+         "gate": {"estado": "aprobada", "score": 4.8}},
+    ],
+    "robustez": {
+        "elegido": None,
+        "tabla": [{"nombre": "7+3 MES @ 0.25/0.5× + backstop",
+                   "veredicto": "no generaliza OOS", "flags": ["n_bajo"]}],
+    },
+    "meta": {"fecha": "2026-07-06"},
+}
+
+
+@pytest.mark.asyncio
+async def test_banner_sin_recomendacion_validada(client: AsyncClient,
+                                                 dirs: Path) -> None:
+    """Adversarial: con ELEGIDO=ninguno (6E/6J/YM) la sección de estudio NO
+    puede quedar en blanco — banner con el motivo honesto + top configs
+    aprobadas marcadas 'no validadas por OOS'."""
+    _write_lab_manifest(dirs, {"6E5m_Test": {
+        "instrument": "6E", "csv": "ListaDeOperaciones/x.csv",
+        "confirmed": True}})
+    base = dirs / "MotorRiesgo" / "6E_Test"
+    (base / "runs").mkdir(parents=True)
+    (base / "snapshots").mkdir()
+    (base / "snapshots" / "export_2026-07-04.csv").write_text(
+        "x", encoding="utf-8")
+    man = dict(MOTOR_MAN, activo="6E", codigo="Test")
+    (base / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+    (base / "runs" / "estudios_2026-07-06.json").write_text(
+        json.dumps(ESTUDIO_SIN_RECO), encoding="utf-8")
+
+    r = await client.get("/ui/riesgo?strategy=6E5m_Test")
+    assert r.status_code == 200
+    html = r.text
+    assert "Sin recomendación validada" in html
+    assert "no generaliza" in html or "nativo" in html      # motivo honesto
+    assert "no validadas por OOS" in html
+    assert "7+3 MES @ 0.25/0.5× + backstop" in html          # top referencia
+    # y las etiquetas crudo/config presentes (P1-5)
+    assert "CRUDO" in html
+
+
+# ---------------------------------------------------------------------------
+# P1-4 — lock de integrar por clave (dos subidas simultáneas no compiten)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_integrar_serializado_por_clave(
+    client: AsyncClient, dirs: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adversarial: dos subidas CONCURRENTES de la misma estrategia deben
+    serializarse (sin lock, los dos integrar corren solapados y compiten
+    por master.csv/manifest — last-writer-wins silencioso)."""
+    _write_lab_manifest(dirs, {"ES5m_Test": {
+        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv",
+        "confirmed": True}})
+    estado = {"activos": 0, "max": 0}
+
+    async def fake_motor(cmd):
+        estado["activos"] += 1
+        estado["max"] = max(estado["max"], estado["activos"])
+        await asyncio.sleep(0.15)
+        estado["activos"] -= 1
+        return 0, "ok"
+    monkeypatch.setattr(rr, "_run_motor", fake_motor)
+
+    async def sube():
+        return await client.post(
+            "/ui/riesgo/upload", data={"strategy": "ES5m_Test"},
+            files={"file": ("Lux_CME_MINI_ES1!_2026-07-04_ab.csv",
+                            CSV_OK.encode(), "text/csv")})
+
+    r1, r2 = await asyncio.gather(sube(), sube())
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert estado["max"] == 1, "integrar NO está serializado por clave"
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +480,7 @@ async def test_aceptacion_es_end_to_end(client: AsyncClient,
     assert r.status_code == 200
     html = r.text
     assert "28,175" in html                        # la línea base de ES
-    assert "Base → Recomendada" in html
+    assert "CON CONFIG recomendada" in html
     assert "PF OOS" in html
     hm = await client.get("/ui/riesgo/heatmap?strategy=ES5m_UiTest")
     assert hm.status_code == 200

@@ -29,6 +29,9 @@ dependencies = [
     "requests>=2.32.0",
     "bcrypt>=4.1.0",
     "pyjwt>=2.8.0",
+    # Motor de Riesgo: heatmap.png es producto (lo sirve la pestaña Riesgo);
+    # en el extra opcional el server lo omitía en silencio (P1-3, auditoría).
+    "matplotlib>=3.9.0",
 ]
 
 [project.optional-dependencies]
@@ -44,10 +47,8 @@ phase6 = [
     "numpy>=1.26.0",
     "scikit-learn>=1.4.0",
 ]
-# Motor de Riesgo (MR-3): heatmap.png de los entregables del estudio
-riesgo = [
-    "matplotlib>=3.9.0",
-]
+# (matplotlib movido a dependencias principales — P1-3 de la auditoría:
+# el heatmap es producto vía la pestaña Riesgo, no un extra)
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -41,6 +41,7 @@ from app.db.session import get_db
 from app.web.common import render
 import app.web.routes_lab as routes_lab                # manifest compartido
 from scripts.lab_manifest import MICRO_TO_LAB, csv_instrument
+from scripts.mr_report import fmt_stop                 # FX en ticks/$ (P1-2)
 
 router = APIRouter()
 
@@ -52,6 +53,14 @@ _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 # Jobs de calcular en segundo plano: {clave: {status, tail, ...}}
 JOBS: dict[str, dict] = {}
+
+# P1-4 — integrar SERIALIZADO por estrategia: dos subidas simultáneas de la
+# misma clave no compiten por master.csv/manifest (last-writer-wins mudo).
+_INTEGRAR_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _lock_integrar(strategy: str) -> asyncio.Lock:
+    return _INTEGRAR_LOCKS.setdefault(strategy, asyncio.Lock())
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +179,50 @@ def _activacion_json(reco: dict) -> dict:
     return out
 
 
+def _motivo_sin_reco(res: dict) -> dict:
+    """P1-1 — cuando el walk-forward no valida nada (6E/6J/YM), la sección
+    de estudio NUNCA queda en blanco: motivo honesto + las top configs
+    aprobadas como referencia, marcadas 'no validadas por OOS'."""
+    rob = res.get("robustez") or {}
+    tabla = rob.get("tabla") or []
+    partes: list[str] = []
+    if not (res.get("backstop") or {}).get("optimo"):
+        partes.append("sin catástrofe que atajar — ningún backstop supera "
+                      "el score del crudo (el nativo ya es de bajo riesgo)")
+    veredictos = [t.get("veredicto") or "" for t in tabla]
+    if any(v == "sin datos comparables" for v in veredictos):
+        partes.append("OOS sin pérdidas en el crudo → ΔPF no computable "
+                      "fuera de muestra (no validable, que no es malo)")
+    if veredictos and not any(v.startswith("validado") for v in veredictos):
+        if any(v == "no generaliza OOS" for v in veredictos):
+            partes.append("ninguna config supera al crudo fuera de muestra "
+                          "(el nativo domina)")
+        if any(v.startswith("mixto") for v in veredictos):
+            partes.append("candidatas rentables pero pierden en una mitad "
+                          "(inestables)")
+    flags = {f for t in tabla for f in (t.get("flags") or [])}
+    if "n_bajo" in flags or "robustez_fragil" in flags:
+        partes.append("muestra insuficiente (bandera n bajo)")
+    aprobadas = [c for c in res.get("configs") or []
+                 if (c.get("gate") or {}).get("estado") == "aprobada"
+                 and "informativo" not in (c.get("etiquetas") or [])]
+    top = sorted(aprobadas,
+                 key=lambda c: -((c.get("gate") or {}).get("score")
+                                 or -9e18))[:3]
+    return {
+        "motivo": ("; ".join(partes)
+                   or "el walk-forward no validó ninguna candidata"),
+        "top": [{
+            "nombre": c.get("nombre"),
+            "net_usd": (c.get("total") or {}).get("net_usd"),
+            "pf": (c.get("total") or {}).get("pf"),
+            "max_dd_usd": (c.get("total") or {}).get("max_dd_usd"),
+            "participacion_pct": c.get("participacion_pct"),
+            "score": (c.get("gate") or {}).get("score"),
+        } for c in top],
+    }
+
+
 def _estudio_ctx(clave: str) -> dict | None:
     res = _latest_estudio(clave)
     if res is None:
@@ -179,12 +232,19 @@ def _estudio_ctx(clave: str) -> dict | None:
     configs = res.get("configs") or []
     heat = _latest_run_file(clave, "heatmap_*.png")
     md = _latest_run_file(clave, "Riesgo_*.md")
+    activo = (res.get("meta") or {}).get("activo") or clave.split("_")[0]
     return {
         "fecha": res.get("_fecha"),
         "base": res["linea_base"]["total"],
         "base_pf_oos": res["linea_base"]["out"].get("pf"),
         "comparacion": _comparacion(res),
         "reco": reco,
+        "sin_reco": None if reco else _motivo_sin_reco(res),
+        # P1-2: backstop legible por instrumento (FX en ticks/$ — display,
+        # el cálculo del stop en L5 no cambia)
+        "backstop_fmt": (fmt_stop(activo, reco["backstop"]["pts"],
+                                  reco["backstop"]["usd_por_mini"])
+                         if reco and reco.get("backstop") else None),
         "activacion": (json.dumps(_activacion_json(reco), indent=2,
                                   ensure_ascii=False) if reco else None),
         "corte": {"cancel_after_s": corte.get("cancel_after_s"),
@@ -358,29 +418,34 @@ async def riesgo_upload(strategy: str = Form(...),
             {"error": "el CSV no parsea como ListaDeOperaciones de LuxAlgo"},
             status_code=400)
 
-    # integrar (el motor manda: doble-prefijo, cuadre al dólar, TZ)
+    # integrar (el motor manda: doble-prefijo, cuadre al dólar, TZ) —
+    # SERIALIZADO por estrategia (P1-4): el lock cubre subproceso + manifest.
     clave = clave_de(strategy, instrument)
-    rc, tail = await _run_motor(
-        _integrar_cmd(dest, derive_codigo(strategy, instrument), instrument))
-    if rc != 0:
-        dest.unlink(missing_ok=True)
-        return JSONResponse(
-            {"error": "integrar falló", "detalle": tail.strip()[-800:]},
-            status_code=400)
+    async with _lock_integrar(strategy):
+        rc, tail = await _run_motor(
+            _integrar_cmd(dest, derive_codigo(strategy, instrument),
+                          instrument))
+        if rc != 0:
+            dest.unlink(missing_ok=True)
+            return JSONResponse(
+                {"error": "integrar falló", "detalle": tail.strip()[-800:]},
+                status_code=400)
 
-    # Manifest: actualizar CSV (existente) o ALTA confirmada (nueva) —
-    # el `lab_manifest propose --confirm` hecho por UI.
-    rel = dest.as_posix()
-    manifest[strategy] = {**(entry or {"candidates": None}),
-                          "instrument": instrument, "csv": rel,
-                          "confirmed": True}
-    mp = routes_lab.LAB_DIR / "lab_manifest.json"
-    data = (json.loads(mp.read_text(encoding="utf-8"))
-            if mp.exists() else {"version": 1})
-    data["entries"] = manifest
-    mp.parent.mkdir(exist_ok=True)
-    mp.write_text(json.dumps(data, indent=1, ensure_ascii=False),
-                  encoding="utf-8")
+        # Manifest: actualizar CSV (existente) o ALTA confirmada (nueva) —
+        # el `lab_manifest propose --confirm` hecho por UI.
+        manifest = routes_lab.load_manifest()      # releer bajo el lock
+        entry = manifest.get(strategy)
+        rel = dest.as_posix()
+        manifest[strategy] = {**(entry or {"candidates": None}),
+                              "instrument": instrument, "csv": rel,
+                              "confirmed": True}
+        mp = routes_lab.LAB_DIR / "lab_manifest.json"
+        data = (json.loads(mp.read_text(encoding="utf-8"))
+                if mp.exists() else {"version": 1})
+        data["entries"] = manifest
+        mp.parent.mkdir(exist_ok=True)
+        mp.write_text(json.dumps(data, indent=1, ensure_ascii=False),
+                      encoding="utf-8")
 
     motor = _motor_manifest(clave) or {}
     return JSONResponse({

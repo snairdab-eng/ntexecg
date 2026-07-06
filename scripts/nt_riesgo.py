@@ -557,8 +557,8 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
     print(f"\n════ ESTUDIOS DE RIESGO — {clave} "
           f"(universo {res['universo']['n']} trades, "
           f"{res['universo']['n_atr_estimado']} con ATR estimado) ════")
-    print(f"\nLínea base: net {_fmt_usd(base['net_usd'])} · PF {base['pf']} "
-          f"· DD {_fmt_usd(base['max_dd_usd'])} · "
+    print(f"\nCRUDO (señal, sin gestión): net {_fmt_usd(base['net_usd'])} · "
+          f"PF {base['pf']} · DD {_fmt_usd(base['max_dd_usd'])} · "
           f"peor {_fmt_usd(base['peor_trade_usd'])}")
 
     g = res["mae_floor"]["ganadoras_mae_atr"]
