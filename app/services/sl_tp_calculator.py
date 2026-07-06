@@ -51,7 +51,11 @@ class SLTPCalculator:
         """Calculate SL and TP prices.
 
         CRITICAL INVARIANT:
-          If returned with passed=True, sl_price is NEVER None.
+          If returned with passed=True, sl_price is NEVER None — and the
+          whole bracket is VALID: prices > 0 and on the correct side of the
+          signal (long: sl < entry < tp; short: tp < entry < sl). Any
+          computed bracket that violates this → passed=False,
+          reason="bracket_price_invalid" (P0 guard, Auditoría 2026-07-06).
           With backstop_points configured the SL is computable without ATR;
           the ONLY block is entry_price missing (never send without stop).
           Without backstop: ATR unavailable → passed=False,
@@ -148,6 +152,32 @@ class SLTPCalculator:
             tp_price = (entry_price + (atr * tp_multiplier) if is_long
                         else entry_price - (atr * tp_multiplier))
             tp_mode = "legacy_atr"
+
+        # P0 — guarda FINAL fail-closed del bracket (Auditoría 2026-07-06,
+        # P0-1): un backstop mal escalado (p. ej. los 90 pts de ES pegados
+        # en 6E a 1.083) producía sl_price NEGATIVO con passed=True — una
+        # orden desnuda disfrazada (clase NX-05). Sobre los precios YA
+        # computados, en AMBOS modos (backstop y ATR): positivos y del lado
+        # correcto de la señal, o BLOCK. Jamás enviar un bracket inválido.
+        bracket_ok = (
+            sl_price > 0
+            and (sl_price < entry_price if is_long
+                 else sl_price > entry_price)
+            and (tp_price is None
+                 or (tp_price > 0
+                     and (tp_price > entry_price if is_long
+                          else tp_price < entry_price)))
+        )
+        if not bracket_ok:
+            return {
+                "passed": False,
+                "reason": "bracket_price_invalid",
+                "sl_price": None,          # nunca filtrar un precio inválido
+                "tp_price": None,
+                "atr_value": atr,
+                "sl_mode": None,
+                "tp_mode": None,
+            }
 
         return {
             "passed": True,
