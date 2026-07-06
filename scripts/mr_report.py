@@ -468,6 +468,22 @@ def render_md(res: dict) -> str:
         L.append("- **Sin recomendación:** ninguna config quedó VALIDADA "
                  "por el walk-forward (o no hubo backstop óptimo). "
                  "La línea base manda.")
+    gl = (res.get("gestion_lado") or {}).get("recomendacion")
+    if gl:
+        ef = gl["efecto_solo_lado_bueno"]
+        L.append("")
+        L.append("### 5.1 Gestión por lado — la 4ª palanca (ESTRUCTURAL)")
+        L.append(f"**{gl['motivo']}** → **{gl['accion'].upper()} el lado "
+                 f"{gl['lado_malo']}**. Mecanismo: {gl['mecanismo']}.")
+        L.append("")
+        L.append(f"| efecto (solo {gl['lado_bueno']}) | valor |")
+        L.append("|---|---:|")
+        L.append(f"| Net | {_usd(ef.get('net_usd'))} |")
+        L.append(f"| WinRate | {_f(ef.get('wr_pct'), 1)}% |")
+        L.append(f"| Max DD | {_usd(ef.get('max_dd_usd'))} |")
+        L.append(f"| Peor trade | {_usd(ef.get('peor_trade_usd'))} |")
+        L.append("")
+        L.append(f"*{gl['caveat']}.*")
     L.append("")
     L.append("---")
     L.append(f"*Reproducibilidad: master sha `{meta['master_sha256'][:12]}…` "
@@ -672,6 +688,8 @@ def write_recomendacion(res: dict, path: Path) -> None:
             "motor_commit": meta["motor_commit"],
         },
     }
+    doc["gestion_lado"] = (res.get("gestion_lado") or {}).get(
+        "recomendacion")
     if reco:
         doc.update({
             "config": reco["config"],

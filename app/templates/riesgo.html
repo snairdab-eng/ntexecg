@@ -202,6 +202,34 @@
     </div>
     {% endif %}
 
+    <!-- ══ P1b: GESTIÓN POR LADO — la 4ª palanca (estructural, no OOS) ══ -->
+    {% if estudio.gestion_lado %}
+    {% set gl = estudio.gestion_lado %}
+    <div class="bg-gray-900 border border-purple-800 rounded p-4 space-y-2">
+        <div class="text-sm font-semibold text-purple-300">Gestión por lado — la 4ª palanca
+            <span class="text-xs font-normal text-gray-500">(recomendación ESTRUCTURAL — no pasa por el walk-forward)</span></div>
+        <p class="text-xs text-gray-200">{{ gl.motivo }} → <b class="text-purple-300 uppercase">{{ gl.accion }} el lado {{ gl.lado_malo }}</b>.
+            <span class="text-gray-400">Mecanismo: {{ gl.mecanismo }}.</span></p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {% set ef = gl.efecto_solo_lado_bueno %}
+            {% for lbl, v in [('Net (solo ' ~ gl.lado_bueno ~ ')', ef.net_usd),
+                              ('WinRate', ef.wr_pct),
+                              ('Max DD', ef.max_dd_usd),
+                              ('Peor trade', ef.peor_trade_usd)] %}
+            <div class="bg-gray-950 rounded p-3 border border-gray-800">
+                <div class="text-xs text-gray-500">{{ lbl }}</div>
+                <div class="text-lg font-bold text-gray-100">
+                    {%- if 'WinRate' in lbl -%}{{ v }}%{%- else -%}${{ '{:,.0f}'.format(v) if v is not none else '—' }}{%- endif -%}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="bg-amber-900/20 border border-amber-800 rounded p-2 text-xs text-amber-200">
+            {{ gl.caveat }}{% if gl.muestra_chica %} · <b>{{ gl.n_lado_malo }} trades en el lado malo</b>{% endif %}.
+        </div>
+    </div>
+    {% endif %}
+
     <!-- ══ HEATMAP (lo genera el motor — grado publicación) ══ -->
     {% if estudio.heatmap %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4">

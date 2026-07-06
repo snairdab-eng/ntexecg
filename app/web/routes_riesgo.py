@@ -250,6 +250,8 @@ def _estudio_ctx(clave: str) -> dict | None:
         "corte": {"cancel_after_s": corte.get("cancel_after_s"),
                   "tope_natural_atr": corte.get("tope_natural_atr")},
         "ls": (res.get("ls") or {}).get("lectura"),
+        # P1b — gestión por lado (estructural; independiente del elegido)
+        "gestion_lado": (res.get("gestion_lado") or {}).get("recomendacion"),
         "n_configs": len(configs),
         "n_aprobadas": sum(1 for c in configs
                            if c.get("gate", {}).get("estado") == "aprobada"),

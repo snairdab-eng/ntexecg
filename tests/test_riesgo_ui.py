@@ -285,6 +285,65 @@ async def test_banner_sin_recomendacion_validada(client: AsyncClient,
     assert "CRUDO" in html
 
 
+@pytest.mark.asyncio
+async def test_tarjeta_gestion_por_lado(client: AsyncClient,
+                                        dirs: Path) -> None:
+    """P1b: estudio con recomendación de lado → tarjeta 'Gestión por lado'
+    con efecto y caveat; sin ella (ES simétrico) → sin tarjeta."""
+    _write_lab_manifest(dirs, {"YM5m_Test": {
+        "instrument": "YM", "csv": "ListaDeOperaciones/x.csv",
+        "confirmed": True}})
+    base = dirs / "MotorRiesgo" / "YM_Test"
+    (base / "runs").mkdir(parents=True)
+    (base / "snapshots").mkdir()
+    (base / "snapshots" / "export_2026-07-04.csv").write_text(
+        "x", encoding="utf-8")
+    (base / "manifest.json").write_text(
+        json.dumps(dict(MOTOR_MAN, activo="YM", codigo="Test")),
+        encoding="utf-8")
+    est = json.loads(json.dumps(ESTUDIO_SIN_RECO))
+    est["gestion_lado"] = {"recomendacion": {
+        "lado_malo": "short", "lado_bueno": "long", "accion": "cortar",
+        "motivo": "cortos: net -8,220 USD, PF 0.31 y concentra la "
+                  "catástrofe (peor -9,175)",
+        "n_lado_malo": 19, "muestra_chica": True,
+        "efecto_solo_lado_bueno": {"net_usd": 30910.0, "wr_pct": 100.0,
+                                   "max_dd_usd": 0.0,
+                                   "peor_trade_usd": 105.0},
+        "mecanismo": "solo largos — filtro de lado en la config (paso "
+                     "aparte)",
+        "caveat": "recomendación ESTRUCTURAL — no pasa por el walk-forward; "
+                  "considera cortar y valida en demo — muestra chica "
+                  "(19 trades en el lado cortos)",
+    }}
+    (base / "runs" / "estudios_2026-07-06.json").write_text(
+        json.dumps(est), encoding="utf-8")
+
+    r = await client.get("/ui/riesgo?strategy=YM5m_Test")
+    assert r.status_code == 200
+    html = r.text
+    assert "Gestión por lado" in html
+    assert "CORTAR" in html.upper()
+    assert "30,910" in html                    # el efecto (solo largos)
+    assert "muestra chica" in html             # caveat honesto
+    assert "no pasa por el walk-forward" in html
+
+
+@pytest.mark.asyncio
+async def test_sin_gestion_lado_no_hay_tarjeta(client: AsyncClient,
+                                               dirs: Path) -> None:
+    _write_lab_manifest(dirs, {"ES5m_Test": {
+        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv",
+        "confirmed": True}})
+    _seed_motor(dirs)                          # ESTUDIO sin gestion_lado
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert r.status_code == 200
+    # texto exclusivo del CUERPO de la tarjeta (el bullet de la
+    # recomendación y el comentario HTML mencionan el título legítimamente)
+    assert "no pasa por el walk-forward" not in r.text
+    assert "el lado malo" not in r.text.lower()
+
+
 # ---------------------------------------------------------------------------
 # P1-4 — lock de integrar por clave (dos subidas simultáneas no compiten)
 # ---------------------------------------------------------------------------

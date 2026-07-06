@@ -198,6 +198,85 @@ def test_gate_no_supera_base():
 
 
 # ---------------------------------------------------------------------------
+# P1b — gestión por lado (la 4ª palanca): recomendación ESTRUCTURAL
+# ---------------------------------------------------------------------------
+
+def _lado(number, side, pnl_usd, in_sample=True):
+    return st(number, side=side, in_sample=in_sample, atr=4.0,
+              mae=4.0, mfe=4.0, pnl_usd=pnl_usd)
+
+
+def test_gestion_lado_caso_ym_cortar():
+    """El caso YM: largos 100% WR sin pérdidas; cortos net-negativos Y
+    dueños de la catástrofe → recomienda CORTAR el lado corto, con el
+    efecto (sin drawdown, sube el net) y el caveat de muestra chica.
+    Estructural: NO pasa por walk-forward (el lado bueno con 100% WR da
+    PF OOS = None — jamás 'validaría')."""
+    from scripts.mr_sims import side_management
+
+    sts = []
+    n = 1
+    for i in range(12):                       # largos: puras ganadoras
+        sts.append(_lado(n, "long", 2500.0 if i % 2 else 105.0)); n += 1
+        if i % 3 == 0:                        # cortos: pierden y la guardan
+            sts.append(_lado(n, "short", -1200.0)); n += 1
+    sts.append(_lado(n, "short", -9175.0))    # la catástrofe
+
+    r = side_management(sts)
+    rec = r["recomendacion"]
+    assert rec is not None
+    assert rec["lado_malo"] == "short"
+    assert rec["accion"] == "cortar"
+    assert rec["n_lado_malo"] == 5
+    assert rec["muestra_chica"] is True       # 5 < 40 → valida en demo
+    assert "demo" in rec["caveat"] and "muestra chica" in rec["caveat"]
+    assert "estructural" in rec["caveat"].lower()
+    ef = rec["efecto_solo_lado_bueno"]        # largos solos: sin catástrofe
+    assert ef["max_dd_usd"] == 0.0
+    assert ef["peor_trade_usd"] > 0
+    assert ef["wr_pct"] == 100.0
+
+
+def test_gestion_lado_es_simetrico_no_recomienda():
+    """ES: cortos net-POSITIVOS (PF 1.12) aunque tengan el peor trade →
+    NO se recorta un lado que aún gana dinero (no forzarla)."""
+    from scripts.mr_sims import side_management
+
+    sts = []
+    n = 1
+    for i in range(20):
+        sts.append(_lado(n, "long", 800.0 if i % 4 else -400.0)); n += 1
+        # cortos: peor trade global pero net positivo
+        sts.append(_lado(n, "short", 700.0 if i % 3 else -900.0)); n += 1
+    sts.append(_lado(n, "short", -10162.0))   # peor trade en el lado corto
+    sts.append(_lado(n + 1, "short", 12000.0))  # ...pero el lado gana net
+
+    r = side_management(sts)
+    assert r["recomendacion"] is None
+
+
+def test_gestion_lado_reducir_sin_catastrofe():
+    """Lado corto pierde (PF<1) pero la catástrofe vive en los largos →
+    REDUCIR (no cortar): la evidencia estructural es más débil."""
+    from scripts.mr_sims import side_management
+
+    sts = []
+    n = 1
+    for i in range(10):
+        sts.append(_lado(n, "long", 3000.0 if i % 2 else -500.0)); n += 1
+        sts.append(_lado(n, "short", -150.0 if i % 2 else 100.0)); n += 1
+    sts.append(_lado(n, "long", -4000.0))     # el peor trade es LARGO
+    # largos siguen net-positivos (no se tocan); cortos net −250 → reducir
+
+    r = side_management(sts)
+    rec = r["recomendacion"]
+    assert rec is not None
+    assert rec["lado_malo"] == "short"
+    assert rec["accion"] == "reducir"
+    assert "short_size_factor" in str(rec["mecanismo"])
+
+
+# ---------------------------------------------------------------------------
 # Reconciliación (a mano)
 # ---------------------------------------------------------------------------
 
@@ -513,6 +592,9 @@ class TestESReal:
         _, res = corrida
         assert res["ls"]["lectura"].startswith("motor de LARGOS")
         assert res["ls"]["long"]["pf"] > res["ls"]["short"]["pf"]
+        # P1b — ES: cortos net-POSITIVOS → la gestión por lado NO dispara
+        # (no forzarla donde la asimetría no es extrema)
+        assert res["gestion_lado"]["recomendacion"] is None
 
     def test_tp_nominal_casi_nunca_dispara(self, corrida):
         _, res = corrida

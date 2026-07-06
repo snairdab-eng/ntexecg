@@ -662,6 +662,118 @@ def ls_asymmetry(sts: list[SimTrade]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 5b. Gestión POR LADO — la 4ª palanca (P1b, auditoría 2026-07-06)
+# ---------------------------------------------------------------------------
+
+# Lado malo con menos de esto = "muestra chica" → validar en demo
+FRAGIL_SIDE_N = 40
+
+
+def _dd_share_por_lado(sts: list[SimTrade]) -> dict[str, float]:
+    """Fracción de las PÉRDIDAS dentro de la ventana del max drawdown de la
+    equity nativa (pico→valle) que aporta cada lado — quién "guarda" la
+    catástrofe."""
+    if not sts:
+        return {"long": 0.0, "short": 0.0}
+    cums: list[float] = []
+    cum = 0.0
+    for s in sts:
+        cum += s.native_pnl_usd
+        cums.append(cum)
+    peak_val, peak_i = 0.0, -1
+    best_dd, ventana = 0.0, (-1, -1)
+    for i, c in enumerate(cums):
+        if c > peak_val:
+            peak_val, peak_i = c, i
+        dd = peak_val - c
+        if dd > best_dd:
+            best_dd, ventana = dd, (peak_i, i)
+    if best_dd <= 0:
+        return {"long": 0.0, "short": 0.0}
+    perdidas = {"long": 0.0, "short": 0.0}
+    for s in sts[ventana[0] + 1: ventana[1] + 1]:
+        if s.native_pnl_usd < 0:
+            perdidas[s.side] += -s.native_pnl_usd
+    total = sum(perdidas.values()) or 1.0
+    return {k: round(v / total, 3) for k, v in perdidas.items()}
+
+
+def side_management(sts: list[SimTrade],
+                    ls: dict | None = None) -> dict:
+    """Recomendación ESTRUCTURAL de gestión por lado — NO pasa por el
+    walk-forward, a propósito: "el lado que pierde dinero y guarda la
+    catástrofe debe reducirse" es estructura, no un parámetro optimizado.
+    (Y no puede pasar: el lado bueno de YM tiene 100% WR → PF OOS = None →
+    jamás 'validaría' por examen OOS.)
+
+    Dispara SOLO cuando un lado es claramente el problema: net ≤ 0 o
+    PF < 1. Un lado net-positivo NUNCA se recorta (ES: cortos PF 1.12 con
+    el peor trade → nada). La catástrofe (peor trade global en ese lado
+    y/o >50% del max DD) decide la fuerza: CORTAR vs REDUCIR. Con caveat
+    honesto de muestra (nº de trades del lado malo)."""
+    ls = ls or ls_asymmetry(sts)
+    dd_share = _dd_share_por_lado(sts)
+    perdedores = [s for s in sts if s.native_pnl_usd < 0]
+    worst = min(perdedores, key=lambda s: s.native_pnl_usd, default=None)
+    out: dict = {"dd_share": dd_share, "recomendacion": None}
+
+    for lado in ("long", "short"):
+        m = ls.get(lado) or {}
+        if not m.get("n"):
+            continue
+        net, pf = m.get("net_usd"), m.get("pf")
+        pierde = (net is not None and net <= 0) or (pf is not None and pf < 1)
+        if not pierde:
+            continue
+        catastrofe = ((worst is not None and worst.side == lado)
+                      or dd_share.get(lado, 0.0) > 0.5)
+        bueno = "short" if lado == "long" else "long"
+        accion = "cortar" if catastrofe else "reducir"
+        n = m["n"]
+        chica = n < FRAGIL_SIDE_N
+        etq = {"long": "largos", "short": "cortos"}
+        motivo = f"{etq[lado]}: net {net:+,.0f} USD, PF {pf if pf is not None else '—'}"
+        if catastrofe:
+            partes = []
+            if worst is not None and worst.side == lado:
+                partes.append(f"peor trade {worst.native_pnl_usd:+,.0f}")
+            if dd_share.get(lado, 0.0) > 0.5:
+                partes.append(f"{dd_share[lado] * 100:.0f}% del max DD")
+            motivo += " y concentra la catástrofe (" + ", ".join(partes) + ")"
+        if accion == "cortar":
+            mecanismo = (f"solo {etq[bueno]} — filtro de lado en la config "
+                         f"(paso aparte); el mecanismo vivo hoy es "
+                         f"short_size_factor (reduce, no corta)")
+            if lado == "long":
+                mecanismo = ("solo cortos — requiere mecanismo/config aparte "
+                             "(hoy solo existe short_size_factor)")
+        else:
+            mecanismo = ({"short_size_factor": 0.5} if lado == "short" else
+                         "reducir largos requiere mecanismo aparte (hoy solo "
+                         "existe short_size_factor)")
+        out["recomendacion"] = {
+            "lado_malo": lado,
+            "lado_bueno": bueno,
+            "accion": accion,
+            "motivo": motivo,
+            "n_lado_malo": n,
+            "muestra_chica": chica,
+            "efecto_solo_lado_bueno": dict(ls.get(bueno) or {}),
+            "mecanismo": mecanismo,
+            "caveat": (f"recomendación ESTRUCTURAL — no pasa por el "
+                       f"walk-forward (el lado bueno puede tener PF OOS "
+                       f"incalculable, p. ej. 100% WR); considera "
+                       f"{accion} y valida en demo"
+                       + (f" — muestra chica ({n} trades en el lado "
+                          f"{etq[lado]})" if chica else
+                          f" ({n} trades en el lado {etq[lado]})")),
+        }
+        break        # un solo lado malo relevante (si pierden ambos, la
+                     # estrategia entera es el problema, no un lado)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 6. Reconciliación fills escalera ↔ pullback del Lab
 # ---------------------------------------------------------------------------
 
@@ -1063,6 +1175,8 @@ def run_studies(sts: list[SimTrade], ppt: float,
 
     # ── MR-3: robustez walk-forward + recomendación (número OOS manda) ──
     ls = ls_asymmetry(sts)
+    # P1b — la 4ª palanca: gestión por lado, ESTRUCTURAL (no OOS)
+    gestion_lado = side_management(sts, ls)
     robustez = (robustez_study(
         sts, configs, ppt, hc, ca,
         corte_fills["tope_natural_atr"] if corte_fills else None)
@@ -1132,6 +1246,7 @@ def run_studies(sts: list[SimTrade], ppt: float,
         "backstop": backstop,
         "tp": tp,
         "ls": ls,
+        "gestion_lado": gestion_lado,
         "configs": configs,
         "corte_fills": corte_fills,
         "comparativa_sin_corte": comparativa_sin_corte,

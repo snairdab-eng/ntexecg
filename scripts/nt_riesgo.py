@@ -598,6 +598,15 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
               f"peor {_fmt_usd(m['peor_trade_usd'])} · "
               f"give-backs≥3×ATR {m['giveback_perdedores_3atr']}")
 
+    gl = (res.get("gestion_lado") or {}).get("recomendacion")
+    if gl:
+        print(f"▎GESTIÓN POR LADO (estructural): {gl['accion'].upper()} "
+              f"{gl['lado_malo']} — {gl['motivo']} · "
+              f"solo {gl['lado_bueno']}: net "
+              f"{_fmt_usd(gl['efecto_solo_lado_bueno'].get('net_usd'))} · "
+              f"DD {_fmt_usd(gl['efecto_solo_lado_bueno'].get('max_dd_usd'))}"
+              f" · {'⚠ muestra chica' if gl['muestra_chica'] else ''}")
+
     rec = res.get("reconciliacion_fills")
     if rec:
         print(f"\n▎Reconciliación fills escalera↔pullback Lab: "
