@@ -216,7 +216,8 @@ async def test_alias_map_resolves_chains(db: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_analytics_merges_renamed_series(client: AsyncClient, db: AsyncSession):
-    """Decisiones bajo el id viejo y el nuevo → UNA serie con el id canónico."""
+    """Decisiones bajo el id viejo y el nuevo → UNA serie con el id canónico.
+    (P2: la analítica vive en el Dashboard unificado, /ui.)"""
     db.add(Strategy(strategy_id="nueva_x", name="N", asset_symbol="MES",
                     timeframe="5m", status="paper", enabled=True))
     await _decision(db, "vieja_x")
@@ -224,11 +225,11 @@ async def test_analytics_merges_renamed_series(client: AsyncClient, db: AsyncSes
     db.add(_rename_audit("vieja_x", "nueva_x"))
     await db.commit()
 
-    r = await client.get("/ui/analytics")
+    r = await client.get("/ui?days=14")
     assert r.status_code == 200
     assert "nueva_x" in r.text
     assert "vieja_x" not in r.text, (
-        "el id viejo sigue partiendo la serie en Analytics (bug NX-24)")
+        "el id viejo sigue partiendo la serie en el Dashboard (bug NX-24)")
 
 
 @pytest.mark.asyncio
@@ -238,7 +239,7 @@ async def test_analytics_marks_retired(client: AsyncClient, db: AsyncSession):
     await _decision(db, "jubilada")
     await db.commit()
 
-    r = await client.get("/ui/analytics")
+    r = await client.get("/ui?days=14")
     assert r.status_code == 200
     assert "jubilada" in r.text
     assert "retirada" in r.text

@@ -83,7 +83,7 @@
     </div>
 
     {% if key %}
-    <!-- ══ DATOS: identidad del master + reemplazar/eliminar + Calcular ══ -->
+    <!-- ══ 1) DATOS: identidad del master + reemplazar/eliminar + Calcular ══ -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
         <div class="flex items-center justify-between flex-wrap gap-2">
             <div class="text-sm font-semibold text-gray-200">Datos — <span class="font-mono">{{ key }}</span>
@@ -153,7 +153,7 @@
     </div>
 
     {% if estudio %}
-    <!-- ══ LÍNEA BASE (la lista cruda) — el ancla de comparación ══ -->
+    <!-- ══ 2) CRUDO (baseline) — la referencia común de los DOS estudios ══ -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4">
         <div class="text-sm font-semibold text-gray-200 mb-2">CRUDO (baseline) — la señal sin gestión (1 mini @ señal)
             <span class="text-xs text-gray-500">corrida {{ estudio.fecha }}</span></div>
@@ -213,7 +213,7 @@
     </div>
     {% endif %}
 
-    <!-- ══════ ESTUDIO 1 — VALIDADO (FUERA DE MUESTRA) ══════ -->
+    <!-- ══ 3) ESTUDIO VALIDADO (FUERA DE MUESTRA) — participación + tarjetas ══ -->
     {% if estudio.comparacion %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
         <div class="text-base font-bold text-gray-100">Estudio validado (fuera de muestra)
@@ -237,46 +237,59 @@
     </div>
     {% endif %}
 
-    <!-- ══ P1b: GESTIÓN POR LADO — la 4ª palanca (estructural, no OOS) ══ -->
-    {% if estudio.gestion_lado %}
-    {% set gl = estudio.gestion_lado %}
-    <div class="bg-gray-900 border border-purple-800 rounded p-4 space-y-2">
-        <div class="text-sm font-semibold text-purple-300">Gestión por lado — la 4ª palanca
-            <span class="text-xs font-normal text-gray-500">(recomendación ESTRUCTURAL — no pasa por el walk-forward)</span></div>
-        <p class="text-xs text-gray-200">{{ gl.motivo }} → <b class="text-purple-300 uppercase">{{ gl.accion }} el lado {{ gl.lado_malo }}</b>.
-            <span class="text-gray-400">Mecanismo: {{ gl.mecanismo }}.</span></p>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {% set ef = gl.efecto_solo_lado_bueno %}
-            {% for lbl, v in [('Net (solo ' ~ gl.lado_bueno ~ ')', ef.net_usd),
-                              ('WinRate', ef.wr_pct),
-                              ('Max DD', ef.max_dd_usd),
-                              ('Peor trade', ef.peor_trade_usd)] %}
-            <div class="bg-gray-950 rounded p-3 border border-gray-800">
-                <div class="text-xs text-gray-500">{{ lbl }}</div>
-                <div class="text-lg font-bold text-gray-100">
-                    {%- if 'WinRate' in lbl -%}{{ v }}%{%- else -%}${{ '{:,.0f}'.format(v) if v is not none else '—' }}{%- endif -%}
-                </div>
-            </div>
+    <!-- ══ 4) PROTECCIÓN DE CUENTA (IN-SAMPLE) — tarjetas ADYACENTES a las de
+         arriba: el operador compara CON CONFIG vs CON PROTECCIÓN sin scroll ══ -->
+    {% if estudio.proteccion %}
+    {% set p = estudio.proteccion %}
+    <div class="bg-gray-900 border border-rose-900 rounded p-4 space-y-3">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="text-base font-bold text-gray-100">Protección de cuenta (in-sample)
+                <span class="text-xs font-normal px-2 py-0.5 rounded bg-amber-900 text-amber-300">sin validar — para decidir</span></div>
+            <!-- A: cuenta editable — persiste y recomputa al cambiar -->
+            <label class="text-xs text-gray-300 flex items-center gap-1">Cuenta: $
+                <input type="number" min="100" step="500" x-model.number="cuenta" @change="guardarCuenta()"
+                       class="w-28 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 font-mono">
+            </label>
+        </div>
+
+        <!-- B: participación como banner (espejo del estudio validado) -->
+        <div class="bg-blue-900/20 border border-blue-800 rounded p-2 text-xs text-blue-200">
+            <b>Participación:</b> crudo 100% → con protección <b>{{ p.efecto.participacion_pct }}%</b>
+            ({{ '{:+.1f}'.format(p.efecto.participacion_pct - 100.0) }} pp) — supervivencia &gt; net.
+        </div>
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="text-sm font-semibold text-gray-200">CRUDO (señal) → CON PROTECCIÓN elegida</div>
+            <span class="text-xs px-2 py-0.5 rounded {% if p.protegido %}bg-emerald-900 text-emerald-300{% else %}bg-amber-900 text-amber-300{% endif %}">
+                {% if p.protegido %}protege: peor trade ≤ {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta{% else %}no llega al umbral — se muestra lo más cercano{% endif %}</span>
+        </div>
+        {{ kpi_cards(p.kpis) }}
+
+        <!-- trades ROJOS: pérdida grande como % de la cuenta -->
+        {% if p.alarmas %}
+        <div class="bg-red-900/30 border border-red-700 rounded p-2 text-xs text-red-200">
+            🔴 <b>{{ p.n_alarmas }} trade(s) con pérdida ≥ {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta:</b>
+            {% for a in p.alarmas[:6] %}
+            <span class="font-mono font-bold ml-2">#{{ a.number }} {{ a.side }} ${{ '{:,.0f}'.format(a.pnl_usd) }} ({{ a.pct_cuenta }}% de la cuenta)</span>
             {% endfor %}
         </div>
-        <div class="bg-amber-900/20 border border-amber-800 rounded p-2 text-xs text-amber-200">
-            {{ gl.caveat }}{% if gl.muestra_chica %} · <b>{{ gl.n_lado_malo }} trades en el lado malo</b>{% endif %}.
+        {% else %}
+        <div class="bg-emerald-900/20 border border-emerald-800 rounded p-2 text-xs text-emerald-200">
+            Sin trades rojos a esta cuenta — ninguna pérdida individual llega al {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta.
+        </div>
+        {% endif %}
+        <div class="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
+            <b>{{ p.etiqueta }}.</b> Objetivo: máxima participación quitando los trades desastrosos, con un SL que deje respirar (suelo del MAE de ganadoras: p95 {{ p.suelo_atr }}×ATR). Palancas y efecto abajo, en "Recomendación de protección".
         </div>
     </div>
-    {% endif %}
-
-    <!-- ══ HEATMAP (lo genera el motor — μ efect. = tamaño real bajo el corte) ══ -->
-    {% if estudio.heatmap %}
-    <div class="bg-gray-900 border border-gray-800 rounded p-4">
-        <div class="text-sm font-semibold text-gray-200 mb-2">Candidatas del walk-forward
-            <span class="text-xs font-normal text-gray-500">μ efect. = micros que la config despliega DE VERDAD dentro del corte (la etiqueta nominal no engaña)</span>
-            <a href="/ui/riesgo/reporte?strategy={{ key }}" target="_blank" class="text-xs font-normal text-blue-400 hover:underline ml-2">reporte completo (md) →</a></div>
-        <img src="/ui/riesgo/heatmap?strategy={{ key }}" alt="heatmap"
-             class="w-full rounded bg-white/95 p-1">
+    {% elif estudio %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-3 text-xs text-gray-500">
+        El estudio de <b>Protección de cuenta (in-sample)</b> aparecerá con la próxima corrida — dale <b>▶ Calcular</b>.
     </div>
     {% endif %}
 
-    <!-- ══ RECOMENDACIÓN (estudio validado) + JSON de activación ══ -->
+    <!-- ══════ 5) DETALLES — debajo de las tarjetas, cada uno bajo su bloque ══════ -->
+
+    <!-- Recomendación del estudio VALIDADO (palancas + JSON de activación) -->
     {% if estudio.reco %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 grid md:grid-cols-2 gap-4">
         <div class="space-y-2 text-sm">
@@ -310,49 +323,11 @@
     </div>
     {% endif %}
 
-    <!-- ══════ ESTUDIO 2 — PROTECCIÓN DE CUENTA (IN-SAMPLE) ══════ -->
+    <!-- Recomendación de PROTECCIÓN (palancas + efecto — bajo su bloque) -->
     {% if estudio.proteccion %}
     {% set p = estudio.proteccion %}
     <div class="bg-gray-900 border border-rose-900 rounded p-4 space-y-3">
-        <div class="flex items-center justify-between flex-wrap gap-2">
-            <div class="text-base font-bold text-gray-100">Protección de cuenta (in-sample)
-                <span class="text-xs font-normal px-2 py-0.5 rounded bg-amber-900 text-amber-300">sin validar — para decidir</span></div>
-            <!-- A: cuenta editable — persiste y recomputa al cambiar -->
-            <label class="text-xs text-gray-300 flex items-center gap-1">Cuenta: $
-                <input type="number" min="100" step="500" x-model.number="cuenta" @change="guardarCuenta()"
-                       class="w-28 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 font-mono">
-            </label>
-        </div>
-        <div class="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
-            <b>{{ p.etiqueta }}.</b> Objetivo: máxima participación quitando los trades desastrosos, con un SL que deje respirar (suelo del MAE de ganadoras: p95 {{ p.suelo_atr }}×ATR).
-        </div>
-
-        <!-- trades ROJOS: pérdida grande como % de la cuenta -->
-        {% if p.alarmas %}
-        <div class="bg-red-900/30 border border-red-700 rounded p-2 text-xs text-red-200">
-            🔴 <b>{{ p.n_alarmas }} trade(s) con pérdida ≥ {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta:</b>
-            {% for a in p.alarmas[:6] %}
-            <span class="font-mono font-bold ml-2">#{{ a.number }} {{ a.side }} ${{ '{:,.0f}'.format(a.pnl_usd) }} ({{ a.pct_cuenta }}% de la cuenta)</span>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="bg-emerald-900/20 border border-emerald-800 rounded p-2 text-xs text-emerald-200">
-            Sin trades rojos a esta cuenta — ninguna pérdida individual llega al {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta.
-        </div>
-        {% endif %}
-
-        <!-- B: participación como banner, arriba del banner de veredicto (espejo) -->
-        <div class="bg-blue-900/20 border border-blue-800 rounded p-2 text-xs text-blue-200">
-            <b>Participación:</b> crudo 100% → con protección <b>{{ p.efecto.participacion_pct }}%</b>
-            ({{ '{:+.1f}'.format(p.efecto.participacion_pct - 100.0) }} pp) — supervivencia &gt; net.
-        </div>
-        <div class="flex items-center justify-between flex-wrap gap-2">
-            <div class="text-sm font-semibold text-gray-200">CRUDO (señal) → CON PROTECCIÓN elegida</div>
-            <span class="text-xs px-2 py-0.5 rounded {% if p.protegido %}bg-emerald-900 text-emerald-300{% else %}bg-amber-900 text-amber-300{% endif %}">
-                {% if p.protegido %}protege: peor trade ≤ {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta{% else %}no llega al umbral — se muestra lo más cercano{% endif %}</span>
-        </div>
-        {{ kpi_cards(p.kpis) }}
-
+        <div class="text-sm font-semibold text-gray-200">Recomendación de protección (in-sample) — palancas y efecto</div>
         <!-- las mismas palancas que el estudio validado (espejo intencional) -->
         <ul class="text-xs text-gray-300 space-y-1.5">
             {% for pal in p.palancas %}
@@ -379,10 +354,50 @@
         </div>
         <div class="text-xs text-gray-500">{{ p.nota_supervivencia }}. Aplicar sigue siendo un paso aparte (config de la estrategia).</div>
     </div>
-    {% elif estudio %}
-    <div class="bg-gray-900 border border-gray-800 rounded p-3 text-xs text-gray-500">
-        El estudio de <b>Protección de cuenta (in-sample)</b> aparecerá con la próxima corrida — dale <b>▶ Calcular</b>.
+    {% endif %}
+
+    <!-- ══ P1b: GESTIÓN POR LADO — la 4ª palanca (estructural, no OOS) ══ -->
+    {% if estudio.gestion_lado %}
+    {% set gl = estudio.gestion_lado %}
+    <div class="bg-gray-900 border border-purple-800 rounded p-4 space-y-2">
+        <div class="text-sm font-semibold text-purple-300">Gestión por lado — la 4ª palanca
+            <span class="text-xs font-normal text-gray-500">(recomendación ESTRUCTURAL — no pasa por el walk-forward)</span></div>
+        <p class="text-xs text-gray-200">{{ gl.motivo }} → <b class="text-purple-300 uppercase">{{ gl.accion }} el lado {{ gl.lado_malo }}</b>.
+            <span class="text-gray-400">Mecanismo: {{ gl.mecanismo }}.</span></p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {% set ef = gl.efecto_solo_lado_bueno %}
+            {% for lbl, v in [('Net (solo ' ~ gl.lado_bueno ~ ')', ef.net_usd),
+                              ('WinRate', ef.wr_pct),
+                              ('Max DD', ef.max_dd_usd),
+                              ('Peor trade', ef.peor_trade_usd)] %}
+            <div class="bg-gray-950 rounded p-3 border border-gray-800">
+                <div class="text-xs text-gray-500">{{ lbl }}</div>
+                <div class="text-lg font-bold text-gray-100">
+                    {%- if 'WinRate' in lbl -%}{{ v }}%{%- else -%}${{ '{:,.0f}'.format(v) if v is not none else '—' }}{%- endif -%}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="bg-amber-900/20 border border-amber-800 rounded p-2 text-xs text-amber-200">
+            {{ gl.caveat }}{% if gl.muestra_chica %} · <b>{{ gl.n_lado_malo }} trades en el lado malo</b>{% endif %}.
+        </div>
     </div>
+    {% endif %}
+
+    <!-- ══ 6) HEATMAP al FINAL, colapsado — referencia, no la vista principal
+         (no debe separar las tarjetas de los dos estudios) ══ -->
+    {% if estudio.heatmap %}
+    <details class="bg-gray-900 border border-gray-800 rounded">
+        <summary class="p-4 text-sm font-semibold text-gray-200 cursor-pointer select-none hover:text-white">
+            ▸ ver candidatas / heatmap — Candidatas del walk-forward
+            <span class="text-xs font-normal text-gray-500">(referencia; μ efect. = micros que la config despliega DE VERDAD dentro del corte)</span>
+        </summary>
+        <div class="p-4 pt-0 space-y-2">
+            <a href="/ui/riesgo/reporte?strategy={{ key }}" target="_blank" class="text-xs text-blue-400 hover:underline">reporte completo (md) →</a>
+            <img src="/ui/riesgo/heatmap?strategy={{ key }}" alt="heatmap"
+                 class="w-full rounded bg-white/95 p-1">
+        </div>
+    </details>
     {% endif %}
 
     {% elif motor %}

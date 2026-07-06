@@ -429,6 +429,54 @@ async def test_dos_estudios_conviven_y_espejean(client: AsyncClient,
 
 
 @pytest.mark.asyncio
+async def test_orden_tarjetas_adyacentes_heatmap_colapsado(
+    client: AsyncClient, dirs: Path
+) -> None:
+    """Reorganización: las DOS filas de tarjetas KPI quedan ADYACENTES
+    (validado y protección, una arriba de la otra — comparación de un
+    vistazo); recomendaciones/JSON DEBAJO de ambas; heatmap al FINAL en un
+    <details> colapsado por defecto (referencia, no la vista principal)."""
+    import re
+
+    _manifest_es(dirs)
+    est = json.loads(json.dumps(ESTUDIO))
+    est["proteccion"] = PROTECCION
+    est["listado_crudo"] = LISTADO_CRUDO
+    _seed_motor(dirs, estudio=est)
+
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert r.status_code == 200
+    html = r.text
+
+    i_crudo = html.index("CRUDO (baseline)")
+    i_kpi1 = html.index("PF fuera de muestra (OOS) ★")     # tarjetas estudio 1
+    i_kpi2 = html.index("PF (in-sample) ★")                # tarjetas estudio 2
+    i_reco = html.index("Recomendación (validada OOS)")    # detalle 1
+    i_prot = html.index("Recomendación de protección")     # detalle 2
+    i_json = html.index("pipeline_config_json")            # JSON de activación
+    i_heat = html.index("Candidatas del walk-forward")     # heatmap (colapsado)
+
+    # orden: CRUDO → KPIs validado → KPIs protección → detalles → heatmap
+    assert i_crudo < i_kpi1 < i_kpi2 < i_reco < i_prot < i_heat
+    assert i_kpi2 < i_json                       # el JSON no separa tarjetas
+
+    # ADYACENTES: entre las dos filas KPI no hay heatmap, ni JSON, ni
+    # recomendaciones (solo la nota de honestidad y el header del bloque 2)
+    entre = html[i_kpi1:i_kpi2]
+    assert "Candidatas" not in entre
+    assert "pipeline_config_json" not in entre
+    assert "Recomendación" not in entre
+
+    # heatmap dentro de <details> SIN atributo open (colapsado por defecto)
+    m = re.search(r"<details[^>]*>", html)
+    assert m is not None, "el heatmap ya no está en un <details>"
+    assert "open" not in m.group(0)
+    assert html.index(m.group(0)) < i_heat       # y lo envuelve
+    # la imagen sigue sirviéndose desde el endpoint del motor
+    assert "/ui/riesgo/heatmap?strategy=ES5m_Test" in html
+
+
+@pytest.mark.asyncio
 async def test_cuenta_editable_persiste_y_recomputa(client: AsyncClient,
                                                     dirs: Path) -> None:
     """La cuenta es editable, persiste y RECOMPUTA la selección: a $10k el
