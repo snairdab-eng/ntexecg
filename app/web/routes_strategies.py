@@ -18,7 +18,6 @@ from app.models.normalized_signal import NormalizedSignal
 from app.models.strategy import Strategy
 from app.models.strategy_performance import StrategyPerformance
 from app.models.strategy_profile import StrategyProfile
-from app.models.strategy_template import StrategyTemplate
 from app.models.symbol_map import SymbolMap
 from app.services.audit_service import AuditService
 from app.core.config import settings as app_settings
@@ -143,11 +142,11 @@ async def ticker_hint(
 async def new_strategy_form(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> HTMLResponse:
-    tpl_rows = await db.execute(select(StrategyTemplate))
-    templates_list = list(tpl_rows.scalars().all())
+    # P3-1: templates_list eliminado — el form lo ignoraba (0 refs en
+    # strategy_form.html, auditoría Fase A) y la UI de Templates se retiró.
     return await render(
         request, "strategy_form.html",
-        {"assets": await _assets(db), "templates_list": templates_list}, db=db,
+        {"assets": await _assets(db)}, db=db,
     )
 
 

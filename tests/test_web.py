@@ -44,7 +44,6 @@ def _authenticated(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None
     "/ui/positions",
     "/ui/symbol-map",
     "/ui/assets",
-    "/ui/strategy-templates",
     "/ui/settings",
     "/ui/audit",
 ])
@@ -280,22 +279,9 @@ async def test_settings_update_changes_mode(client: AsyncClient, db: AsyncSessio
 
 
 # ---------------------------------------------------------------------------
-# Template create
+# Templates — DEPRECADO (P3-1): la UI se retiró; los tests de la deprecación
+# (404 + modelo/columna conservados) viven en tests/test_p3_limpieza.py
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_template_create(client: AsyncClient, db: AsyncSession) -> None:
-    from app.models.strategy_template import StrategyTemplate
-
-    resp = await client.post("/ui/strategy-templates/new", data={
-        "name": "My Template", "strategy_type": "trend_following",
-        "sl_atr_multiplier": "1.5", "score_minimum": "70",
-    })
-    assert resp.status_code == 303
-    result = await db.execute(
-        select(StrategyTemplate).where(StrategyTemplate.name == "My Template")
-    )
-    assert result.scalar_one_or_none() is not None
 
 
 # ---------------------------------------------------------------------------
