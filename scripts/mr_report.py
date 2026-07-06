@@ -22,6 +22,8 @@ import csv
 import json
 from pathlib import Path
 
+from scripts.mr_sims import proteccion_para_cuenta
+
 
 def _usd(v, dec: int = 0) -> str:
     if v is None:
@@ -139,6 +141,16 @@ def render_md(res: dict) -> str:
     L.append(f"| Peor trade | **{_usd(base['peor_trade_usd'], 2)}** |")
     score_base = res["backstop"].get("score_base")
     L.append(f"| PnL / DD | {_f(score_base)} |")
+    lc = res.get("listado_crudo")
+    if lc:
+        d = lc["duracion_h"]
+        L.append(f"| Duración media ganador / perdedor | "
+                 f"{_f(d['ganador_prom_h'], 1)}h ({d['n_ganadores']}) / "
+                 f"{_f(d['perdedor_prom_h'], 1)}h ({d['n_perdedores']}) |")
+        mlc = lc["metricas"]
+        L.append(f"| Listado completo (crudo, sin filtro ATR) | "
+                 f"{mlc['n']} trades · net {_usd(mlc['net_usd'])} · "
+                 f"PF {_f(mlc['pf'])} · peor {_usd(mlc['peor_trade_usd'])} |")
     L.append("")
     L.append("*(Escala: 1 mini = 10 micros. Todas las configs despliegan "
              "el MISMO tamaño total = 10 micros, comparables 1:1.)*")
@@ -288,12 +300,13 @@ def render_md(res: dict) -> str:
         "dd": ([f["dd"] for f in filas], False),
         "peor": ([f["peor"] for f in filas], True),   # menos negativo mejor
         "part": ([f["part"] for f in filas], True),
+        "me": ([f["me"] for f in filas], True),
         "wr": ([f["wr"] for f in filas], True),
     }
     emo = {k: _tercil_emoji(v, mayor) for k, (v, mayor) in cols.items()}
     L.append("| # | Config | Net $ | **PF OOS (con config)** | Max DD | "
-             "Peor | Part% | WR% | gate |")
-    L.append("|--:|---|---:|---:|---:|---:|---:|---:|---|")
+             "Peor | Part% | μ ef. (corte) | WR% | gate |")
+    L.append("|--:|---|---:|---:|---:|---:|---:|---:|---:|---|")
     for i, f in enumerate(filas):
         L.append(
             f"| {i + 1} | {f['nombre']}{_flags_md(f['flags'])} | "
@@ -302,11 +315,16 @@ def render_md(res: dict) -> str:
             f"{emo['dd'][i]}{_usd(f['dd'])} | "
             f"{emo['peor'][i]}{_usd(f['peor'])} | "
             f"{emo['part'][i]}{_f(f['part'], 1)} | "
+            f"{emo['me'][i]}{_f(f['me'], 1)} | "
             f"{emo['wr'][i]}{_f(f['wr'], 1)} | {f['gate']} |")
     L.append(f"| — | CRUDO (señal, sin gestión) | {_usd(base['net_usd'])} | "
              f"{_f(_pf_base_oos(res))} | {_usd(base['max_dd_usd'])} | "
-             f"{_usd(base['peor_trade_usd'])} | 100.0 | "
+             f"{_usd(base['peor_trade_usd'])} | 100.0 | 10.0 | "
              f"{_f(base['wr_pct'], 1)} | — |")
+    L.append("*μ ef. (corte) = micros que la config despliega DE VERDAD en "
+             "promedio dentro del cancel_after (la etiqueta dice el tamaño "
+             "nominal; las piernas profundas que no llenan a tiempo no "
+             "cuentan).*")
     L.append("")
 
     # 5 — robustez
@@ -484,6 +502,59 @@ def render_md(res: dict) -> str:
         L.append(f"| Peor trade | {_usd(ef.get('peor_trade_usd'))} |")
         L.append("")
         L.append(f"*{gl['caveat']}.*")
+
+    # 8 — protección de cuenta (in-sample, sin gate OOS — pestaña v2)
+    prot = res.get("proteccion")
+    if prot and prot.get("combos"):
+        pc = proteccion_para_cuenta(prot, 10_000.0, base)
+        el, ef, cr = pc["elegido"], pc["efecto"], pc["crudo"]
+        L.append("")
+        L.append("---")
+        L.append("")
+        L.append("## 6. PROTECCIÓN DE CUENTA (in-sample, SIN validar OOS)")
+        L.append(f"*{pc['etiqueta']}. Cuenta por defecto "
+                 f"{_usd(pc['cuenta_usd'])} — editable en la pestaña Riesgo "
+                 f"(la selección recomputa al cambiarla).*")
+        L.append("")
+        if pc["alarmas"]:
+            L.append(f"**🔴 Trades ROJOS (pérdida ≥ "
+                     f"{pc['umbral_alarma_pct']:.0f}% de la cuenta):** "
+                     + " · ".join(
+                         f"#{a['number']} {a['side']} "
+                         f"{_usd(a['pnl_usd'])} ({a['pct_cuenta']}% de la "
+                         f"cuenta)" for a in pc["alarmas"][:8]) + ".")
+        else:
+            L.append("Sin trades rojos a esta cuenta — el crudo no tiene "
+                     "pérdidas desastrosas.")
+        L.append("")
+        tp_txt = ("L {}× / S {}×ATR".format(
+            el["tp_por_lado_atr"].get("long"),
+            el["tp_por_lado_atr"].get("short"))
+            if el["tp_por_lado_atr"] else "—")
+        L.append(f"**Combinación elegida (supervivencia > net):** "
+                 f"SL {el['sl_atr'] if el['sl_atr'] else '—'}×ATR · "
+                 f"backstop {_usd(el['backstop_usd']) if el['backstop_usd'] else '—'} · "
+                 f"TP {tp_txt} · lado {el['lado'] or 'ambos'} — "
+                 f"suelo del SL (MAE p95 de las ganadoras) "
+                 f"{_f(prot['suelo_atr'])}×ATR respetado (deja respirar).")
+        L.append("")
+        L.append("| efecto | crudo | protegido |")
+        L.append("|---|---:|---:|")
+        L.append(f"| Peor trade | {_usd(cr['peor_trade_usd'])} "
+                 f"({cr['peor_pct_cuenta']}% de la cuenta) | "
+                 f"**{_usd(ef['peor_trade_usd'])} "
+                 f"({ef['peor_pct_cuenta']}% de la cuenta)** |")
+        L.append(f"| Max Drawdown | {_usd(cr['max_dd_usd'])} "
+                 f"({cr['dd_pct_cuenta']}%) | {_usd(ef['max_dd_usd'])} "
+                 f"({ef['dd_pct_cuenta']}%) |")
+        L.append(f"| Net (costo de la protección) | {_usd(cr['net_usd'])} | "
+                 f"{_usd(el['metricas'].get('net_usd'))} "
+                 f"(Δ {_usd(ef['costo_net_usd'])}) |")
+        L.append(f"| Participación | 100% | {_f(ef['participacion_pct'], 1)}% |")
+        L.append(f"| Ganadoras cortadas por el stop | 0% | "
+                 f"{_f(ef['ganadoras_cortadas_pct'], 1)}% |")
+        L.append("")
+        L.append(f"*{pc['nota_supervivencia']}.*")
     L.append("")
     L.append("---")
     L.append(f"*Reproducibilidad: master sha `{meta['master_sha256'][:12]}…` "
@@ -492,6 +563,25 @@ def render_md(res: dict) -> str:
              f"`{meta['grids_version']}` · motor `{meta['motor_commit']}` · "
              f"estudio `estudios_{meta['fecha']}.json`.*")
     return "\n".join(L) + "\n"
+
+
+def _micros_efectivos(legs: list, corte: dict | None) -> float | None:
+    """Heatmap HONESTO (v2-E): micros que la config despliega DE VERDAD en
+    promedio dentro del corte de cancel_after — la etiqueta "3+7 @ 1/7×"
+    promete 10 micros, pero si la pierna de 7× llena el 5% de las veces son
+    ~3.4 micros efectivos, no 10. None sin datos de corte (corridas viejas)."""
+    if not corte or not corte.get("niveles"):
+        return None
+    fill = {r["nivel_atr"]: r["fill_con_corte_pct"]
+            for r in corte["niveles"]}
+    total = 0.0
+    for leg in legs:
+        micros = leg["peso"] * 10
+        f = 100.0 if leg["depth_atr"] <= 0 else fill.get(leg["depth_atr"])
+        if f is None:
+            return None
+        total += micros * f / 100.0
+    return round(total, 1)
 
 
 def _pf_base_oos(res: dict) -> float | None:
@@ -509,6 +599,7 @@ def _filas_candidatas(res: dict) -> list[dict]:
         return []
     por_nombre = {c["nombre"]: c for c in res["configs"]}
     filas = []
+    corte = res.get("corte_fills")
     for t in sorted(rob["tabla"], key=lambda t: -(t["score"] or -9e18)):
         c = por_nombre[t["nombre"]]
         filas.append({
@@ -518,6 +609,8 @@ def _filas_candidatas(res: dict) -> list[dict]:
             "dd": c["total"].get("max_dd_usd"),
             "peor": c["total"].get("peor_trade_usd"),
             "part": c["participacion_pct"],
+            # tamaño EFECTIVO real bajo el corte — que la etiqueta no engañe
+            "me": _micros_efectivos(c["legs"], corte),
             "wr": c["total"].get("wr_pct"),
             "gate": c["gate"]["estado"],
             "flags": t["flags"],
@@ -532,12 +625,13 @@ def _filas_candidatas(res: dict) -> list[dict]:
 
 _CSV_COLS = ("nombre", "n_piernas", "piernas", "backstop_usd", "tp_long_atr",
              "tp_short_atr", "solo_lado", "etiquetas", "participacion_pct",
-             "n_participados", "n_participados_out", "net_usd", "pf",
-             "wr_pct", "max_dd_usd", "peor_trade_usd", "pf_in", "pf_out",
-             "score", "estado_gate", "flags")
+             "micros_efectivos", "n_participados", "n_participados_out",
+             "net_usd", "pf", "wr_pct", "max_dd_usd", "peor_trade_usd",
+             "pf_in", "pf_out", "score", "estado_gate", "flags")
 
 
 def write_csv(res: dict, path: Path) -> None:
+    corte = res.get("corte_fills")
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(_CSV_COLS)
@@ -549,7 +643,8 @@ def write_csv(res: dict, path: Path) -> None:
                            for l in c["legs"]),
                 c["backstop_usd"], tp.get("long"), tp.get("short"),
                 c["solo_lado"] or "", "|".join(c["etiquetas"]),
-                c["participacion_pct"], c["n_participados"],
+                c["participacion_pct"],
+                _micros_efectivos(c["legs"], corte), c["n_participados"],
                 c["n_participados_out"], c["total"].get("net_usd"),
                 c["total"].get("pf"), c["total"].get("wr_pct"),
                 c["total"].get("max_dd_usd"),
@@ -582,18 +677,20 @@ def write_heatmap(res: dict, path: Path) -> bool:
         "nombre": "CRUDO (señal, sin gestión)",
         "net": base.get("net_usd"), "pf_oos": _pf_base_oos(res),
         "dd": base.get("max_dd_usd"), "peor": base.get("peor_trade_usd"),
-        "part": 100.0, "wr": base.get("wr_pct"), "gate": "—", "flags": [],
-        "score": None,
+        "part": 100.0, "me": 10.0, "wr": base.get("wr_pct"), "gate": "—",
+        "flags": [], "score": None,
     }]
     cols = [("net", "Net $", True, "${:,.0f}"),
             ("pf_oos", "PF OOS ★", True, "{:.2f}"),
             ("dd", "Max DD $", False, "${:,.0f}"),
             ("peor", "Peor $", True, "${:,.0f}"),
             ("part", "Part %", True, "{:.1f}"),
+            # tamaño efectivo real bajo el corte (v2-E: etiqueta honesta)
+            ("me", "μ efect.", True, "{:.1f}"),
             ("wr", "WR %", True, "{:.1f}")]
 
     nrows, ncols = len(filas), len(cols)
-    fig, ax = plt.subplots(figsize=(12.5, 0.46 * nrows + 2.2), dpi=150)
+    fig, ax = plt.subplots(figsize=(13.5, 0.46 * nrows + 2.2), dpi=150)
     cmap = plt.get_cmap("RdYlGn")
 
     for j, (key, _lbl, mayor, fmt) in enumerate(cols):
@@ -640,7 +737,8 @@ def write_heatmap(res: dict, path: Path) -> bool:
         f"{meta['fecha']}\n"
         f"candidatas del walk-forward (10 micros = 1 mini, comparable 1:1 "
         f"con la base) · color = escala por columna (verde mejor) · "
-        f"★ = número de confianza (OOS, no in-sample)",
+        f"★ = número de confianza (OOS, no in-sample) · "
+        f"μ efect. = micros que DE VERDAD despliega dentro del corte",
         fontsize=10, pad=28, loc="left")
     ax.set_xlim(-6.2, ncols)
     ax.set_ylim(-0.2, nrows + 0.9)

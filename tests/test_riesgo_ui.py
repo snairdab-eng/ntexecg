@@ -110,8 +110,43 @@ ESTUDIO = {
 }
 
 
+# v2 — estudio de PROTECCIÓN DE CUENTA (in-sample) persistido por el motor;
+# la selección por cuenta la hace la ruta con proteccion_para_cuenta (pura).
+PROTECCION = {
+    "suelo_atr": 3.6, "atr_mediana_pts": 14.7,
+    "lado_candidato": None, "lado_muestra_chica": False, "lado_n_malo": None,
+    "tp_nominal_atr": None,
+    "umbral_alarma_pct": 10.0,
+    "etiqueta": ("in-sample, sin validar OOS — para proteger la cuenta, "
+                 "NO promesa a futuro"),
+    "perdedores": [{"number": 46, "side": "short", "pnl_usd": -10162.5},
+                   {"number": 12, "side": "long", "pnl_usd": -900.0}],
+    "combos": [
+        {"sl_atr": None, "backstop_usd": None, "tp_por_lado_atr": None,
+         "lado": None, "n_palancas": 0, "participacion_pct": 100.0,
+         "ganadoras_cortadas_pct": 0.0,
+         "metricas": {"n": 120, "net_usd": 28175.0, "pf": 1.62,
+                      "wr_pct": 79.2, "max_dd_usd": 11750.0,
+                      "peor_trade_usd": -10162.5}},
+        {"sl_atr": 4.0, "backstop_usd": None, "tp_por_lado_atr": None,
+         "lado": None, "n_palancas": 1, "participacion_pct": 100.0,
+         "ganadoras_cortadas_pct": 2.1,
+         "metricas": {"n": 120, "net_usd": 26400.0, "pf": 1.7,
+                      "wr_pct": 77.5, "max_dd_usd": 6100.0,
+                      "peor_trade_usd": -2940.0}},
+    ],
+}
+
+LISTADO_CRUDO = {
+    "metricas": {"n": 120, "net_usd": 28175.0, "pf": 1.62, "wr_pct": 79.2,
+                 "max_dd_usd": 11750.0, "peor_trade_usd": -10162.5},
+    "duracion_h": {"ganador_prom_h": 26.9, "perdedor_prom_h": 15.1,
+                   "n_ganadores": 95, "n_perdedores": 25},
+}
+
+
 def _seed_motor(dirs: Path, clave: str = "ES_Test",
-                con_estudio: bool = True) -> None:
+                con_estudio: bool = True, estudio: dict | None = None) -> None:
     base = dirs / "MotorRiesgo" / clave
     (base / "runs").mkdir(parents=True)
     (base / "snapshots").mkdir()
@@ -121,7 +156,7 @@ def _seed_motor(dirs: Path, clave: str = "ES_Test",
         json.dumps(MOTOR_MAN), encoding="utf-8")
     if con_estudio:
         (base / "runs" / "estudios_2026-07-05.json").write_text(
-            json.dumps(ESTUDIO), encoding="utf-8")
+            json.dumps(estudio or ESTUDIO), encoding="utf-8")
         (base / "runs" / "heatmap_ES_Test_2026-07-05.png").write_bytes(
             b"\x89PNG\r\n\x1a\nfakepng")
         (base / "runs" / "Riesgo_ES_Test_2026-07-05.md").write_text(
@@ -342,6 +377,156 @@ async def test_sin_gestion_lado_no_hay_tarjeta(client: AsyncClient,
     # recomendación y el comentario HTML mencionan el título legítimamente)
     assert "no pasa por el walk-forward" not in r.text
     assert "el lado malo" not in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# v2 — los DOS estudios conviven y se espejean; cuenta editable; gestión de
+# datos (renombrar/eliminar estrategia, eliminar/reemplazar el .csv)
+# ---------------------------------------------------------------------------
+
+def _manifest_es(dirs: Path, csv: str = "ListaDeOperaciones/x.csv") -> None:
+    _write_lab_manifest(dirs, {"ES5m_Test": {
+        "instrument": "ES", "csv": csv, "confirmed": True}})
+
+
+@pytest.mark.asyncio
+async def test_dos_estudios_conviven_y_espejean(client: AsyncClient,
+                                                dirs: Path) -> None:
+    """Los dos estudios en la misma ficha, con la MISMA estructura visual
+    (6 KPI crudo → con config); solo cambia la tarjeta ★: 'PF fuera de
+    muestra' (validado) vs 'PF (in-sample)' (sin validar — para decidir).
+    El trade desastroso va en ROJO con su % de la cuenta, la duración
+    ganador/perdedor está en la base y la participación es banner."""
+    _manifest_es(dirs)
+    est = json.loads(json.dumps(ESTUDIO))
+    est["proteccion"] = PROTECCION
+    est["listado_crudo"] = LISTADO_CRUDO
+    _seed_motor(dirs, estudio=est)
+
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert r.status_code == 200
+    html = r.text
+    # B — las dos secciones rotuladas, conviviendo
+    assert "Estudio validado (fuera de muestra)" in html
+    assert "Protección de cuenta (in-sample)" in html
+    # espejo: misma tarjeta ★, distinto label+badge
+    assert "PF fuera de muestra (OOS) ★" in html
+    assert "PF (in-sample) ★" in html
+    assert "sin validar — para decidir" in html
+    assert "NO promesa a futuro" in html
+    # A — el desastre en ROJO con % de la cuenta ($10k default: 101.6%)
+    assert "101.6% de la cuenta" in html
+    assert "#46" in html
+    # a $10k nada llega al umbral → se muestra lo más cercano (SL 4×ATR)
+    assert "SL 4×ATR" in html
+    assert "supervivencia &gt; net" in html or "supervivencia > net" in html
+    # B — participación como banner en AMBOS estudios
+    assert html.count("Participación:</b> crudo 100%") == 2
+    # C — duración media ganador/perdedor en la línea base
+    assert "ganador 26.9h" in html and "perdedor 15.1h" in html
+    # el suelo del SL (deja respirar) está explicado
+    assert "p95 3.6" in html
+
+
+@pytest.mark.asyncio
+async def test_cuenta_editable_persiste_y_recomputa(client: AsyncClient,
+                                                    dirs: Path) -> None:
+    """La cuenta es editable, persiste y RECOMPUTA la selección: a $10k el
+    −10,162 es rojo (101.6%); a $200k no hay rojos y el crudo ya protege
+    (0 palancas — 'sin SL adicional')."""
+    _manifest_es(dirs)
+    est = json.loads(json.dumps(ESTUDIO))
+    est["proteccion"] = PROTECCION
+    _seed_motor(dirs, estudio=est)
+
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert "101.6% de la cuenta" in r.text            # default $10,000
+
+    # rango inválido → 400 y NO persiste
+    r = await client.post("/ui/riesgo/cuenta", json={"cuenta_usd": 1.0})
+    assert r.status_code == 400
+
+    r = await client.post("/ui/riesgo/cuenta", json={"cuenta_usd": 200_000})
+    assert r.status_code == 200
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    html = r.text
+    assert "200000" in html                           # persistió (input)
+    assert "101.6% de la cuenta" not in html          # % relativo a cuenta
+    assert "Sin trades rojos" in html
+    assert "sin SL ×ATR adicional" in html            # el crudo ya protege
+    assert "5.1" in html                              # peor 10,162/200k
+
+
+@pytest.mark.asyncio
+async def test_renombrar_y_eliminar_estrategia(client: AsyncClient,
+                                               dirs: Path) -> None:
+    """D — editar (renombrar) y eliminar la estrategia del ESTUDIO: mueve la
+    carpeta del motor y actualiza el manifest; eliminar borra carpeta +
+    entrada + CSV subido (solo upload_*)."""
+    subido = dirs / "ListaDeOperaciones" / "upload_ES5m_Test_1.csv"
+    subido.write_text("x", encoding="utf-8")
+    _manifest_es(dirs, csv=subido.as_posix())
+    _seed_motor(dirs)
+
+    # renombrar → carpeta movida + manifest actualizado
+    r = await client.post("/ui/riesgo/estrategia/renombrar",
+                          json={"strategy": "ES5m_Test",
+                                "nuevo_id": "ES5m_Renombrada"})
+    assert r.status_code == 200, r.text
+    assert r.json()["clave"] == "ES_Renombrada"
+    assert (dirs / "MotorRiesgo" / "ES_Renombrada").exists()
+    assert not (dirs / "MotorRiesgo" / "ES_Test").exists()
+    entries = json.loads((dirs / "REPORTES" / "lab_manifest.json")
+                         .read_text(encoding="utf-8"))["entries"]
+    assert "ES5m_Renombrada" in entries and "ES5m_Test" not in entries
+    r = await client.get("/ui/riesgo?strategy=ES5m_Renombrada")
+    assert r.status_code == 200 and "ES_Renombrada" in r.text
+
+    # renombrar a un id ya existente → 409
+    _write_lab_manifest(dirs, {**entries, "ES5m_Otra": {
+        "instrument": "ES", "csv": "x.csv", "confirmed": True}})
+    r = await client.post("/ui/riesgo/estrategia/renombrar",
+                          json={"strategy": "ES5m_Renombrada",
+                                "nuevo_id": "ES5m_Otra"})
+    assert r.status_code == 409
+
+    # eliminar → carpeta + entrada + csv subido fuera
+    r = await client.delete("/ui/riesgo/estrategia",
+                            params={"strategy": "ES5m_Renombrada"})
+    assert r.status_code == 200
+    assert not (dirs / "MotorRiesgo" / "ES_Renombrada").exists()
+    assert not subido.exists()
+    entries = json.loads((dirs / "REPORTES" / "lab_manifest.json")
+                         .read_text(encoding="utf-8"))["entries"]
+    assert "ES5m_Renombrada" not in entries
+
+
+@pytest.mark.asyncio
+async def test_eliminar_listado_csv_conserva_estrategia(
+    client: AsyncClient, dirs: Path
+) -> None:
+    """D — la ficha Datos permite ELIMINAR el .csv (no solo agregar): borra
+    la carpeta del motor + el CSV subido, pero la estrategia SIGUE en el
+    manifest lista para reemplazar. Un export original (no upload_*) jamás
+    se borra."""
+    original = dirs / "ListaDeOperaciones" / "Lux_CME_MINI_ES1!_orig.csv"
+    original.write_text("x", encoding="utf-8")
+    _manifest_es(dirs, csv=original.as_posix())
+    _seed_motor(dirs)
+
+    r = await client.delete("/ui/riesgo/datos",
+                            params={"strategy": "ES5m_Test"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["motor_borrado"] is True
+    assert j["csv_borrado"] is False              # original: NO se toca
+    assert original.exists()
+    assert not (dirs / "MotorRiesgo" / "ES_Test").exists()
+    entries = json.loads((dirs / "REPORTES" / "lab_manifest.json")
+                         .read_text(encoding="utf-8"))["entries"]
+    assert "ES5m_Test" in entries                 # la estrategia sigue
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert "Sin listado integrado" in r.text      # lista para reemplazar
 
 
 # ---------------------------------------------------------------------------

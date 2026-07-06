@@ -774,6 +774,222 @@ def side_management(sts: list[SimTrade],
 
 
 # ---------------------------------------------------------------------------
+# 5c. Protección de cuenta — estudio IN-SAMPLE, SIN gate OOS (pestaña v2)
+# ---------------------------------------------------------------------------
+
+# Un trade que pierde ≥ este % de la cuenta es un DESASTRE (se marca en rojo
+# y el estudio busca dejarlo por debajo).
+ALARMA_PCT = 10.0
+
+# SL ×ATR más fino que el grid del estudio descartado (aquí el objetivo no es
+# net, es capar desastres) — los candidatos se FILTRAN al suelo del MAE de
+# ganadoras (deja respirar).
+PROTECCION_SL_GRID = (3.0, 3.5, 4.0, 4.5, 5.0, 5.5) + SL_DURO_GRID
+
+ETIQUETA_PROTECCION = ("in-sample, sin validar OOS — para proteger la "
+                       "cuenta, NO promesa a futuro")
+
+
+def _eval_proteccion(sts: list[SimTrade], ppt: float, hc: HaircutCfg,
+                     sl_atr: float | None, b_usd: float | None,
+                     tp_by_side: dict | None, lado: str | None) -> dict:
+    """Un combo de protección: entrada ÚNICA a la señal (1 mini, como el
+    CRUDO — comparable 1:1), con SL ×ATR y/o backstop $ (manda el más
+    cercano), TP nominal opcional y filtro de lado opcional. Stop manda
+    sobre TP (conservador, mismo criterio que la escalera)."""
+    b_pts = b_usd / ppt if b_usd else None
+    pnls: list[float] = []
+    participados: list[float] = []
+    cortadas = 0
+    for st in sts:
+        if lado and st.side != lado:
+            pnls.append(0.0)
+            continue
+        stops = [x for x in ((sl_atr * st.atr_pts if sl_atr else None),
+                             b_pts) if x is not None]
+        stop_pts = min(stops) if stops else None
+        if stop_pts is not None and st.mae_pts >= stop_pts:
+            pnl = -(stop_pts + hc.gap_pts) * ppt - hc.comision_rt_usd
+            if st.native_pnl_usd > 0:
+                cortadas += 1              # ganadora que el stop mató
+        else:
+            tp_atr = (tp_by_side or {}).get(st.side)
+            if tp_atr is not None and st.mfe_atr >= tp_atr:
+                pnl = tp_atr * st.atr_pts * ppt - hc.comision_rt_usd
+            else:
+                pnl = st.native_pnl_usd - hc.comision_rt_usd
+        pnls.append(pnl)
+        participados.append(pnl)
+    m = metrics_usd(pnls)
+    if participados:
+        m["wr_pct"] = round(
+            100 * sum(1 for p in participados if p > 0) / len(participados), 1)
+    ganadoras = sum(1 for st in sts if st.native_pnl_usd > 0
+                    and (not lado or st.side == lado))
+    return {
+        "sl_atr": sl_atr,
+        "backstop_usd": b_usd,
+        "tp_por_lado_atr": tp_by_side,
+        "lado": lado,
+        "n_palancas": sum(x is not None
+                          for x in (sl_atr, b_usd, tp_by_side, lado)),
+        "participacion_pct": (round(100 * len(participados) / len(sts), 1)
+                              if sts else None),
+        "ganadoras_cortadas_pct": (round(100 * cortadas / ganadoras, 1)
+                                   if ganadoras else None),
+        "metricas": m,
+    }
+
+
+def proteccion_study(sts: list[SimTrade], ppt: float,
+                     hc: HaircutCfg | None = None,
+                     suelo_atr: float | None = None,
+                     tp_nominal: dict | None = None,
+                     gestion_lado: dict | None = None) -> dict:
+    """Barrido IN-SAMPLE de las 4 palancas (SL ×ATR, backstop $, TP nominal,
+    lado) para PROTEGER LA CUENTA: capar los trades desastrosos manteniendo
+    la máxima participación. SIN gate OOS a propósito — convive con el
+    estudio validado, no lo reemplaza.
+
+    El suelo del SL (MAE p95 de las GANADORAS) filtra los candidatos: un
+    stop más ceñido que el retroceso típico de las ganadoras mata a las
+    recuperadoras — no protege, destruye. El lado solo entra como candidato
+    cuando la gestión por lado (P1b) disparó (no forzarla).
+
+    La SELECCIÓN por tamaño de cuenta NO vive aquí: los combos se persisten
+    en $ absolutos y `proteccion_para_cuenta` (pura) elige al instante para
+    la cuenta editable de la pestaña — cero segundo cálculo."""
+    hc = hc or HaircutCfg()
+    if not sts:
+        return {"suelo_atr": None, "atr_mediana_pts": None,
+                "lado_candidato": None, "tp_nominal_atr": tp_nominal,
+                "umbral_alarma_pct": ALARMA_PCT,
+                "etiqueta": ETIQUETA_PROTECCION,
+                "combos": [], "perdedores": []}
+    if suelo_atr is None:
+        winners = sorted(st.mae_atr for st in sts if st.native_pnl_usd > 0)
+        suelo_atr = round(pctl(winners, 0.95), 2) if winners else None
+    atr_med = median(st.atr_pts for st in sts)
+    sl_cands = sorted({k for k in PROTECCION_SL_GRID
+                       if suelo_atr is None or k >= suelo_atr})
+    bk_cands = [b for b in BACKSTOP_GRID_USD
+                if suelo_atr is None or (b / ppt) / atr_med >= suelo_atr]
+    rec = (gestion_lado or {}).get("recomendacion")
+    lado_cand = rec["lado_bueno"] if rec else None
+
+    combos: list[dict] = []
+    for sl in (None, *sl_cands):
+        for b in (None, *bk_cands):
+            for tp in ((None, tp_nominal) if tp_nominal else (None,)):
+                for lado in ((None, lado_cand) if lado_cand else (None,)):
+                    combos.append(_eval_proteccion(sts, ppt, hc,
+                                                   sl, b, tp, lado))
+    perdedores = sorted(
+        ({"number": st.number, "side": st.side,
+          "pnl_usd": st.native_pnl_usd}
+         for st in sts if st.native_pnl_usd < 0),
+        key=lambda p: p["pnl_usd"])
+    return {
+        "suelo_atr": suelo_atr,
+        "atr_mediana_pts": round(atr_med, 2),
+        "lado_candidato": lado_cand,
+        "lado_muestra_chica": bool(rec and rec.get("muestra_chica")),
+        "lado_n_malo": rec["n_lado_malo"] if rec else None,
+        "tp_nominal_atr": tp_nominal,
+        "umbral_alarma_pct": ALARMA_PCT,
+        "etiqueta": ETIQUETA_PROTECCION,
+        "combos": combos,
+        "perdedores": perdedores,
+    }
+
+
+def proteccion_para_cuenta(prot: dict, cuenta_usd: float,
+                           crudo_total: dict) -> dict:
+    """Selección PURA por tamaño de cuenta (la cuenta editable de la
+    pestaña llama esto al vuelo — el barrido pesado ya está persistido).
+
+    SUPERVIVENCIA > NET: sobrevive = ningún trade pierde más del umbral de
+    alarma (% de la cuenta) Y el max DD no se come la cuenta entera. Entre
+    supervivientes: máxima participación, luego el combo más SIMPLE (menos
+    palancas), luego net. Si nada sobrevive, se recomienda IGUAL el combo
+    que más acerca (mínimo peor trade % de la cuenta) — aunque sea
+    net-negativo, con el costo a la vista."""
+    cu = float(cuenta_usd)
+    umbral = prot.get("umbral_alarma_pct", ALARMA_PCT)
+
+    def pct(v) -> float | None:
+        return round(100 * abs(v or 0.0) / cu, 1) if cu > 0 else None
+
+    alarmas = [dict(p, pct_cuenta=pct(p["pnl_usd"]))
+               for p in prot.get("perdedores") or []
+               if -p["pnl_usd"] >= umbral / 100.0 * cu]
+    crudo = {
+        "net_usd": crudo_total.get("net_usd"),
+        "pf": crudo_total.get("pf"),
+        "wr_pct": crudo_total.get("wr_pct"),
+        "max_dd_usd": crudo_total.get("max_dd_usd"),
+        "peor_trade_usd": crudo_total.get("peor_trade_usd"),
+        "participacion_pct": 100.0,
+        "peor_pct_cuenta": pct(min(crudo_total.get("peor_trade_usd") or 0.0,
+                                   0.0)),
+        "dd_pct_cuenta": pct(crudo_total.get("max_dd_usd")),
+    }
+    out = {"cuenta_usd": cu, "umbral_alarma_pct": umbral,
+           "alarmas": alarmas, "n_alarmas": len(alarmas),
+           "crudo": crudo,
+           "etiqueta": prot.get("etiqueta") or ETIQUETA_PROTECCION,
+           "elegido": None, "protegido": False, "efecto": None,
+           "nota_supervivencia": None}
+    combos = prot.get("combos") or []
+    if not combos:
+        return out
+
+    def peor_pct(c: dict) -> float:
+        return pct(min(c["metricas"].get("peor_trade_usd") or 0.0, 0.0))
+
+    def dd_pct(c: dict) -> float:
+        return pct(c["metricas"].get("max_dd_usd")) or 0.0
+
+    supervivientes = [c for c in combos
+                      if peor_pct(c) <= umbral and dd_pct(c) < 100.0]
+    if supervivientes:
+        elegido = max(supervivientes,
+                      key=lambda c: (c["participacion_pct"] or 0.0,
+                                     -c["n_palancas"],
+                                     c["metricas"].get("net_usd") or -9e18))
+        protegido = True
+    else:
+        elegido = min(combos,
+                      key=lambda c: (peor_pct(c),
+                                     -(c["participacion_pct"] or 0.0),
+                                     -(c["metricas"].get("net_usd")
+                                       or -9e18)))
+        protegido = False
+    m = elegido["metricas"]
+    out.update({
+        "elegido": elegido,
+        "protegido": protegido,
+        "efecto": {
+            "peor_trade_usd": m.get("peor_trade_usd"),
+            "peor_pct_cuenta": peor_pct(elegido),
+            "max_dd_usd": m.get("max_dd_usd"),
+            "dd_pct_cuenta": dd_pct(elegido),
+            "costo_net_usd": round((m.get("net_usd") or 0.0)
+                                   - (crudo_total.get("net_usd") or 0.0), 2),
+            "participacion_pct": elegido["participacion_pct"],
+            "ganadoras_cortadas_pct": elegido["ganadoras_cortadas_pct"],
+        },
+        "nota_supervivencia": (
+            "supervivencia > net: la protección se recomienda aunque "
+            "cueste net"
+            + ("" if protegido else
+               f" — ningún combo deja el peor trade ≤ {umbral:.0f}% de la "
+               f"cuenta; se muestra el que más se acerca")),
+    })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 6. Reconciliación fills escalera ↔ pullback del Lab
 # ---------------------------------------------------------------------------
 
@@ -1112,6 +1328,7 @@ def run_studies(sts: list[SimTrade], ppt: float,
                 hc: HaircutCfg | None = None,
                 lab_fill_rates: dict[float, float | None] | None = None,
                 cancel_after_s: float | None = CANCEL_AFTER_MAX_S,
+                listado_crudo: dict | None = None,
                 ) -> dict:
     """Corre TODOS los estudios MR-2 y devuelve el dict completo (lo persiste
     nt_riesgo.calcular en runs/estudios_<fecha>.json; MR-3 lo convierte en
@@ -1119,7 +1336,11 @@ def run_studies(sts: list[SimTrade], ppt: float,
 
     cancel_after_s (default 3600 = máximo duro de TradersPost): el barrido
     PRINCIPAL corre con el corte de tiempo de llenado — los fills realistas
-    de producción. None = modelo original sin corte (solo para estudio)."""
+    de producción. None = modelo original sin corte (solo para estudio).
+
+    listado_crudo (opcional, lo arma el caller con los Trade completos):
+    métricas del ListadoDeOperaciones CRUDO sin filtro de universo ATR +
+    duración media de ganadores/perdedores — se persiste tal cual."""
     hc = hc or HaircutCfg()
     if cancel_after_s is not None:
         cancel_after_s = min(float(cancel_after_s), CANCEL_AFTER_MAX_S)
@@ -1177,6 +1398,12 @@ def run_studies(sts: list[SimTrade], ppt: float,
     ls = ls_asymmetry(sts)
     # P1b — la 4ª palanca: gestión por lado, ESTRUCTURAL (no OOS)
     gestion_lado = side_management(sts, ls)
+    # v2 — Protección de cuenta (in-sample, SIN gate OOS; convive con el
+    # estudio validado). El suelo del SL viene del mae_floor (una fuente).
+    proteccion = proteccion_study(
+        sts, ppt, hc,
+        suelo_atr=mae_floor["ganadoras_mae_atr"]["p95"],
+        tp_nominal=tp_nominal, gestion_lado=gestion_lado)
     robustez = (robustez_study(
         sts, configs, ppt, hc, ca,
         corte_fills["tope_natural_atr"] if corte_fills else None)
@@ -1247,6 +1474,8 @@ def run_studies(sts: list[SimTrade], ppt: float,
         "tp": tp,
         "ls": ls,
         "gestion_lado": gestion_lado,
+        "proteccion": proteccion,
+        "listado_crudo": listado_crudo,
         "configs": configs,
         "corte_fills": corte_fills,
         "comparativa_sin_corte": comparativa_sin_corte,

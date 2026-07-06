@@ -83,6 +83,7 @@ from scripts.mr_sims import (
     all_ladder_depths,
     from_trades,
     metrics_usd,
+    proteccion_para_cuenta,
     run_studies,
 )
 
@@ -430,6 +431,30 @@ def _fmt_usd(v) -> str:
     return f"${v:,.2f}" if v is not None else "—"
 
 
+def _listado_crudo(trades: list) -> dict:
+    """Métricas del ListadoDeOperaciones COMPLETO y crudo (sin el filtro de
+    universo ATR de los sims) + duración media de un trade ganador y de un
+    perdedor en HORAS (dato que faltaba en la línea base — pestaña v2)."""
+    def _prom_h(sel: list) -> float | None:
+        con_salida = [t for t in sel if t.exit_ts]
+        if not con_salida:
+            return None
+        return round(sum((t.exit_ts - t.entry_ts).total_seconds()
+                         for t in con_salida) / 3600.0 / len(con_salida), 1)
+
+    ganadores = [t for t in trades if t.pnl_usd > 0]
+    perdedores = [t for t in trades if t.pnl_usd < 0]
+    return {
+        "metricas": metrics_usd([t.pnl_usd for t in trades]),
+        "duracion_h": {
+            "ganador_prom_h": _prom_h(ganadores),
+            "perdedor_prom_h": _prom_h(perdedores),
+            "n_ganadores": len(ganadores),
+            "n_perdedores": len(perdedores),
+        },
+    }
+
+
 # Master con más de estos días se marca como posiblemente desactualizado
 # (cadencia semanal del SPEC §2 — el aviso es recordatorio, no bloqueo).
 _MASTER_VIEJO_DIAS = 3
@@ -517,7 +542,8 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
                  if lvl in PULLBACK_LEVELS}
 
     sts = from_trades(trades, ppt, {t.number for t in estimated})
-    res = run_studies(sts, ppt, hc, lab_rates, cancel_after_s)
+    res = run_studies(sts, ppt, hc, lab_rates, cancel_after_s,
+                      listado_crudo=_listado_crudo(trades))
     res["meta"] = {
         "clave": clave, "activo": activo, "codigo": man["codigo"],
         "fecha": fecha, "oos": oos, "usd_por_punto": ppt,
@@ -560,6 +586,13 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
     print(f"\nCRUDO (señal, sin gestión): net {_fmt_usd(base['net_usd'])} · "
           f"PF {base['pf']} · DD {_fmt_usd(base['max_dd_usd'])} · "
           f"peor {_fmt_usd(base['peor_trade_usd'])}")
+    lc = res.get("listado_crudo")
+    if lc:
+        d = lc["duracion_h"]
+        print(f"  Listado completo: {lc['metricas']['n']} trades · duración "
+              f"media ganador {d['ganador_prom_h']}h "
+              f"({d['n_ganadores']}) / perdedor {d['perdedor_prom_h']}h "
+              f"({d['n_perdedores']})")
 
     g = res["mae_floor"]["ganadoras_mae_atr"]
     print(f"\n▎Suelo del SL (MAE×ATR ganadoras): mediana {g['mediana']} · "
@@ -606,6 +639,25 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
               f"{_fmt_usd(gl['efecto_solo_lado_bueno'].get('net_usd'))} · "
               f"DD {_fmt_usd(gl['efecto_solo_lado_bueno'].get('max_dd_usd'))}"
               f" · {'⚠ muestra chica' if gl['muestra_chica'] else ''}")
+
+    prot = res.get("proteccion")
+    if prot and prot.get("combos"):
+        pc = proteccion_para_cuenta(prot, 10_000.0, base)
+        el = pc["elegido"]
+        ef = pc["efecto"]
+        print(f"\n▎PROTECCIÓN DE CUENTA (in-sample, cuenta $10,000 por "
+              f"defecto — editable en la pestaña):")
+        print(f"  {pc['n_alarmas']} trade(s) ROJOS "
+              f"(pérdida ≥{pc['umbral_alarma_pct']:.0f}% de la cuenta) · "
+              f"elegido: SL {el['sl_atr'] or '—'}×ATR · backstop "
+              f"{_fmt_usd(el['backstop_usd'])} · "
+              f"lado {el['lado'] or 'ambos'} · "
+              f"TP {'sí' if el['tp_por_lado_atr'] else '—'}")
+        print(f"  efecto: peor {_fmt_usd(ef['peor_trade_usd'])} "
+              f"({ef['peor_pct_cuenta']}% de la cuenta) · "
+              f"DD {_fmt_usd(ef['max_dd_usd'])} · costo net "
+              f"{_fmt_usd(ef['costo_net_usd'])} · part "
+              f"{ef['participacion_pct']}% — {pc['etiqueta']}")
 
     rec = res.get("reconciliacion_fills")
     if rec:
@@ -760,7 +812,8 @@ async def recrear(clave: str, fecha: str) -> dict:
     # cancel_after de la corrida ORIGINAL (corridas viejas sin el campo →
     # None = modelo sin corte, fiel a lo que se corrió entonces)
     res = run_studies(sts, mo["usd_por_punto"], hc, lab_rates,
-                      mo.get("cancel_after_s"))
+                      mo.get("cancel_after_s"),
+                      listado_crudo=_listado_crudo(trades))
     # meta con el MISMO orden de claves que `calcular` (el original) para
     # que la serialización sea comparable byte a byte
     res["meta"] = {**mo,

@@ -277,6 +277,182 @@ def test_gestion_lado_reducir_sin_catastrofe():
 
 
 # ---------------------------------------------------------------------------
+# v2 — Protección de cuenta (in-sample, SIN gate OOS)
+# ---------------------------------------------------------------------------
+
+def _prot(sts, tp=None):
+    from scripts.mr_sims import (metrics_usd, proteccion_study,
+                                 side_management)
+    gl = side_management(sts)
+    prot = proteccion_study(sts, PPT, HC0, tp_nominal=tp, gestion_lado=gl)
+    crudo = metrics_usd([s.native_pnl_usd for s in sts])
+    return prot, crudo
+
+
+def _sts_ym_sl():
+    """YM-like donde el SL SÍ alcanza: cortos −800 con MAE 4× y la
+    catástrofe −9,175 con MAE 50× — un SL 3×ATR los capa a −$600."""
+    sts = []
+    i = 1
+    for k in range(18):
+        sts.append(st(i, side="long", atr=4.0, mae=1.0,
+                      pnl_usd=2500.0 if k % 2 else 105.0)); i += 1
+        sts.append(st(i, side="short", atr=4.0, mae=16.0,
+                      pnl_usd=-800.0)); i += 1
+    for _ in range(11):
+        sts.append(st(i, side="long", atr=4.0, mae=1.0, pnl_usd=105.0))
+        i += 1
+    sts.append(st(i, side="short", atr=4.0, mae=200.0, pnl_usd=-9175.0))
+    return sts
+
+
+def test_proteccion_marca_desastre_y_recomienda():
+    """A cuenta $10,000 el −9,175 es ROJO (91.8% de la cuenta); el estudio
+    elige el SL que capa el desastre manteniendo participación 100% —
+    protegido (peor ≤ 10% de la cuenta), con la etiqueta in-sample."""
+    from scripts.mr_sims import proteccion_para_cuenta
+
+    prot, crudo = _prot(_sts_ym_sl())
+    pc = proteccion_para_cuenta(prot, 10_000.0, crudo)
+    assert [a["number"] for a in pc["alarmas"]] == [48]      # solo el rojo
+    assert pc["alarmas"][0]["pct_cuenta"] == pytest.approx(91.75, abs=0.06)
+    el = pc["elegido"]
+    assert pc["protegido"] is True
+    assert el["sl_atr"] == 3.0                # capa a 3×4 pts = $600 = 6%
+    assert el["participacion_pct"] == 100.0   # máxima participación
+    assert pc["efecto"]["peor_pct_cuenta"] <= 10.0
+    assert pc["efecto"]["peor_pct_cuenta"] < pc["crudo"]["peor_pct_cuenta"]
+    assert "in-sample" in pc["etiqueta"]
+    assert "NO promesa a futuro" in pc["etiqueta"]
+
+
+def test_proteccion_lado_cuando_sl_no_alcanza():
+    """Catástrofe con MAE chico (el precio se fue de golpe al cierre): ni
+    SL ni backstop la atajan → la única protección es el LADO (candidato
+    solo porque la gestión por lado P1b disparó)."""
+    from scripts.mr_sims import proteccion_para_cuenta
+
+    sts = []
+    i = 1
+    for k in range(12):
+        sts.append(st(i, side="long", atr=4.0, mae=1.0,
+                      pnl_usd=2500.0 if k % 2 else 105.0)); i += 1
+    for _ in range(4):
+        sts.append(st(i, side="short", atr=4.0, mae=1.0, pnl_usd=-800.0))
+        i += 1
+    sts.append(st(i, side="short", atr=4.0, mae=1.0, pnl_usd=-9175.0))
+
+    prot, crudo = _prot(sts)
+    assert prot["lado_candidato"] == "long"       # P1b disparó (cortar)
+    assert prot["lado_muestra_chica"] is True     # 5 cortos < 40
+    pc = proteccion_para_cuenta(prot, 10_000.0, crudo)
+    el = pc["elegido"]
+    assert pc["protegido"] is True
+    assert el["lado"] == "long"                   # solo el lado protege
+    assert el["participacion_pct"] < 100.0
+    assert pc["efecto"]["peor_pct_cuenta"] == 0.0
+    assert pc["efecto"]["max_dd_usd"] == 0.0
+
+
+def test_proteccion_supervivencia_sobre_net():
+    """SUPERVIVENCIA > NET: si nada deja el peor trade ≤ umbral, se
+    recomienda IGUAL el combo que más se acerca — aunque sea net-negativo
+    (el costo queda a la vista)."""
+    from scripts.mr_sims import proteccion_para_cuenta
+
+    sts = [st(i, atr=4.0, mae=4.0, pnl_usd=300.0) for i in range(1, 11)]
+    # recuperadoras: MAE 8× y aún ganan — fijan el suelo del SL en 8×
+    sts += [st(i, atr=4.0, mae=32.0, pnl_usd=4000.0) for i in range(11, 14)]
+    sts.append(st(14, atr=4.0, mae=120.0, pnl_usd=-5000.0))   # desastre
+
+    prot, crudo = _prot(sts)
+    assert prot["suelo_atr"] == pytest.approx(8.0)
+    pc = proteccion_para_cuenta(prot, 10_000.0, crudo)
+    el = pc["elegido"]
+    assert pc["protegido"] is False               # nada llega al 10%
+    assert el["sl_atr"] == pytest.approx(8.0)     # lo más cercano (16%)
+    assert el["metricas"]["net_usd"] < 0          # net-negativo: se
+    assert pc["efecto"]["costo_net_usd"] < 0      # recomienda igual
+    assert pc["efecto"]["peor_pct_cuenta"] < pc["crudo"]["peor_pct_cuenta"]
+    assert "supervivencia > net" in pc["nota_supervivencia"]
+    assert "más se acerca" in pc["nota_supervivencia"]
+
+
+def test_proteccion_sl_respeta_suelo():
+    """El suelo del SL (MAE p95 de las GANADORAS) filtra los candidatos:
+    ningún combo con SL o backstop más ceñido que el retroceso típico de
+    las ganadoras (no mata recuperadoras)."""
+    sts = [st(i, atr=4.0, mae=4.0, pnl_usd=300.0) for i in range(1, 11)]
+    sts += [st(i, atr=4.0, mae=32.0, pnl_usd=4000.0) for i in range(11, 14)]
+    sts.append(st(14, atr=4.0, mae=120.0, pnl_usd=-5000.0))
+
+    prot, _ = _prot(sts)
+    suelo = prot["suelo_atr"]
+    assert all(c["sl_atr"] is None or c["sl_atr"] >= suelo
+               for c in prot["combos"])
+    # backstop en ×ATR mediana también respeta el suelo
+    atr_med = prot["atr_mediana_pts"]
+    assert all(c["backstop_usd"] is None
+               or (c["backstop_usd"] / PPT) / atr_med >= suelo
+               for c in prot["combos"])
+
+
+def test_proteccion_cuenta_editable_recomputa():
+    """La cuenta es un parámetro de SELECCIÓN, no de cálculo: los mismos
+    combos persistidos dan respuestas distintas por cuenta — a $1M el crudo
+    ya sobrevive (0 palancas, sin alarmas); a $10k hay rojo y palancas."""
+    from scripts.mr_sims import proteccion_para_cuenta
+
+    prot, crudo = _prot(_sts_ym_sl())
+    chica = proteccion_para_cuenta(prot, 10_000.0, crudo)
+    grande = proteccion_para_cuenta(prot, 1_000_000.0, crudo)
+    assert chica["n_alarmas"] == 1 and grande["n_alarmas"] == 0
+    assert chica["elegido"]["n_palancas"] >= 1
+    assert grande["elegido"]["n_palancas"] == 0   # sin protección necesaria
+    assert grande["protegido"] is True
+    # el % es relativo a la cuenta: mismo peor trade, otro porcentaje
+    assert chica["crudo"]["peor_pct_cuenta"] > grande["crudo"]["peor_pct_cuenta"]
+
+
+def test_micros_efectivos_heatmap_honesto():
+    """E — la etiqueta '3+7' promete 10 micros; si la pierna de 7× llena el
+    5% dentro del corte, el tamaño efectivo real es ~2.75 micros. Sin datos
+    de corte (corridas viejas) → None, nunca inventado."""
+    from scripts.mr_report import _micros_efectivos
+
+    corte = {"niveles": [{"nivel_atr": 0.5, "fill_con_corte_pct": 80.0},
+                         {"nivel_atr": 7.0, "fill_con_corte_pct": 5.0}]}
+    legs = [{"depth_atr": 0.5, "peso": 0.3}, {"depth_atr": 7.0, "peso": 0.7}]
+    assert _micros_efectivos(legs, corte) == pytest.approx(2.75, abs=0.06)
+    # entrada a mercado (depth 0) siempre despliega todo
+    assert _micros_efectivos([{"depth_atr": 0.0, "peso": 1.0}], corte) == 10.0
+    assert _micros_efectivos(legs, None) is None
+    assert _micros_efectivos(legs, {"niveles": []}) is None
+
+
+def test_listado_crudo_duraciones():
+    """C — duración media de un ganador y de un perdedor (horas) en la
+    línea base; los trades sin salida no cuentan para la duración."""
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace as NS
+
+    from scripts.nt_riesgo import _listado_crudo
+
+    t0 = datetime(2026, 7, 1, 9, 0)
+    trades = [NS(pnl_usd=500.0, entry_ts=t0, exit_ts=t0 + timedelta(hours=4)),
+              NS(pnl_usd=200.0, entry_ts=t0, exit_ts=t0 + timedelta(hours=2)),
+              NS(pnl_usd=-300.0, entry_ts=t0, exit_ts=t0 + timedelta(hours=9)),
+              NS(pnl_usd=-100.0, entry_ts=t0, exit_ts=None)]
+    lc = _listado_crudo(trades)
+    assert lc["duracion_h"]["ganador_prom_h"] == 3.0
+    assert lc["duracion_h"]["perdedor_prom_h"] == 9.0
+    assert lc["duracion_h"]["n_ganadores"] == 2
+    assert lc["duracion_h"]["n_perdedores"] == 2
+    assert lc["metricas"]["n"] == 4
+    assert lc["metricas"]["net_usd"] == 300.0
+
+
+# ---------------------------------------------------------------------------
 # Reconciliación (a mano)
 # ---------------------------------------------------------------------------
 
@@ -650,7 +826,12 @@ class TestESReal:
         texto = md.read_text(encoding="utf-8")
         for seccion in ("LÍNEA BASE", "ANÁLISIS DE CONTROL DE RIESGO",
                         "CONFIGURACIONES", "ROBUSTEZ", "RECOMENDACIÓN",
-                        "Estrés de gap", "PF OOS"):
+                        "Estrés de gap", "PF OOS",
+                        # v2: duración en la base, heatmap honesto (μ ef.),
+                        # protección de cuenta (in-sample) en el reporte
+                        "Duración media ganador / perdedor",
+                        "μ ef. (corte)",
+                        "PROTECCIÓN DE CUENTA (in-sample, SIN validar OOS)"):
             assert seccion in texto, seccion
         csv_p = runs / f"configs_{stem}.csv"
         assert csv_p.exists()
@@ -822,6 +1003,31 @@ class TestESReal:
         # vista, el realista manda)
         assert res["comparativa_sin_corte"] is not None
         assert res["comparativa_sin_corte"]["top_net"]
+
+    def test_dos_estudios_conviven(self, corrida):
+        """v2: el estudio VALIDADO (OOS) y el de PROTECCIÓN (in-sample)
+        salen de la misma corrida y conviven — y el listado crudo completo
+        con duraciones está presente."""
+        from scripts.mr_sims import proteccion_para_cuenta
+
+        _, res = corrida
+        assert res["recomendacion"] is not None       # estudio 1 (validado)
+        prot = res["proteccion"]                       # estudio 2 (cuenta)
+        assert prot["combos"]
+        suelo = prot["suelo_atr"]
+        assert suelo is not None and suelo > 0
+        assert all(c["sl_atr"] is None or c["sl_atr"] >= suelo
+                   for c in prot["combos"])
+        # ES a $10k: el peor crudo (−$10,162) es ROJO y la protección
+        # elegida lo recorta (aunque no llegue al umbral, mejora)
+        pc = proteccion_para_cuenta(prot, 10_000.0, res["linea_base"]["total"])
+        assert pc["n_alarmas"] >= 1
+        assert pc["efecto"]["peor_pct_cuenta"] < pc["crudo"]["peor_pct_cuenta"]
+        assert "in-sample" in pc["etiqueta"]
+        lc = res["listado_crudo"]
+        assert lc["metricas"]["n"] == res["meta"]["n_trades_listado"]
+        assert lc["duracion_h"]["ganador_prom_h"] > 0
+        assert lc["duracion_h"]["perdedor_prom_h"] > 0
 
     def test_gating_coherente(self, corrida):
         _, res = corrida

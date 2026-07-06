@@ -1,5 +1,33 @@
 {% extends "base.html" %}
 {% block title %}Riesgo{% endblock %}
+
+{# Las MISMAS 6 tarjetas KPI (crudo → con config, Δ) para los DOS estudios —
+   espejo campo por campo; solo cambia la tarjeta ★ (label + badge). #}
+{% macro kpi_cards(kpis) %}
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+    {% for k in kpis %}
+    <div class="bg-gray-950 rounded p-3 border {% if k.destacar %}border-blue-600 ring-1 ring-blue-600/50{% else %}border-gray-800{% endif %}">
+        <div class="text-xs text-gray-500">{{ k.label }} <span class="text-gray-600">· crudo → con config</span></div>
+        <div class="text-sm text-gray-400">
+            {%- if k.fmt == 'usd' -%}${{ '{:,.0f}'.format(k.base) if k.base is not none else '—' }}{%- elif k.base is not none -%}{{ k.base }}{%- else -%}—{%- endif -%}
+            <span class="text-gray-600 mx-1">→</span>
+            <b class="text-gray-100 text-base">
+            {%- if k.fmt == 'usd' -%}${{ '{:,.0f}'.format(k.reco) if k.reco is not none else '—' }}{%- elif k.reco is not none -%}{{ k.reco }}{%- else -%}—{%- endif -%}
+            </b>
+        </div>
+        {% if k.delta is not none %}
+        <div class="text-xs font-semibold mt-1 {% if k.good %}text-emerald-400{% elif k.good == false %}text-red-400{% else %}text-gray-500{% endif %}">
+            Δ {{ '{:+,.0f}'.format(k.delta) if k.fmt == 'usd' else '{:+.2f}'.format(k.delta) }}
+        </div>
+        {% endif %}
+        {% if k.badge %}
+        <div class="text-xs mt-1"><span class="px-1.5 py-0.5 rounded {% if k.badge == 'validado' %}bg-emerald-900 text-emerald-300{% else %}bg-amber-900 text-amber-300{% endif %}">{{ k.badge }}</span></div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endmacro %}
+
 {% block content %}
 <div class="max-w-6xl mx-auto space-y-4" x-data="riesgoApp()">
 
@@ -55,16 +83,21 @@
     </div>
 
     {% if key %}
-    <!-- ══ DATOS: identidad del master + subir/actualizar + Calcular ══ -->
+    <!-- ══ DATOS: identidad del master + reemplazar/eliminar + Calcular ══ -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
         <div class="flex items-center justify-between flex-wrap gap-2">
             <div class="text-sm font-semibold text-gray-200">Datos — <span class="font-mono">{{ key }}</span>
                 <span class="text-xs text-gray-500">→ carpeta <code>{{ clave }}</code></span></div>
-            {% if link_vivo %}
-            <a href="{{ link_vivo }}" class="text-xs px-2 py-1 rounded bg-indigo-800 hover:bg-indigo-700 text-white">⚙ Config en vivo (Estrategias) →</a>
-            {% else %}
-            <span class="text-xs text-gray-600">sin estrategia viva con este id (solo estudio)</span>
-            {% endif %}
+            <div class="flex items-center gap-2 text-xs">
+                {% if link_vivo %}
+                <a href="{{ link_vivo }}" class="px-2 py-1 rounded bg-indigo-800 hover:bg-indigo-700 text-white">⚙ Config en vivo (Estrategias) →</a>
+                {% else %}
+                <span class="text-gray-600">sin estrategia viva con este id (solo estudio)</span>
+                {% endif %}
+                <!-- v2-D: editar/eliminar el ESTUDIO (la estrategia viva no se toca) -->
+                <button @click="renombrar()" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">✏ renombrar</button>
+                <button @click="eliminarEstrategia()" class="px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200">🗑 eliminar estrategia</button>
+            </div>
         </div>
 
         {% if motor %}
@@ -101,12 +134,16 @@
 
         <div class="flex items-center gap-3 flex-wrap text-xs border-t border-gray-800 pt-3">
             <form class="flex items-center gap-2 flex-wrap" @submit.prevent="upload($event)">
-                <span class="text-gray-500">Actualizar lista{% if manifest_entry %} (actual: <code>{{ manifest_entry.csv }}</code>){% endif %}:</span>
+                <span class="text-gray-500">Reemplazar lista (.csv){% if manifest_entry %} (actual: <code>{{ manifest_entry.csv }}</code>){% endif %}:</span>
                 <input type="file" name="file" accept=".csv" required
                        class="text-gray-400 file:bg-gray-700 file:text-gray-200 file:border-0 file:rounded file:px-2 file:py-1">
                 <button type="submit" :disabled="busy"
                         class="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-100 disabled:opacity-50">Subir e integrar</button>
             </form>
+            {% if motor %}
+            <button @click="eliminarDatos()" :disabled="busy || job === 'running'"
+                    class="px-2 py-1 rounded bg-red-900/70 hover:bg-red-800 text-red-200 disabled:opacity-50">🗑 eliminar listado (.csv)</button>
+            {% endif %}
             <button @click="calcular()" :disabled="busy || job === 'running'"
                     class="px-4 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-white font-semibold disabled:opacity-50"
                     x-text="job === 'running' ? '⏳ calculando…' : '▶ Calcular'"></button>
@@ -116,17 +153,18 @@
     </div>
 
     {% if estudio %}
-    <!-- ══ LÍNEA BASE (la lista cruda) ══ -->
+    <!-- ══ LÍNEA BASE (la lista cruda) — el ancla de comparación ══ -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4">
         <div class="text-sm font-semibold text-gray-200 mb-2">CRUDO (baseline) — la señal sin gestión (1 mini @ señal)
             <span class="text-xs text-gray-500">corrida {{ estudio.fecha }}</span></div>
-        <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {% for lbl, v, fmt in [
                 ('Net total', estudio.base.net_usd, 'usd'),
                 ('Profit Factor', estudio.base.pf, 'num'),
-                ('WinRate', estudio.base.wr_pct, 'pct'),
                 ('Max Drawdown', estudio.base.max_dd_usd, 'usd'),
                 ('Peor trade', estudio.base.peor_trade_usd, 'usd'),
+                ('Participación', 100.0, 'pct'),
+                ('WinRate', estudio.base.wr_pct, 'pct'),
             ] %}
             <div class="bg-gray-950 rounded p-3 border border-gray-800">
                 <div class="text-xs text-gray-500">{{ lbl }}</div>
@@ -136,6 +174,13 @@
             </div>
             {% endfor %}
         </div>
+        {% if estudio.listado_crudo %}
+        {% set lc = estudio.listado_crudo %}
+        <div class="text-xs text-gray-400 mt-2">
+            <b>Listado completo (crudo, sin filtro ATR):</b> {{ lc.metricas.n }} trades · net ${{ '{:,.0f}'.format(lc.metricas.net_usd) }} · PF {{ lc.metricas.pf }} ·
+            <b class="text-gray-300">Duración media: ganador {{ lc.duracion_h.ganador_prom_h }}h ({{ lc.duracion_h.n_ganadores }}) / perdedor {{ lc.duracion_h.perdedor_prom_h }}h ({{ lc.duracion_h.n_perdedores }})</b>
+        </div>
+        {% endif %}
         <div class="text-xs text-gray-500 mt-2">PF OOS del <b>CRUDO</b>: <b class="text-gray-300">{{ estudio.base_pf_oos }}</b> — la señal sola puede decaer fuera de muestra; la config aguanta/rescata (ver comparación) · {{ estudio.ls }}</div>
     </div>
 
@@ -168,34 +213,24 @@
     </div>
     {% endif %}
 
-    <!-- ══ CRUDO → CON CONFIG (el corazón) ══ -->
+    <!-- ══════ ESTUDIO 1 — VALIDADO (FUERA DE MUESTRA) ══════ -->
     {% if estudio.comparacion %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
+        <div class="text-base font-bold text-gray-100">Estudio validado (fuera de muestra)
+            <span class="text-xs font-normal text-gray-500">la ★ decide con el PF OOS — el in-sample nunca elige</span></div>
+
+        <!-- B: participación como banner, ARRIBA del banner de veredicto -->
+        <div class="bg-blue-900/20 border border-blue-800 rounded p-2 text-xs text-blue-200">
+            <b>Participación:</b> crudo 100% → con config <b>{{ estudio.part_reco }}%</b>
+            ({{ '{:+.1f}'.format(estudio.part_reco - 100.0) }} pp) — en cuántos trades del listado la config de verdad participa.
+        </div>
         <div class="flex items-center justify-between flex-wrap gap-2">
             <div class="text-sm font-semibold text-gray-200">CRUDO (señal) → CON CONFIG recomendada
                 <span class="text-xs font-normal text-blue-300 font-mono">{{ estudio.elegido }}</span></div>
             <span class="text-xs px-2 py-0.5 rounded {% if estudio.veredicto and estudio.veredicto.startswith('validado') %}bg-emerald-900 text-emerald-300{% else %}bg-amber-900 text-amber-300{% endif %}">
                 {{ estudio.veredicto }}{% if estudio.flags %} ⚠{{ estudio.flags|join(',') }}{% endif %}</span>
         </div>
-        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            {% for k in estudio.comparacion %}
-            <div class="bg-gray-950 rounded p-3 border {% if k.destacar %}border-blue-600 ring-1 ring-blue-600/50{% else %}border-gray-800{% endif %}">
-                <div class="text-xs text-gray-500">{{ k.label }} <span class="text-gray-600">· crudo → con config</span></div>
-                <div class="text-sm text-gray-400">
-                    {%- if k.fmt == 'usd' -%}${{ '{:,.0f}'.format(k.base) if k.base is not none else '—' }}{%- elif k.base is not none -%}{{ k.base }}{%- else -%}—{%- endif -%}
-                    <span class="text-gray-600 mx-1">→</span>
-                    <b class="text-gray-100 text-base">
-                    {%- if k.fmt == 'usd' -%}${{ '{:,.0f}'.format(k.reco) if k.reco is not none else '—' }}{%- elif k.reco is not none -%}{{ k.reco }}{%- else -%}—{%- endif -%}
-                    </b>
-                </div>
-                {% if k.delta is not none %}
-                <div class="text-xs font-semibold mt-1 {% if k.good %}text-emerald-400{% elif k.good == false %}text-red-400{% else %}text-gray-500{% endif %}">
-                    Δ {{ '{:+,.0f}'.format(k.delta) if k.fmt == 'usd' else '{:+.2f}'.format(k.delta) }}
-                </div>
-                {% endif %}
-            </div>
-            {% endfor %}
-        </div>
+        {{ kpi_cards(estudio.comparacion) }}
         <div class="bg-amber-900/20 border border-amber-800 rounded p-2 text-xs text-amber-200">
             ★ el número de confianza es el <b>OOS</b> (el in-sample nunca decide) · métricas con <b>corte de cancel_after {{ '%.0f'|format(estudio.corte.cancel_after_s) }}s</b> (fills reales de producción — más bajos que el "alguna vez llena", a propósito) · tope natural de profundidad {{ estudio.corte.tope_natural_atr }}×ATR · {{ estudio.n_aprobadas }}/{{ estudio.n_configs }} configs aprobadas.
         </div>
@@ -230,33 +265,35 @@
     </div>
     {% endif %}
 
-    <!-- ══ HEATMAP (lo genera el motor — grado publicación) ══ -->
+    <!-- ══ HEATMAP (lo genera el motor — μ efect. = tamaño real bajo el corte) ══ -->
     {% if estudio.heatmap %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4">
         <div class="text-sm font-semibold text-gray-200 mb-2">Candidatas del walk-forward
+            <span class="text-xs font-normal text-gray-500">μ efect. = micros que la config despliega DE VERDAD dentro del corte (la etiqueta nominal no engaña)</span>
             <a href="/ui/riesgo/reporte?strategy={{ key }}" target="_blank" class="text-xs font-normal text-blue-400 hover:underline ml-2">reporte completo (md) →</a></div>
         <img src="/ui/riesgo/heatmap?strategy={{ key }}" alt="heatmap"
              class="w-full rounded bg-white/95 p-1">
     </div>
     {% endif %}
 
-    <!-- ══ RECOMENDACIÓN + JSON de activación ══ -->
+    <!-- ══ RECOMENDACIÓN (estudio validado) + JSON de activación ══ -->
     {% if estudio.reco %}
     <div class="bg-gray-900 border border-gray-800 rounded p-4 grid md:grid-cols-2 gap-4">
         <div class="space-y-2 text-sm">
-            <div class="font-semibold text-gray-200">Recomendación — {{ estudio.reco.config }}</div>
+            <div class="font-semibold text-gray-200">Recomendación (validada OOS) — {{ estudio.reco.config }}</div>
             <ul class="text-xs text-gray-300 space-y-1.5">
                 {% if estudio.backstop_fmt %}
-                <li>🛡 <b>Backstop:</b> {{ estudio.backstop_fmt }} — stop de <b>precio fijo</b> desde la señal (no ×ATR).</li>
+                <li>🛑 <b>SL / backstop:</b> {{ estudio.backstop_fmt }} — stop de <b>precio fijo</b> desde la señal (no ×ATR).</li>
                 {% endif %}
                 <li>🪜 <b>Escalera:</b>
                     {% for p in estudio.reco.escalera.piernas %}{{ p.micros }} MES @ {{ p.depth_atr }}×ATR{{ ' + ' if not loop.last }}{% endfor %}
                     (anclada a la señal, total {{ estudio.reco.escalera.total_micros }} micros = 1 mini).</li>
-                <li>🎯 <b>TP nominal:</b> L {{ estudio.reco.tp_nominal_atr.long }}× / S {{ estudio.reco.tp_nominal_atr.short }}×ATR — por encima del p99 del cierre; <b>que cierre LuxAlgo</b> (solo satisface TradersPost).</li>
+                <li>🎯 <b>TP:</b> nominal L {{ estudio.reco.tp_nominal_atr.long }}× / S {{ estudio.reco.tp_nominal_atr.short }}×ATR — por encima del p99 del cierre; <b>que cierre LuxAlgo</b> (solo satisface TradersPost).</li>
+                <li>↔ <b>Lado:</b> {{ estudio.ls }} — <code>short_size_factor</code> es afinable del operador (no lo fija el estudio).</li>
                 {% if estudio.reco.cancel_after_seconds %}
                 <li>⏱ <b>cancel_after coherente:</b> {{ estudio.reco.cancel_after_seconds }}s (p90 del toque de la pierna más profunda; máx duro TradersPost 3600s).</li>
                 {% endif %}
-                <li>📐 <b>Sizing:</b> tamaño fijo, sin equity. <b>Gestión por lado:</b> {{ estudio.ls }} — <code>short_size_factor</code> es afinable del operador (no lo fija el estudio).</li>
+                <li>📐 <b>Sizing:</b> tamaño fijo, sin equity.</li>
                 <li>✅ <b>Confianza:</b> PF OOS <b>{{ estudio.reco.confianza_oos.pf_out }}</b> (Δ{{ estudio.reco.confianza_oos.delta_pf_out }}) · {{ estudio.reco.confianza_oos.veredicto }}.</li>
             </ul>
             {% if link_vivo %}
@@ -270,6 +307,81 @@
             </div>
             <pre id="activacion-json" class="bg-gray-950 rounded p-3 text-xs text-emerald-200 overflow-auto max-h-80">{{ estudio.activacion }}</pre>
         </div>
+    </div>
+    {% endif %}
+
+    <!-- ══════ ESTUDIO 2 — PROTECCIÓN DE CUENTA (IN-SAMPLE) ══════ -->
+    {% if estudio.proteccion %}
+    {% set p = estudio.proteccion %}
+    <div class="bg-gray-900 border border-rose-900 rounded p-4 space-y-3">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="text-base font-bold text-gray-100">Protección de cuenta (in-sample)
+                <span class="text-xs font-normal px-2 py-0.5 rounded bg-amber-900 text-amber-300">sin validar — para decidir</span></div>
+            <!-- A: cuenta editable — persiste y recomputa al cambiar -->
+            <label class="text-xs text-gray-300 flex items-center gap-1">Cuenta: $
+                <input type="number" min="100" step="500" x-model.number="cuenta" @change="guardarCuenta()"
+                       class="w-28 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 font-mono">
+            </label>
+        </div>
+        <div class="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
+            <b>{{ p.etiqueta }}.</b> Objetivo: máxima participación quitando los trades desastrosos, con un SL que deje respirar (suelo del MAE de ganadoras: p95 {{ p.suelo_atr }}×ATR).
+        </div>
+
+        <!-- trades ROJOS: pérdida grande como % de la cuenta -->
+        {% if p.alarmas %}
+        <div class="bg-red-900/30 border border-red-700 rounded p-2 text-xs text-red-200">
+            🔴 <b>{{ p.n_alarmas }} trade(s) con pérdida ≥ {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta:</b>
+            {% for a in p.alarmas[:6] %}
+            <span class="font-mono font-bold ml-2">#{{ a.number }} {{ a.side }} ${{ '{:,.0f}'.format(a.pnl_usd) }} ({{ a.pct_cuenta }}% de la cuenta)</span>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="bg-emerald-900/20 border border-emerald-800 rounded p-2 text-xs text-emerald-200">
+            Sin trades rojos a esta cuenta — ninguna pérdida individual llega al {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta.
+        </div>
+        {% endif %}
+
+        <!-- B: participación como banner, arriba del banner de veredicto (espejo) -->
+        <div class="bg-blue-900/20 border border-blue-800 rounded p-2 text-xs text-blue-200">
+            <b>Participación:</b> crudo 100% → con protección <b>{{ p.efecto.participacion_pct }}%</b>
+            ({{ '{:+.1f}'.format(p.efecto.participacion_pct - 100.0) }} pp) — supervivencia &gt; net.
+        </div>
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="text-sm font-semibold text-gray-200">CRUDO (señal) → CON PROTECCIÓN elegida</div>
+            <span class="text-xs px-2 py-0.5 rounded {% if p.protegido %}bg-emerald-900 text-emerald-300{% else %}bg-amber-900 text-amber-300{% endif %}">
+                {% if p.protegido %}protege: peor trade ≤ {{ '%.0f'|format(p.umbral_alarma_pct) }}% de la cuenta{% else %}no llega al umbral — se muestra lo más cercano{% endif %}</span>
+        </div>
+        {{ kpi_cards(p.kpis) }}
+
+        <!-- las mismas palancas que el estudio validado (espejo intencional) -->
+        <ul class="text-xs text-gray-300 space-y-1.5">
+            {% for pal in p.palancas %}
+            <li>{{ pal.icon }} <b>{{ pal.titulo }}:</b> {{ pal.texto }}.</li>
+            {% endfor %}
+        </ul>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">Peor trade protegido</div>
+                <div class="text-gray-100 font-bold">${{ '{:,.0f}'.format(p.efecto.peor_trade_usd) }} <span class="text-gray-400 font-normal">({{ p.efecto.peor_pct_cuenta }}% de la cuenta)</span></div>
+            </div>
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">Max DD protegido</div>
+                <div class="text-gray-100 font-bold">${{ '{:,.0f}'.format(p.efecto.max_dd_usd) }} <span class="text-gray-400 font-normal">({{ p.efecto.dd_pct_cuenta }}%)</span></div>
+            </div>
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">Costo en net</div>
+                <div class="font-bold {% if p.efecto.costo_net_usd < 0 %}text-red-300{% else %}text-emerald-300{% endif %}">${{ '{:,.0f}'.format(p.efecto.costo_net_usd) }}</div>
+            </div>
+            <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                <div class="text-gray-500">Ganadoras cortadas por el stop</div>
+                <div class="text-gray-100 font-bold">{{ p.efecto.ganadoras_cortadas_pct if p.efecto.ganadoras_cortadas_pct is not none else '—' }}%</div>
+            </div>
+        </div>
+        <div class="text-xs text-gray-500">{{ p.nota_supervivencia }}. Aplicar sigue siendo un paso aparte (config de la estrategia).</div>
+    </div>
+    {% elif estudio %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-3 text-xs text-gray-500">
+        El estudio de <b>Protección de cuenta (in-sample)</b> aparecerá con la próxima corrida — dale <b>▶ Calcular</b>.
     </div>
     {% endif %}
 
@@ -291,6 +403,7 @@ function riesgoApp() {
         busy: false, msg: '', ok: true, tail: '', copiado: false,
         nueva: false, nuevaSel: '', nuevaId: '', msgNueva: '', okNueva: true,
         job: {{ "'" + job + "'" if job else 'null' }},
+        cuenta: {{ cuenta }},
 
         async _subir(strategy, fileInput) {
             const fd = new FormData();
@@ -347,6 +460,39 @@ function riesgoApp() {
             if (j.status === 'running') { setTimeout(() => this._poll(), 2000); return; }
             if (j.status === 'done') { location.reload(); }
             else { this.ok = false; this.msg = '⛔ el cálculo falló'; this.tail = j.tail || ''; }
+        },
+        // v2-A: cuenta editable — persiste y recomputa (recarga con la
+        // selección re-hecha en el servidor sobre los combos persistidos)
+        async guardarCuenta() {
+            const r = await fetch('/ui/riesgo/cuenta', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cuenta_usd: this.cuenta }) });
+            if (r.ok) { location.reload(); return; }
+            const j = await r.json();
+            this.ok = false; this.msg = '⛔ ' + (j.error || 'cuenta inválida');
+        },
+        // v2-D: gestión de datos (solo el ESTUDIO — la estrategia viva no se toca)
+        async renombrar() {
+            const nuevo = prompt('Nuevo id para el estudio {{ key }}:', '{{ key }}');
+            if (!nuevo || nuevo === '{{ key }}') return;
+            const r = await fetch('/ui/riesgo/estrategia/renombrar', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ strategy: '{{ key }}', nuevo_id: nuevo }) });
+            const j = await r.json();
+            if (r.ok) { location.href = '/ui/riesgo?strategy=' + j.strategy; }
+            else { this.ok = false; this.msg = '⛔ ' + (j.error || 'error'); }
+        },
+        async eliminarEstrategia() {
+            if (!confirm('¿Eliminar el ESTUDIO de {{ key }}? Borra su carpeta MotorRiesgo, su entrada del manifest y el CSV subido. La estrategia viva de la DB NO se toca.')) return;
+            const r = await fetch('/ui/riesgo/estrategia?strategy={{ key }}', { method: 'DELETE' });
+            if (r.ok) { location.href = '/ui/riesgo'; }
+            else { const j = await r.json(); this.ok = false; this.msg = '⛔ ' + (j.error || 'error'); }
+        },
+        async eliminarDatos() {
+            if (!confirm('¿Eliminar el listado integrado (.csv) de {{ key }}? Borra master/runs/snapshots del motor; la estrategia queda lista para subir un export nuevo.')) return;
+            const r = await fetch('/ui/riesgo/datos?strategy={{ key }}', { method: 'DELETE' });
+            if (r.ok) { location.reload(); }
+            else { const j = await r.json(); this.ok = false; this.msg = '⛔ ' + (j.error || 'error'); }
         },
         copiar() {
             const el = document.getElementById('activacion-json');
