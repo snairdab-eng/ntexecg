@@ -34,10 +34,10 @@
             <a href="{{ href }}" class="px-3 py-1 rounded transition {% if is_active %}bg-gray-700 text-white{% else %}text-gray-300 hover:bg-gray-700 hover:text-white{% endif %}">{{ label }}</a>
         {% endmacro %}
         <div class="flex items-center gap-1 flex-wrap text-sm">
+            {# P2: Analítica se fusionó en el Dashboard (selector de rango) #}
             {{ nav('/ui', 'Dashboard', exact=True) }}
             {{ nav('/ui/strategies', 'Estrategias') }}
             {{ nav('/ui/signals', 'Señales') }}
-            {{ nav('/ui/analytics', 'Analítica') }}
             {{ nav('/ui/lab', 'Lab') }}
             {{ nav('/ui/riesgo', 'Riesgo') }}
             {{ nav('/ui/positions', 'Posiciones') }}

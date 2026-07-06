@@ -2,6 +2,10 @@
 {% from "_macros.html" import outcome_badge %}
 {% block title %}Dashboard — NTEXECG{% endblock %}
 
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+
 {% block content %}
 <div class="space-y-6">
 
@@ -15,31 +19,56 @@
     <!-- Alerta de deliveries FAILED (HTMX polling 30s) -->
     <div hx-get="/ui/partials/delivery-alerts" hx-trigger="load, every 30s" hx-swap="innerHTML"></div>
 
-    <!-- Métricas de hoy -->
+    <!-- Selector de rango (P2: Dashboard + Analítica unificados) -->
+    <div class="flex items-center justify-between flex-wrap gap-2">
+        <h1 class="text-lg font-bold text-white">Dashboard
+            <span class="text-sm font-normal text-gray-500">— señales, decisiones y entregas
+                {% if days == 0 %}de hoy{% else %}de los últimos {{ days }} días{% endif %}</span></h1>
+        <div class="flex items-center gap-1 text-sm">
+            <span class="text-gray-500 mr-1">Rango:</span>
+            {% for d in rangos %}
+            <a href="/ui{% if d %}?days={{ d }}{% endif %}"
+               class="px-2 py-0.5 rounded {% if days == d %}bg-gray-700 text-white{% else %}text-gray-400 hover:bg-gray-800{% endif %}">{{ 'hoy' if d == 0 else d ~ 'd' }}</a>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- KPIs del rango -->
     <section>
-        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-2">Métricas de hoy</h2>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {% set m = metrics %}
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+            {% set s = summary %}
             <div class="bg-gray-900 border border-gray-800 rounded p-4">
-                <div class="text-3xl font-bold text-white">{{ m.received }}</div>
+                <div class="text-3xl font-bold text-white">{{ s.received }}</div>
                 <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Recibidas</div>
             </div>
             <div class="bg-gray-900 border border-gray-800 rounded p-4">
-                <div class="text-3xl font-bold text-green-400">{{ m.approved }}</div>
+                <div class="text-3xl font-bold text-gray-200">{{ s.total }}</div>
+                <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Decisiones</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded p-4">
+                <div class="text-3xl font-bold text-green-400">{{ s.approved }}</div>
                 <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Aprobadas</div>
             </div>
             <div class="bg-gray-900 border border-gray-800 rounded p-4">
-                <div class="text-3xl font-bold text-red-400">{{ m.blocked }}</div>
+                <div class="text-3xl font-bold text-red-400">{{ s.blocked }}</div>
                 <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Bloqueadas</div>
             </div>
             <div class="bg-gray-900 border border-gray-800 rounded p-4">
-                <div class="text-3xl font-bold text-sky-400">{{ m.sent }}</div>
-                <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Enviadas</div>
+                <div class="text-3xl font-bold text-sky-400">{{ s.approval_rate }}%</div>
+                <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Tasa aprobación</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded p-4">
+                <div class="text-3xl font-bold text-blue-400">{{ s.sent }}</div>
+                <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Enviadas TP</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded p-4">
+                <div class="text-3xl font-bold {% if s.failed %}text-red-400{% else %}text-gray-500{% endif %}">{{ s.failed }}</div>
+                <div class="text-xs text-gray-400 uppercase tracking-wide mt-1">Fallidas</div>
             </div>
         </div>
     </section>
 
-    <!-- Estrategias -->
+    <!-- Fila operacional: estrategias por estado (estado ACTUAL, no del rango) -->
     <section>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
             {% set c = strategy_counts %}
@@ -73,7 +102,32 @@
         </div>
     </section>
 
-    <!-- Decisiones recientes -->
+    <!-- Charts (de la vieja Analítica — mismo universo, ventana del rango) -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {% if chart_data.timeseries %}
+        <div class="bg-gray-900 border border-gray-800 rounded p-4 lg:col-span-2">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-3">Flujo diario — recibidas / aprobadas / enviadas</h2>
+            <div class="h-64"><canvas id="chartTimeseries"></canvas></div>
+        </div>
+        {% endif %}
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-3">Resultado de las decisiones</h2>
+            <div class="h-64"><canvas id="chartOutcomes"></canvas></div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-4">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-3">¿En qué nivel se bloqueó?</h2>
+            <div class="h-64"><canvas id="chartLevels"></canvas></div>
+        </div>
+
+        <div class="bg-gray-900 border border-gray-800 rounded p-4 lg:col-span-2">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-3">Motivos de bloqueo (por qué NO se aprobó)</h2>
+            <div class="h-72"><canvas id="chartReasons"></canvas></div>
+        </div>
+    </div>
+
+    <!-- Decisiones recientes (últimas 10, siempre) -->
     <section>
         <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-2">Decisiones recientes</h2>
         <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
@@ -99,5 +153,106 @@
         </div>
     </section>
 
+    <!-- Por estrategia (rango; ids canónicos NX-24) -->
+    <div class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 p-4 pb-2">Por estrategia</h2>
+        <table class="w-full text-sm">
+            <thead class="text-xs text-gray-500 uppercase">
+                <tr class="border-b border-gray-800">
+                    <th class="text-left px-4 py-2">Estrategia</th>
+                    <th class="text-right px-4 py-2">Aprobadas</th>
+                    <th class="text-right px-4 py-2">Bloqueadas</th>
+                    <th class="text-right px-4 py-2">Otras</th>
+                    <th class="text-right px-4 py-2">Total</th>
+                    <th class="text-right px-4 py-2">% Aprob.</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in by_strategy %}
+                <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                    <td class="px-4 py-2 font-mono text-gray-300">
+                        <a href="/ui/signals?strategy={{ r.strategy_id }}" class="hover:text-blue-300">{{ r.strategy_id }}</a>
+                        {% if r.retired %}<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-400">retirada</span>
+                        {% elif r.missing %}<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-gray-800 text-gray-500" title="sin fila en strategies (borrada)">huérfana</span>{% endif %}
+                    </td>
+                    <td class="px-4 py-2 text-right text-green-400">{{ r.approve }}</td>
+                    <td class="px-4 py-2 text-right text-red-400">{{ r.block }}</td>
+                    <td class="px-4 py-2 text-right text-gray-500">{{ r.other }}</td>
+                    <td class="px-4 py-2 text-right text-gray-300">{{ r.total }}</td>
+                    <td class="px-4 py-2 text-right text-sky-400">{{ ((100 * r.approve / r.total) | round(0)) if r.total else 0 }}%</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="px-4 py-6 text-center text-gray-600">Sin datos en el rango.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
 </div>
+
+<script id="dashboard-data" type="application/json">{{ chart_data | tojson }}</script>
+<script>
+(function () {
+    const DATA = JSON.parse(document.getElementById('dashboard-data').textContent);
+    const GRID = 'rgba(148,163,184,0.12)', TICK = '#94a3b8';
+    const C = { green:'#34d399', red:'#f87171', sky:'#38bdf8', blue:'#60a5fa',
+                amber:'#fbbf24', purple:'#a78bfa', gray:'#6b7280' };
+
+    function ready(fn){ if (window.Chart) return fn();
+        let n=0; const t=setInterval(()=>{ if(window.Chart||n++>50){clearInterval(t); if(window.Chart) fn();}},100); }
+
+    ready(function () {
+        Chart.defaults.color = TICK;
+        Chart.defaults.font.size = 11;
+
+        // Time series — solo en rangos multi-día (para "hoy" se omite)
+        if (DATA.timeseries) {
+            const ts = DATA.timeseries;
+            new Chart(document.getElementById('chartTimeseries'), {
+                type: 'line',
+                data: { labels: ts.labels, datasets: [
+                    { label:'Recibidas', data:ts.received, borderColor:C.gray, backgroundColor:'transparent', tension:.3 },
+                    { label:'Aprobadas', data:ts.approved, borderColor:C.green, backgroundColor:'rgba(52,211,153,.1)', fill:true, tension:.3 },
+                    { label:'Enviadas', data:ts.sent, borderColor:C.blue, backgroundColor:'transparent', tension:.3, borderDash:[4,3] },
+                ]},
+                options: { responsive:true, maintainAspectRatio:false,
+                    scales:{ x:{grid:{color:GRID}}, y:{grid:{color:GRID}, beginAtZero:true, ticks:{precision:0}} },
+                    plugins:{ legend:{position:'bottom'} } }
+            });
+        }
+
+        // Outcomes doughnut
+        const oc = DATA.outcomes;
+        const ocColors = { APPROVE:C.green, BLOCK:C.red, IGNORE_DUPLICATE:C.gray,
+                           QUEUE_FOR_REVIEW:C.amber, ERROR:'#b91c1c', EXIT_ONLY:C.purple };
+        const ocKeys = Object.keys(oc);
+        new Chart(document.getElementById('chartOutcomes'), {
+            type:'doughnut',
+            data:{ labels:ocKeys, datasets:[{ data:ocKeys.map(k=>oc[k]),
+                backgroundColor:ocKeys.map(k=>ocColors[k]||C.gray), borderColor:'#0f172a', borderWidth:2 }] },
+            options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{position:'right'} } }
+        });
+
+        // Blocks by level
+        const bl = DATA.blocks_by_level;
+        new Chart(document.getElementById('chartLevels'), {
+            type:'bar',
+            data:{ labels:bl.map(x=>x.level), datasets:[{ label:'Bloqueos', data:bl.map(x=>x.count),
+                backgroundColor:C.red, borderRadius:4 }] },
+            options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} },
+                scales:{ x:{grid:{display:false}}, y:{grid:{color:GRID}, beginAtZero:true, ticks:{precision:0}} } }
+        });
+
+        // Block reasons (horizontal)
+        const br = DATA.block_reasons;
+        new Chart(document.getElementById('chartReasons'), {
+            type:'bar',
+            data:{ labels:br.map(x=>x.reason), datasets:[{ label:'Bloqueos', data:br.map(x=>x.count),
+                backgroundColor:C.amber, borderRadius:4 }] },
+            options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} },
+                scales:{ x:{grid:{color:GRID}, beginAtZero:true, ticks:{precision:0}}, y:{grid:{display:false}} } }
+        });
+    });
+})();
+</script>
 {% endblock %}
