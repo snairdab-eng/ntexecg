@@ -196,6 +196,64 @@
             <span class="text-amber-300 ml-1">· las entradas límite de la escalera solo viven el cancel_after (máx 3600s = 1h): todo pullback que llegue después de eso NO llena — el topo de TradersPost.</span>
         </div>
         {% endif %}
+        {# ⏰ LOTE RIES-W — Ventana de operación (COBERTURA, no filtrado):
+           debajo del rango por lado. Estudios viejos sin el campo → no aparece #}
+        {% if lc.ventana_operacion %}
+        {% set vo = lc.ventana_operacion %}
+        <div class="text-xs text-gray-400 mt-3 border-t border-gray-800 pt-2">
+            <div class="font-semibold text-gray-300">⏰ Ventana de operación <span class="text-gray-500 font-normal">(cobertura — participación 100%)</span></div>
+            <p class="text-gray-500 mt-0.5">{{ vo.nota }}</p>
+            {% if vo.por_sesion %}
+            <table class="w-full mt-1">
+                <thead><tr class="text-gray-500 text-left">
+                    <th class="py-0.5">sesión ET</th><th class="text-right">n</th><th class="text-right">net</th><th class="text-right">PF</th><th class="text-right">peor</th><th class="text-right">% rojos</th>
+                </tr></thead>
+                <tbody>
+                {% for ses, d in vo.por_sesion.items() %}
+                <tr class="border-t border-gray-800 text-gray-300">
+                    <td class="py-0.5">{{ ses }}</td>
+                    <td class="text-right">{{ d.n }}</td>
+                    <td class="text-right">${{ '{:,.0f}'.format(d.net_usd) }}</td>
+                    <td class="text-right">{{ d.pf if d.pf is not none else '—' }}</td>
+                    <td class="text-right">${{ '{:,.0f}'.format(d.peor_trade_usd) }}</td>
+                    <td class="text-right">{{ d.rojos_pct }}%</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <div class="text-gray-500 mt-0.5">% rojos = reparto de los {{ vo.n_rojos }} trade(s) con pérdida ≥ ${{ '{:,.0f}'.format(vo.umbral_rojo_usd) }} (cuenta ref ${{ '{:,.0f}'.format(vo.cuenta_ref_usd) }}) por sesión.</div>
+            {% endif %}
+            {% if vo.rango_horario_et %}
+            <div class="mt-1"><b class="text-gray-300">Rango horario de entradas (ET):</b>
+                {% for lado, et in [('total', 'total'), ('long', 'largos'), ('short', 'cortos')] %}
+                {% set r = vo.rango_horario_et.get(lado) %}
+                {% if r %}<span class="ml-1">{{ et }} {{ r.min }}–{{ r.max }}h (p05–p95 {{ r.p05 }}–{{ r.p95 }}, n={{ r.n }}){{ ' ·' if not loop.last }}</span>{% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if vo.ventana_minima_cobertura %}
+            {% set vm = vo.ventana_minima_cobertura %}
+            <div class="mt-1"><b class="text-emerald-300">Ventana mínima de cobertura (100%):</b>
+                {{ vm.dias_label }} · {{ '%02d:00'|format(vm.hora_desde) }}–{{ '%02d:00'|format(vm.hora_hasta) }} ET
+                {% if vm.p95_ref %}<span class="text-gray-500">· referencia p05–p95: {{ '%02d:00'|format(vm.p95_ref.hora_desde) }}–{{ '%02d:00'|format(vm.p95_ref.hora_hasta) }} ET</span>{% endif %}
+            </div>
+            {% endif %}
+            {# banner: comparación con la ventana L2 VIGENTE (participación perdida) #}
+            {% if ventana_vigente %}
+            {% if ventana_vigente.pct_fuera and ventana_vigente.pct_fuera > 0 %}
+            <div class="mt-2 bg-amber-900/30 border border-amber-700 rounded p-2 text-amber-100">
+                ⚠ tu ventana actual dejaría fuera el <b>{{ ventana_vigente.pct_fuera }}%</b> de los trades del backtest (participación perdida) — ventana mínima de cobertura:
+                <b>{{ vo.ventana_minima_cobertura.dias_label }} {{ '%02d:00'|format(vo.ventana_minima_cobertura.hora_desde) }}–{{ '%02d:00'|format(vo.ventana_minima_cobertura.hora_hasta) }} ET</b>.
+                <span class="text-amber-300">Cambiar la ventana es config sensible de L2 — se aplica a mano en Estrategias/Activos (no entra en Aplicar).</span>
+            </div>
+            {% else %}
+            <div class="mt-2 bg-emerald-900/20 border border-emerald-800 rounded p-2 text-emerald-200">✓ tu ventana cubre el 100% de los trades observados.</div>
+            {% endif %}
+            {% else %}
+            <div class="mt-1 text-gray-500">Sin estrategia viva vinculada — solo la cobertura del backtest (no hay ventana L2 que comparar).</div>
+            {% endif %}
+        </div>
+        {% endif %}
         {% endif %}
         <div class="text-xs text-gray-500 mt-2">PF OOS del <b>CRUDO</b>: <b class="text-gray-300">{{ estudio.base_pf_oos }}</b> — la señal sola puede decaer fuera de muestra; la config aguanta/rescata (ver comparación) · {{ estudio.ls }}</div>
     </div>

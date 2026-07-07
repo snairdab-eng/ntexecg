@@ -413,3 +413,180 @@ def test_reporte_md_incluye_rango_por_lado():
         pytest.skip(f"render_md necesita más campos del estudio real: {exc}")
     assert "Rango de operación largos" in md
     assert "p50 4.2h" in md
+
+
+# ---------------------------------------------------------------------------
+# LOTE RIES-W — ventana de operación (de COBERTURA, no de filtrado)
+# ---------------------------------------------------------------------------
+
+def _t_at(side: str, y: int, mo: int, d: int, h: int, mi: int,
+          pnl: float) -> SimpleNamespace:
+    ts = datetime(y, mo, d, h, mi)
+    return SimpleNamespace(side=side, pnl_usd=pnl, entry_ts=ts,
+                           exit_ts=ts + timedelta(hours=1))
+
+
+# Sección de ventana ya persistida (para las fichas/reporte, sin recalcular)
+VENTANA_OP = {
+    "nota": ("El filtro de sesión/hora NO aporta edge — DESCARTADO por diseño "
+             "(validado 2026-07-04). Esta ventana es de COBERTURA."),
+    "cuenta_ref_usd": 10000.0, "umbral_rojo_usd": 1000.0,
+    "n_trades": 5, "n_rojos": 1,
+    "por_sesion": {
+        "RTH": {"n": 3, "net_usd": 250.0, "pf": 1.5, "peor_trade_usd": -50.0,
+                "rojos": 0, "rojos_pct": 0.0},
+        "asia": {"n": 2, "net_usd": -1920.0, "pf": None,
+                 "peor_trade_usd": -2000.0, "rojos": 1, "rojos_pct": 100.0},
+    },
+    "rango_horario_et": {
+        "total": {"n": 5, "min": 10.0, "max": 22.0, "p05": 10.2, "p95": 21.6},
+        "long": {"n": 3, "min": 10.0, "max": 14.0, "p05": 10.1, "p95": 13.7},
+        "short": {"n": 2, "min": 20.0, "max": 22.0, "p05": 20.1, "p95": 21.9},
+    },
+    "ventana_minima_cobertura": {
+        "dias_w": [1], "dias_label": "lun", "hora_desde": 10, "hora_hasta": 22,
+        "cobertura_pct": 100.0,
+        "p95_ref": {"hora_desde": 10, "hora_hasta": 22},
+    },
+    "muestras": [[1, 600], [1, 660], [1, 840], [1, 1200], [1, 1320]],
+}
+
+_LC_BASE = {
+    "metricas": {"n": 120, "net_usd": 28175.0, "pf": 1.62, "wr_pct": 79.2,
+                 "max_dd_usd": 11750.0, "peor_trade_usd": -10162.5},
+    "duracion_h": {"ganador_prom_h": 26.9, "perdedor_prom_h": 15.1,
+                   "n_ganadores": 95, "n_perdedores": 25},
+}
+
+
+def test_ventana_operacion_distribucion_y_cobertura():
+    """Estudio con trades sintéticos en 2 sesiones ET: distribución por sesión
+    (n/net/rojos), ventana mínima de cobertura y rango horario por lado."""
+    from scripts.nt_riesgo import _listado_crudo
+    # 2026-07-06 = lunes (%w=1). RTH (10/11/14h) + asia (20/22h).
+    trades = [
+        _t_at("long", 2026, 7, 6, 10, 0, 100),
+        _t_at("long", 2026, 7, 6, 11, 0, -50),
+        _t_at("long", 2026, 7, 6, 14, 0, 200),
+        _t_at("short", 2026, 7, 6, 20, 0, 80),
+        _t_at("short", 2026, 7, 6, 22, 0, -2000),      # ROJO (≥ $1,000)
+    ]
+    vo = _listado_crudo(trades)["ventana_operacion"]
+    assert vo["n_trades"] == 5 and vo["umbral_rojo_usd"] == 1000.0
+    assert vo["n_rojos"] == 1
+    ps = vo["por_sesion"]
+    assert ps["RTH"]["n"] == 3 and ps["RTH"]["net_usd"] == 250.0
+    assert ps["RTH"]["rojos"] == 0 and ps["RTH"]["rojos_pct"] == 0.0
+    assert ps["asia"]["n"] == 2 and ps["asia"]["rojos"] == 1
+    assert ps["asia"]["rojos_pct"] == 100.0             # el único rojo cae ahí
+    rg = vo["rango_horario_et"]
+    assert rg["total"]["min"] == 10.0 and rg["total"]["max"] == 22.0
+    assert rg["long"]["min"] == 10.0 and rg["long"]["max"] == 14.0
+    assert rg["short"]["min"] == 20.0 and rg["short"]["max"] == 22.0
+    assert rg["total"]["p05"] is not None and rg["total"]["p95"] is not None
+    vm = vo["ventana_minima_cobertura"]
+    assert vm["dias_w"] == [1] and vm["dias_label"] == "lun"
+    assert vm["hora_desde"] == 10 and vm["hora_hasta"] == 22
+    assert vm["cobertura_pct"] == 100.0 and vm["p95_ref"] is not None
+    assert [1, 600] in vo["muestras"] and [1, 1320] in vo["muestras"]
+
+
+def test_ventana_operacion_usa_offset_et():
+    """El ET calca el enriched: entrada 09:00 'naive' + offset +60 → 10:00 ET
+    → sesión RTH (paridad con write_enriched)."""
+    from scripts.nt_riesgo import _listado_crudo
+    vo = _listado_crudo([_t_at("long", 2026, 7, 6, 9, 0, 100)],
+                        offset_min=60)["ventana_operacion"]
+    assert "RTH" in vo["por_sesion"]
+    assert vo["muestras"] == [[1, 600]]
+
+
+def test_pct_trades_fuera_angosta_y_24h():
+    """% de trades del backtest FUERA de la ventana vigente: angosta (RTH
+    Mon-Fri) deja fuera los de asia y el sábado; 24h/sin ventana cubre todo."""
+    from app.web.routes_riesgo import _pct_trades_fuera
+    # lun 10:00 (dentro), lun 20:00 (fuera por hora), sáb 10:00 (fuera por día)
+    muestras = [[1, 600], [1, 1200], [6, 600]]
+    angosta = {"days_enabled": [1, 2, 3, 4, 5],
+               "entry_start": "09:30", "entry_end": "15:45"}
+    assert _pct_trades_fuera(angosta, muestras) == 66.7
+    # forma 'windows' (override de estrategia) — mismo resultado
+    wins = {"windows": [{"days": [1, 2, 3, 4, 5],
+                         "start": "09:30", "end": "15:45"}]}
+    assert _pct_trades_fuera(wins, muestras) == 66.7
+    # 24h / sin ventana restrictiva → cubre todo (como el L2)
+    assert _pct_trades_fuera({}, muestras) == 0.0
+    assert _pct_trades_fuera(None, muestras) == 0.0
+    assert _pct_trades_fuera(angosta, []) is None       # sin muestras
+
+
+@pytest.mark.asyncio
+async def test_ficha_ventana_operacion_sin_viva(client: AsyncClient,
+                                                dirs: Path) -> None:
+    """Ficha con el campo pero SIN estrategia viva vinculada: se pinta la
+    sección de cobertura y la nota de que no hay ventana L2 que comparar."""
+    _manifest_es(dirs)
+    estudio = json.loads(json.dumps(ESTUDIO))
+    estudio["listado_crudo"] = {**_LC_BASE, "ventana_operacion": VENTANA_OP}
+    _seed_motor(dirs, estudio=estudio)
+    r = await client.get(f"/ui/riesgo?strategy={SID}")
+    assert r.status_code == 200
+    html = r.text
+    assert "Ventana de operación" in html
+    assert "Ventana mínima de cobertura (100%)" in html
+    assert "lun · 10:00–22:00 ET" in html
+    assert "Sin estrategia viva vinculada" in html
+    # honestidad: el filtro de sesión está descartado, es de cobertura
+    assert "DESCARTADO por diseño" in html
+
+
+@pytest.mark.asyncio
+async def test_ficha_sin_ventana_operacion_no_truena(client: AsyncClient,
+                                                     dirs: Path) -> None:
+    """Estudio viejo con listado_crudo pero SIN ventana_operacion → la sección
+    no aparece y la ficha no truena (guarda {% if %})."""
+    _manifest_es(dirs)
+    estudio = json.loads(json.dumps(ESTUDIO))
+    estudio["listado_crudo"] = dict(_LC_BASE)            # sin ventana_operacion
+    _seed_motor(dirs, estudio=estudio)
+    r = await client.get(f"/ui/riesgo?strategy={SID}")
+    assert r.status_code == 200
+    assert "Ventana de operación" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_ficha_ventana_banner_fuera(client: AsyncClient, dirs: Path,
+                                          db) -> None:
+    """Estrategia viva con ventana L2 ANGOSTA (RTH): banner ámbar con el % de
+    trades del backtest que quedaría fuera (participación perdida)."""
+    from app.models.asset_profile import AssetProfile
+    from app.models.strategy import Strategy
+    _manifest_es(dirs)
+    db.add(Strategy(strategy_id=SID, name="T", asset_symbol="MES",
+                    status="paper", enabled=True))
+    db.add(AssetProfile(symbol="MES", active=True, session_config_json={
+        "days_enabled": [1, 2, 3, 4, 5],
+        "entry_start": "09:30", "entry_end": "15:45"}))
+    await db.commit()
+    estudio = json.loads(json.dumps(ESTUDIO))
+    vo = json.loads(json.dumps(VENTANA_OP))
+    # 3 dentro RTH (10/11/14h) + 2 fuera (20/22h) → 40% fuera
+    vo["muestras"] = [[1, 600], [1, 660], [1, 840], [1, 1200], [1, 1320]]
+    estudio["listado_crudo"] = {**_LC_BASE, "ventana_operacion": vo}
+    _seed_motor(dirs, estudio=estudio)
+    r = await client.get(f"/ui/riesgo?strategy={SID}")
+    assert r.status_code == 200
+    assert "dejaría fuera" in r.text
+    assert "40.0%" in r.text
+
+
+def test_reporte_md_incluye_ventana_operacion():
+    """El .md del reporte trae la sección de ventana (solo la parte del
+    estudio: tabla por sesión + ventana mínima de cobertura)."""
+    from scripts.mr_report import _ventana_md
+    md = "\n".join(_ventana_md(VENTANA_OP))
+    assert "Ventana de operación (COBERTURA" in md
+    assert "| RTH |" in md and "| asia |" in md
+    assert "Ventana mínima de cobertura (100%)" in md
+    assert "lun · 10:00–22:00 ET" in md
+    assert "DESCARTADO por diseño" in md

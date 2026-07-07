@@ -91,6 +91,43 @@ def _leer_cuenta(clave: str | None = None) -> float:
 
 
 # ---------------------------------------------------------------------------
+# LOTE RIES-W — ventana de operación: % de trades del backtest FUERA de la
+# ventana L2 vigente (participación perdida). Reusa SessionValidator (misma
+# lógica que el L2: días %w Sun=0 + ventana horaria, con soporte overnight),
+# sobre las `muestras` [dow, minuto_del_día] que persiste el estudio — cero
+# recomputación del motor.
+# ---------------------------------------------------------------------------
+
+def _pct_trades_fuera(session_cfg: dict | None, muestras: list) -> float | None:
+    """% de entradas que caen FUERA de la ventana vigente. None si no hay
+    muestras; 0.0 si no hay ventana restrictiva (cubre todo, como el L2)."""
+    if not muestras:
+        return None
+    from datetime import time as _time
+
+    from app.services.session_validator import SessionValidator
+
+    cfg = session_cfg or {}
+    wins = cfg.get("windows")
+    if wins:
+        windows = wins
+    elif cfg.get("entry_start") or cfg.get("days_enabled"):
+        windows = [{"days": cfg.get("days_enabled", [1, 2, 3, 4, 5]),
+                    "start": cfg.get("entry_start", "09:30"),
+                    "end": cfg.get("entry_end", "15:45"),
+                    "next_day_end": cfg.get("next_day_end", False)}]
+    else:
+        return 0.0                      # sin ventana L2 restrictiva → cubre todo
+    sv = SessionValidator()
+    fuera = 0
+    for dow, mod in muestras:
+        t = _time(int(mod) // 60, int(mod) % 60)
+        if not any(sv._window_matches(w, int(dow), t) for w in windows):
+            fuera += 1
+    return round(100 * fuera / len(muestras), 1)
+
+
+# ---------------------------------------------------------------------------
 # Mapeo estrategia (manifest) ↔ carpeta del motor (MotorRiesgo/<clave>)
 # ---------------------------------------------------------------------------
 
@@ -786,6 +823,7 @@ async def riesgo_page(request: Request, strategy: str | None = None,
         "groups": groups, "key": key, "manifest_entry": None,
         "motor": None, "avisos": [], "estudio": None, "clave": None,
         "job": None, "link_vivo": None, "deriva": None,
+        "ventana_vigente": None,
         "cuenta": _leer_cuenta(),
         # Puente P3: el flash de la promoción (incluye el token del webhook,
         # que se muestra UNA sola vez) debe sobrevivir el redirect a Riesgo.
@@ -861,6 +899,31 @@ async def riesgo_page(request: Request, strategy: str | None = None,
             ctx["deriva"] = deriva_estudio(
                 pcfg, _activacion_json(est["reco"]), est.get("fecha"),
                 hay_viva=bool(ctx["link_vivo"]))
+
+        # LOTE RIES-W — ventana de operación: comparar la ventana MÍNIMA de
+        # cobertura del estudio contra la ventana L2 VIGENTE de la estrategia
+        # (ConfigResolver) y computar el % de trades que quedaría FUERA
+        # (participación perdida). Solo informa — NO entra en Aplicar.
+        est = ctx["estudio"]
+        vo = (((est or {}).get("listado_crudo") or {})
+              .get("ventana_operacion")) if est else None
+        if vo and ctx["link_vivo"]:
+            try:
+                from app.services.config_resolver import ConfigResolver
+                from app.web.routes_assets import readable_window
+                asset = next((v["asset_symbol"] for v in vivas
+                              if v["strategy_id"] == key), None)
+                eff = await ConfigResolver().resolve(db, key, asset)
+                scfg = eff.get("session_config_json")
+                pct = _pct_trades_fuera(scfg, vo.get("muestras") or [])
+                ctx["ventana_vigente"] = {
+                    "window": readable_window(scfg),
+                    "pct_fuera": pct,
+                    "cobertura_ok": (pct == 0.0),
+                    "min_cobertura": vo.get("ventana_minima_cobertura"),
+                }
+            except Exception:
+                ctx["ventana_vigente"] = None
     return await render(request, "riesgo.html", ctx)
 
 

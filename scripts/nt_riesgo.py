@@ -43,6 +43,7 @@ import csv
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -78,6 +79,7 @@ from scripts.lab_analyze import (
 from scripts.lab_manifest import csv_instrument
 # ── Simuladores MR-2 (núcleo puro del motor — scripts/mr_sims.py) ──
 from scripts.mr_sims import (
+    ALARMA_PCT,
     CANCEL_AFTER_MAX_S,
     HaircutCfg,
     all_ladder_depths,
@@ -174,6 +176,115 @@ def sesion_et(ts: datetime) -> str:
     if hm >= 18 * 60 or hm < 3 * 60:
         return "asia"
     return "europa"
+
+
+# LOTE RIES-W — ventana de operación (sección de COBERTURA, no de filtrado).
+# Orden canónico de las sesiones de sesion_et (madrugada → noche) y cuenta de
+# referencia para marcar trades ROJOS (mismo default editable de la pestaña +
+# ALARMA_PCT del motor). El filtro de sesión está DESCARTADO por diseño (no
+# aporta edge, validado 2026-07-04): esta distribución solo dice DÓNDE caen
+# los trades y las peores pérdidas, nunca recorta la señal.
+_SESIONES_ORDEN = ("europa", "RTH", "tarde", "asia")
+_DIAS_W = ("dom", "lun", "mar", "mié", "jue", "vie", "sáb")   # %w: 0=domingo
+VENTANA_CUENTA_REF_USD = 10_000.0
+
+
+def _pctl(vals: list[float], p: float) -> float | None:
+    """Percentil lineal (mismo estimador que _rango_h del listado crudo)."""
+    if not vals:
+        return None
+    s = sorted(vals)
+    i = (len(s) - 1) * p
+    lo, hi = int(i), min(int(i) + 1, len(s) - 1)
+    return round(s[lo] + (s[hi] - s[lo]) * (i - lo), 2)
+
+
+def _ventana_operacion(trades: list, offset_min: int) -> dict:
+    """Sección VENTANA DE OPERACIÓN — de COBERTURA (participación 100%).
+
+    El operador quiere la ventana recomendada según el comportamiento de los
+    trades, PERO el filtro de sesión como palanca de edge está DESCARTADO por
+    diseño (no aporta, validado 2026-07-04) y la filosofía es participación
+    100% (capar pérdidas sin saltar señales). Por eso la recomendación por
+    defecto es la ventana MÍNIMA que cubre TODAS las entradas del backtest
+    (no dejar señales fuera), nunca un recorte para "mejorar" la señal.
+
+    Reusa sesion_et y el MISMO offset ET del enriched (paridad con
+    enriched.csv). Todo determinista sobre (trades, offset)."""
+    delta = timedelta(minutes=offset_min)
+    umbral = round(VENTANA_CUENTA_REF_USD * ALARMA_PCT / 100.0, 2)
+    n_rojos = sum(1 for t in trades if t.pnl_usd <= -umbral)
+
+    def _et(t) -> datetime:
+        return t.entry_ts + delta
+
+    # a) Distribución por sesión ET (n, net, PF, peor, % de rojos que cae ahí)
+    por_sesion: dict[str, dict] = {}
+    for ses in _SESIONES_ORDEN:
+        sel = [t for t in trades if sesion_et(_et(t)) == ses]
+        if not sel:
+            continue
+        m = metrics_usd([t.pnl_usd for t in sel])
+        rojos = sum(1 for t in sel if t.pnl_usd <= -umbral)
+        por_sesion[ses] = {
+            "n": len(sel), "net_usd": m["net_usd"], "pf": m["pf"],
+            "peor_trade_usd": m["peor_trade_usd"], "rojos": rojos,
+            "rojos_pct": round(100 * rojos / n_rojos, 1) if n_rojos else 0.0,
+        }
+
+    # b) Rango horario observado de ENTRADAS (min–max + p05–p95) por lado/total
+    def _rango(sel: list) -> dict | None:
+        horas = [_et(t).hour + _et(t).minute / 60.0 for t in sel]
+        if not horas:
+            return None
+        s = sorted(horas)
+        return {"n": len(s), "min": round(s[0], 2), "max": round(s[-1], 2),
+                "p05": _pctl(horas, 0.05), "p95": _pctl(horas, 0.95)}
+
+    rango = {
+        "total": _rango(trades),
+        "long": _rango([t for t in trades
+                        if getattr(t, "side", None) == "long"]),
+        "short": _rango([t for t in trades
+                         if getattr(t, "side", None) == "short"]),
+    }
+
+    # c) Ventana mínima de cobertura: días %w presentes + [floor(min),ceil(max)]
+    dias_w = sorted({int(_et(t).strftime("%w")) for t in trades})
+    rt = rango["total"]
+    vent_min = None
+    if rt:
+        p95_ref = ({"hora_desde": int(math.floor(rt["p05"])),
+                    "hora_hasta": int(math.ceil(rt["p95"]))}
+                   if rt["p05"] is not None and rt["p95"] is not None else None)
+        vent_min = {
+            "dias_w": dias_w,
+            "dias_label": ", ".join(_DIAS_W[d] for d in dias_w) or "—",
+            "hora_desde": int(math.floor(rt["min"])),
+            "hora_hasta": int(math.ceil(rt["max"])),
+            "cobertura_pct": 100.0,
+            "p95_ref": p95_ref,
+        }
+
+    # d) Muestras por trade [dow %w (0=dom), minuto del día ET] — para que la
+    # ficha compute el % FUERA de la ventana L2 vigente sin recomputar el motor.
+    muestras = [[int(_et(t).strftime("%w")), _et(t).hour * 60 + _et(t).minute]
+                for t in trades]
+
+    return {
+        "nota": ("El filtro de sesión/hora NO aporta edge — DESCARTADO por "
+                 "diseño (validado 2026-07-04). Esta ventana es de COBERTURA "
+                 "(participación 100%): la ventana mínima que cubre TODAS las "
+                 "entradas del backtest, no un recorte para mejorar la señal."),
+        "cuenta_ref_usd": VENTANA_CUENTA_REF_USD,
+        "umbral_rojo_usd": umbral,
+        "n_trades": len(trades),
+        "n_rojos": n_rojos,
+        "por_sesion": por_sesion,
+        "rango_horario_et": rango,
+        "ventana_minima_cobertura": vent_min,
+        "muestras": muestras,
+    }
 
 
 _ENRICHED_COLS = ("number", "side", "entry_ts", "exit_ts", "duracion_min",
@@ -431,13 +542,16 @@ def _fmt_usd(v) -> str:
     return f"${v:,.2f}" if v is not None else "—"
 
 
-def _listado_crudo(trades: list) -> dict:
+def _listado_crudo(trades: list, offset_min: int = 0) -> dict:
     """Métricas del ListadoDeOperaciones COMPLETO y crudo (sin el filtro de
     universo ATR de los sims) + duración media de un trade ganador y de un
     perdedor en HORAS (pestaña v2) + R-obs-2: RANGO de tiempo de operación
     POR LADO (largos/cortos) — el dato que dimensiona el topo del
     cancel_after de TradersPost (máx duro 3600s): si el p90 del lado supera
-    la hora, las piernas profundas no alcanzan a llenar."""
+    la hora, las piernas profundas no alcanzan a llenar.
+
+    LOTE RIES-W: además la sección `ventana_operacion` (COBERTURA, no
+    filtrado) — necesita el offset ET del enriched para calcar `hora_et`."""
     def _prom_h(sel: list) -> float | None:
         con_salida = [t for t in sel if t.exit_ts]
         if not con_salida:
@@ -478,6 +592,8 @@ def _listado_crudo(trades: list) -> dict:
             "short": _rango_h([t for t in trades
                                if getattr(t, "side", None) == "short"]),
         },
+        # LOTE RIES-W — ventana de operación recomendada (de cobertura)
+        "ventana_operacion": _ventana_operacion(trades, offset_min),
     }
 
 
@@ -569,7 +685,7 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
 
     sts = from_trades(trades, ppt, {t.number for t in estimated})
     res = run_studies(sts, ppt, hc, lab_rates, cancel_after_s,
-                      listado_crudo=_listado_crudo(trades))
+                      listado_crudo=_listado_crudo(trades, off))
     res["meta"] = {
         "clave": clave, "activo": activo, "codigo": man["codigo"],
         "fecha": fecha, "oos": oos, "usd_por_punto": ppt,
@@ -846,7 +962,7 @@ async def recrear(clave: str, fecha: str) -> dict:
     # None = modelo sin corte, fiel a lo que se corrió entonces)
     res = run_studies(sts, mo["usd_por_punto"], hc, lab_rates,
                       mo.get("cancel_after_s"),
-                      listado_crudo=_listado_crudo(trades))
+                      listado_crudo=_listado_crudo(trades, off))
     # meta con el MISMO orden de claves que `calcular` (el original) para
     # que la serialización sea comparable byte a byte
     res["meta"] = {**mo,

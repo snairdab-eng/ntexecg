@@ -83,6 +83,53 @@ def _tercil_emoji(vals: list, mayor_mejor: bool = True) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# LOTE RIES-W — Ventana de operación (COBERTURA, no filtrado) para el .md
+# ---------------------------------------------------------------------------
+
+def _ventana_md(vo: dict) -> list[str]:
+    """Sección md de la ventana de operación (solo la parte del ESTUDIO — el
+    reporte no ve la ventana L2 vigente ni el % fuera, que la ficha resuelve
+    con ConfigResolver). Puro para poder testearlo sin un `res` completo."""
+    L = ["### 1.1 Ventana de operación (COBERTURA — no filtrado)", "",
+         f"*{vo['nota']}*", ""]
+    ps = vo.get("por_sesion") or {}
+    if ps:
+        L.append("| Sesión ET | n | net | PF | peor | % rojos |")
+        L.append("|---|---:|---:|---:|---:|---:|")
+        for ses, d in ps.items():
+            L.append(f"| {ses} | {d['n']} | {_usd(d['net_usd'])} | "
+                     f"{_f(d['pf'])} | {_usd(d['peor_trade_usd'])} | "
+                     f"{_f(d['rojos_pct'], 1)}% |")
+        L.append("")
+        L.append(f"*% rojos = reparto de los {vo['n_rojos']} trade(s) con "
+                 f"pérdida ≥ {_usd(vo['umbral_rojo_usd'])} (cuenta ref "
+                 f"{_usd(vo['cuenta_ref_usd'])}) por sesión.*")
+        L.append("")
+    rg = vo.get("rango_horario_et") or {}
+    for lado, et in (("total", "total"), ("long", "largos"),
+                     ("short", "cortos")):
+        r = rg.get(lado)
+        if r:
+            L.append(f"- **Rango horario {et} (ET):** "
+                     f"{_f(r['min'], 2)}–{_f(r['max'], 2)}h · "
+                     f"p05–p95 {_f(r['p05'], 2)}–{_f(r['p95'], 2)} "
+                     f"(n={r['n']}).")
+    vm = vo.get("ventana_minima_cobertura")
+    if vm:
+        ref = ""
+        if vm.get("p95_ref"):
+            ref = (f" · referencia p05–p95: "
+                   f"{vm['p95_ref']['hora_desde']:02d}:00–"
+                   f"{vm['p95_ref']['hora_hasta']:02d}:00 ET")
+        L.append(f"- **Ventana mínima de cobertura (100%):** "
+                 f"{vm['dias_label']} · "
+                 f"{vm['hora_desde']:02d}:00–{vm['hora_hasta']:02d}:00 ET"
+                 f"{ref}.")
+    L.append("")
+    return L
+
+
+# ---------------------------------------------------------------------------
 # Reporte .md
 # ---------------------------------------------------------------------------
 
@@ -164,6 +211,13 @@ def render_md(res: dict) -> str:
     L.append("*(Escala: 1 mini = 10 micros. Todas las configs despliegan "
              "el MISMO tamaño total = 10 micros, comparables 1:1.)*")
     L.append("")
+
+    # LOTE RIES-W — Ventana de operación (COBERTURA, no filtrado). El reporte
+    # es puro (solo el estudio): la ventana L2 VIGENTE y el % fuera se resuelven
+    # en la ficha (ConfigResolver); aquí solo la parte del estudio.
+    vo = (lc or {}).get("ventana_operacion") if lc else None
+    if vo:
+        L.extend(_ventana_md(vo))
 
     # 3 — control de riesgo
     L.append("---")
