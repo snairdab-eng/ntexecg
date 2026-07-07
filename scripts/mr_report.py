@@ -147,6 +147,15 @@ def render_md(res: dict) -> str:
         L.append(f"| Duración media ganador / perdedor | "
                  f"{_f(d['ganador_prom_h'], 1)}h ({d['n_ganadores']}) / "
                  f"{_f(d['perdedor_prom_h'], 1)}h ({d['n_perdedores']}) |")
+        # R-obs-2 — rango de operación POR LADO (topo del cancel_after de
+        # TradersPost: pullbacks después de 1h no llenan piernas límite)
+        for lado, et in (("long", "largos"), ("short", "cortos")):
+            r = (lc.get("duracion_h_por_lado") or {}).get(lado)
+            if r:
+                L.append(f"| Rango de operación {et} | "
+                         f"p50 {_f(r['p50_h'], 1)}h · p90 {_f(r['p90_h'], 1)}h"
+                         f" · rango {_f(r['min_h'], 1)}–{_f(r['max_h'], 1)}h "
+                         f"(n={r['n']}) |")
         mlc = lc["metricas"]
         L.append(f"| Listado completo (crudo, sin filtro ATR) | "
                  f"{mlc['n']} trades · net {_usd(mlc['net_usd'])} · "

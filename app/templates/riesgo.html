@@ -180,6 +180,22 @@
             <b>Listado completo (crudo, sin filtro ATR):</b> {{ lc.metricas.n }} trades · net ${{ '{:,.0f}'.format(lc.metricas.net_usd) }} · PF {{ lc.metricas.pf }} ·
             <b class="text-gray-300">Duración media: ganador {{ lc.duracion_h.ganador_prom_h }}h ({{ lc.duracion_h.n_ganadores }}) / perdedor {{ lc.duracion_h.perdedor_prom_h }}h ({{ lc.duracion_h.n_perdedores }})</b>
         </div>
+        {# R-obs-2: rango de tiempo de operación POR LADO — dimensiona el
+           topo del cancel_after de TradersPost (máx duro 3600s = 1h) #}
+        {% if lc.duracion_h_por_lado %}
+        <div class="text-xs text-gray-400 mt-1">
+            <b class="text-gray-300">⏱ Rango de operación por lado:</b>
+            {% for lado, et in [('long', 'largos'), ('short', 'cortos')] %}
+            {% set r = lc.duracion_h_por_lado.get(lado) %}
+            {% if r %}
+            <span class="ml-1">{{ et }} — p50 <b class="text-gray-200">{{ r.p50_h }}h</b> · p90 <b class="text-gray-200">{{ r.p90_h }}h</b> (rango {{ r.min_h }}–{{ r.max_h }}h, n={{ r.n }}){{ ' ·' if not loop.last }}</span>
+            {% else %}
+            <span class="ml-1">{{ et }} — sin muestra{{ ' ·' if not loop.last }}</span>
+            {% endif %}
+            {% endfor %}
+            <span class="text-amber-300 ml-1">· las entradas límite de la escalera solo viven el cancel_after (máx 3600s = 1h): todo pullback que llegue después de eso NO llena — el topo de TradersPost.</span>
+        </div>
+        {% endif %}
         {% endif %}
         <div class="text-xs text-gray-500 mt-2">PF OOS del <b>CRUDO</b>: <b class="text-gray-300">{{ estudio.base_pf_oos }}</b> — la señal sola puede decaer fuera de muestra; la config aguanta/rescata (ver comparación) · {{ estudio.ls }}</div>
     </div>
@@ -597,9 +613,10 @@ function riesgoApp() {
         // v2-A: cuenta editable — persiste y recomputa (recarga con la
         // selección re-hecha en el servidor sobre los combos persistidos)
         async guardarCuenta() {
+            // R-obs-2: la cuenta se guarda POR estrategia
             const r = await fetch('/ui/riesgo/cuenta', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cuenta_usd: this.cuenta }) });
+                body: JSON.stringify({ cuenta_usd: this.cuenta, strategy: '{{ key }}' }) });
             if (r.ok) { location.reload(); return; }
             const j = await r.json();
             this.ok = false; this.msg = '⛔ ' + (j.error || 'cuenta inválida');

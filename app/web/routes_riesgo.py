@@ -73,13 +73,21 @@ def _lock_integrar(strategy: str) -> asyncio.Lock:
 CUENTA_DEFAULT = 10_000.0
 
 
-def _leer_cuenta() -> float:
-    try:
-        v = float(json.loads((MOTOR_DIR / "cuenta.json")
-                             .read_text(encoding="utf-8"))["cuenta_usd"])
-        return v if v > 0 else CUENTA_DEFAULT
-    except (OSError, ValueError, KeyError):
-        return CUENTA_DEFAULT
+def _leer_cuenta(clave: str | None = None) -> float:
+    """Cuenta editable. R-obs-2: vive POR ESTRATEGIA
+    (MotorRiesgo/<clave>/cuenta.json) con fallback al global
+    (MotorRiesgo/cuenta.json) y luego al default — cada estrategia puede
+    proteger una cuenta distinta."""
+    rutas = ([MOTOR_DIR / clave / "cuenta.json"] if clave else []) \
+        + [MOTOR_DIR / "cuenta.json"]
+    for p in rutas:
+        try:
+            v = float(json.loads(p.read_text(encoding="utf-8"))["cuenta_usd"])
+            if v > 0:
+                return v
+        except (OSError, ValueError, KeyError):
+            continue
+    return CUENTA_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -780,6 +788,8 @@ async def riesgo_page(request: Request, strategy: str | None = None,
         entry = manifest[key]
         instrument = entry["instrument"]
         clave = clave_de(key, instrument)
+        # R-obs-2 — la cuenta es por estrategia (fallback global → default)
+        ctx["cuenta"] = _leer_cuenta(clave)
         motor = _motor_manifest(clave)
         # R-obs-4 — unidades del instrumento con FUENTE ÚNICA en el Symbol
         # Mapper (tick_size/tick_value del catálogo, los mismos que consume
@@ -1038,19 +1048,31 @@ async def riesgo_calc_status(strategy: str) -> JSONResponse:
 
 class CuentaReq(BaseModel):
     cuenta_usd: float
+    strategy: str | None = None
 
 
 @router.post("/ui/riesgo/cuenta")
 async def riesgo_cuenta(req: CuentaReq) -> JSONResponse:
+    """R-obs-2: con `strategy` la cuenta se guarda POR ESTRATEGIA
+    (MotorRiesgo/<clave>/cuenta.json); sin ella, el global (retrocompat)."""
     v = req.cuenta_usd
     if not (100.0 <= v <= 100_000_000.0):
         return JSONResponse(
             {"error": "cuenta fuera de rango ($100 – $100,000,000)"},
             status_code=400)
-    MOTOR_DIR.mkdir(exist_ok=True)
-    (MOTOR_DIR / "cuenta.json").write_text(
+    destino = MOTOR_DIR
+    if req.strategy:
+        clave = _resolver_clave(req.strategy)
+        if clave is None:
+            return JSONResponse({"error": "estrategia fuera del manifest"},
+                                status_code=400)
+        destino = MOTOR_DIR / clave
+    destino.mkdir(parents=True, exist_ok=True)
+    (destino / "cuenta.json").write_text(
         json.dumps({"cuenta_usd": v}), encoding="utf-8")
-    return JSONResponse({"ok": True, "cuenta_usd": v})
+    return JSONResponse({"ok": True, "cuenta_usd": v,
+                         "ambito": (f"estrategia {req.strategy}"
+                                    if req.strategy else "global")})
 
 
 # ---------------------------------------------------------------------------

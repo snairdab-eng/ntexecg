@@ -963,12 +963,20 @@ def proteccion_para_cuenta(prot: dict, cuenta_usd: float,
     """Selección PURA por tamaño de cuenta (la cuenta editable de la
     pestaña llama esto al vuelo — el barrido pesado ya está persistido).
 
+    PARTICIPACIÓN 100% OBLIGATORIA (R-obs-2, 2026-07-07): el objetivo de
+    NTEXECG es capar la pérdida catastrófica, NO filtrar señales — LuxAlgo
+    ya tiene el edge. Solo son elegibles combos que participan en TODOS los
+    trades; "sobrevivir dejando de operar" (escaleras que no llenan, lados
+    bloqueados) queda fuera de la recomendación de protección. Sin ningún
+    combo al 100% (no debería pasar: la entrada única siempre llena) se cae
+    al comportamiento anterior con nota honesta.
+
     SUPERVIVENCIA > NET: sobrevive = ningún trade pierde más del umbral de
     alarma (% de la cuenta) Y el max DD no se come la cuenta entera. Entre
-    supervivientes: máxima participación, luego el combo más SIMPLE (menos
-    palancas), luego net. Si nada sobrevive, se recomienda IGUAL el combo
-    que más acerca (mínimo peor trade % de la cuenta) — aunque sea
-    net-negativo, con el costo a la vista."""
+    supervivientes: el combo más SIMPLE (menos palancas), luego net. Si
+    nada sobrevive, se recomienda IGUAL el combo del 100% que más acerca
+    (mínimo peor trade % de la cuenta) — aunque sea net-negativo, con el
+    costo a la vista."""
     cu = float(cuenta_usd)
     umbral = prot.get("umbral_alarma_pct", ALARMA_PCT)
 
@@ -1005,18 +1013,21 @@ def proteccion_para_cuenta(prot: dict, cuenta_usd: float,
     def dd_pct(c: dict) -> float:
         return pct(c["metricas"].get("max_dd_usd")) or 0.0
 
-    supervivientes = [c for c in combos
+    # R-obs-2 — elegibles: SOLO participación 100% (capar pérdidas sin
+    # saltar trades). 99.95 por redondeo del motor (round a 1 decimal).
+    plenos = [c for c in combos
+              if (c.get("participacion_pct") or 0.0) >= 99.95]
+    candidatos = plenos or combos          # fallback honesto (no debería)
+    supervivientes = [c for c in candidatos
                       if peor_pct(c) <= umbral and dd_pct(c) < 100.0]
     if supervivientes:
         elegido = max(supervivientes,
-                      key=lambda c: (c["participacion_pct"] or 0.0,
-                                     -c["n_palancas"],
+                      key=lambda c: (-c["n_palancas"],
                                      c["metricas"].get("net_usd") or -9e18))
         protegido = True
     else:
-        elegido = min(combos,
+        elegido = min(candidatos,
                       key=lambda c: (peor_pct(c),
-                                     -(c["participacion_pct"] or 0.0),
                                      -(c["metricas"].get("net_usd")
                                        or -9e18)))
         protegido = False
@@ -1035,8 +1046,12 @@ def proteccion_para_cuenta(prot: dict, cuenta_usd: float,
             "ganadoras_cortadas_pct": elegido["ganadoras_cortadas_pct"],
         },
         "nota_supervivencia": (
-            "supervivencia > net: la protección se recomienda aunque "
-            "cueste net"
+            "participación 100% obligatoria (capar pérdidas SIN saltar "
+            "trades) · supervivencia > net: la protección se recomienda "
+            "aunque cueste net"
+            + ("" if plenos else
+               " · ⚠ ningún combo participa al 100% — fallback al barrido "
+               "completo")
             + ("" if protegido else
                f" — ningún combo deja el peor trade ≤ {umbral:.0f}% de la "
                f"cuenta; se muestra el que más se acerca")),

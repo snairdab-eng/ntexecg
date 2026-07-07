@@ -348,10 +348,15 @@ def test_proteccion_marca_desastre_y_recomienda():
     assert "NO promesa a futuro" in pc["etiqueta"]
 
 
-def test_proteccion_lado_cuando_sl_no_alcanza():
-    """Catástrofe con MAE chico (el precio se fue de golpe al cierre): ni
-    SL ni backstop la atajan → la única protección es el LADO (candidato
-    solo porque la gestión por lado P1b disparó)."""
+def test_proteccion_lado_no_salta_trades():
+    """R-obs-2 (2026-07-07): catástrofe con MAE chico (el precio se fue de
+    golpe al cierre) — ningún freno la ataja. ANTES la protección
+    recomendaba bloquear el lado (participación 70%: sobrevivir dejando de
+    operar); AHORA los combos que saltan trades NO son elegibles — el
+    objetivo es capar pérdidas sin filtrar señales. La selección se queda
+    en participación 100% y lo dice honesto; la gestión por lado (P1b)
+    sigue disponible como recomendación ESTRUCTURAL aparte (lado_candidato
+    se conserva en el estudio)."""
     from scripts.mr_sims import proteccion_para_cuenta
 
     sts = []
@@ -365,15 +370,18 @@ def test_proteccion_lado_cuando_sl_no_alcanza():
     sts.append(st(i, side="short", atr=4.0, mae=1.0, pnl_usd=-9175.0))
 
     prot, crudo = _prot(sts)
-    assert prot["lado_candidato"] == "long"       # P1b disparó (cortar)
+    assert prot["lado_candidato"] == "long"       # P1b sigue informando
     assert prot["lado_muestra_chica"] is True     # 5 cortos < 40
     pc = proteccion_para_cuenta(prot, 10_000.0, crudo)
     el = pc["elegido"]
-    assert pc["protegido"] is True
-    assert el["lado"] == "long"                   # solo el lado protege
-    assert el["participacion_pct"] < 100.0
-    assert pc["efecto"]["peor_pct_cuenta"] == 0.0
-    assert pc["efecto"]["max_dd_usd"] == 0.0
+    assert el["participacion_pct"] == 100.0       # jamás saltar trades
+    assert el["lado"] is None                     # bloquear lados: fuera
+    assert "participación 100%" in pc["nota_supervivencia"]
+    if pc["protegido"]:
+        assert pc["efecto"]["peor_pct_cuenta"] <= 10.0
+    else:
+        # honesto: si nada al 100% alcanza, se muestra el que más acerca
+        assert "más se acerca" in pc["nota_supervivencia"]
 
 
 def test_proteccion_supervivencia_sobre_net_y_escalera():

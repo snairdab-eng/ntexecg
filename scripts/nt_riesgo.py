@@ -434,13 +434,30 @@ def _fmt_usd(v) -> str:
 def _listado_crudo(trades: list) -> dict:
     """Métricas del ListadoDeOperaciones COMPLETO y crudo (sin el filtro de
     universo ATR de los sims) + duración media de un trade ganador y de un
-    perdedor en HORAS (dato que faltaba en la línea base — pestaña v2)."""
+    perdedor en HORAS (pestaña v2) + R-obs-2: RANGO de tiempo de operación
+    POR LADO (largos/cortos) — el dato que dimensiona el topo del
+    cancel_after de TradersPost (máx duro 3600s): si el p90 del lado supera
+    la hora, las piernas profundas no alcanzan a llenar."""
     def _prom_h(sel: list) -> float | None:
         con_salida = [t for t in sel if t.exit_ts]
         if not con_salida:
             return None
         return round(sum((t.exit_ts - t.entry_ts).total_seconds()
                          for t in con_salida) / 3600.0 / len(con_salida), 1)
+
+    def _rango_h(sel: list) -> dict | None:
+        horas = sorted((t.exit_ts - t.entry_ts).total_seconds() / 3600.0
+                       for t in sel if t.exit_ts)
+        if not horas:
+            return None
+
+        def q(p: float) -> float:
+            i = (len(horas) - 1) * p
+            lo, hi = int(i), min(int(i) + 1, len(horas) - 1)
+            return round(horas[lo] + (horas[hi] - horas[lo]) * (i - lo), 1)
+        return {"n": len(horas), "min_h": round(horas[0], 1),
+                "p50_h": q(0.5), "p90_h": q(0.9),
+                "max_h": round(horas[-1], 1)}
 
     ganadores = [t for t in trades if t.pnl_usd > 0]
     perdedores = [t for t in trades if t.pnl_usd < 0]
@@ -451,6 +468,12 @@ def _listado_crudo(trades: list) -> dict:
             "perdedor_prom_h": _prom_h(perdedores),
             "n_ganadores": len(ganadores),
             "n_perdedores": len(perdedores),
+        },
+        # R-obs-2 — rango de operación por lado (para el topo de 1h de
+        # TradersPost en las entradas límite de la escalera)
+        "duracion_h_por_lado": {
+            "long": _rango_h([t for t in trades if t.side == "long"]),
+            "short": _rango_h([t for t in trades if t.side == "short"]),
         },
     }
 
