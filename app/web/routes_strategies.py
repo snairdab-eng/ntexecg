@@ -963,10 +963,26 @@ async def update_sltp(
     db: AsyncSession = Depends(get_db),
     sl_atr_multiplier: str = Form(""),
     tp_atr_multiplier: str = Form(""),
+    sl_mode: str = Form("atr"),
+    backstop_points: str = Form(""),
+    tp_mode: str = Form("unico"),
+    tp_nominal_long: str = Form(""),
+    tp_nominal_short: str = Form(""),
 ) -> RedirectResponse:
-    """Edit the SL/TP ATR multipliers. A TP enables the complete bracket (TP+SL)
-    that some brokers require (else the entry fails with oto-orders-not-supported).
-    Empty = None: SL falls back to the inherited default, TP off (no take profit).
+    """R-obs-2c — SL/TP en ×ATR o PUNTOS FIJOS, elegible desde la UI (hay
+    estrategias que piden ×ATR y estrategias que piden stop fijo; los 4
+    perfiles HEREDAN este bracket tal cual).
+
+    SL: sl_mode "atr" → sl_atr_multiplier y se APAGA el backstop;
+        sl_mode "pts" → pipeline_config_json.backstop_points (el mismo campo
+        que aplica el Motor de Riesgo; el SL×ATR queda de fallback).
+    TP: tp_mode "nominal" → tp_nominal_long/short (×ATR por lado, p99);
+        "unico" → tp_atr_multiplier y se apagan los nominales;
+        "off" → sin TP (puede fallar con oto-orders-not-supported).
+    TP en puntos fijos NO existe por diseño (validado 2026-07-04): un TP
+    fijo se estrecha relativo a la volatilidad justo cuando las ganadoras
+    corren — dispararía antes que LuxAlgo. El backstop sí es fijo porque
+    capa pérdida (más ancho nunca corta ganadoras).
     """
     prof_res = await db.execute(
         select(StrategyProfile).where(StrategyProfile.strategy_id == strategy_id)
@@ -986,19 +1002,59 @@ async def update_sltp(
         except ValueError:
             return None
 
-    profile.sl_atr_multiplier = _pos(sl_atr_multiplier)
-    profile.tp_atr_multiplier = _pos(tp_atr_multiplier)
+    cfg = dict(profile.pipeline_config_json or {})
+    antes = {"sl_atr_multiplier": (float(profile.sl_atr_multiplier)
+                                   if profile.sl_atr_multiplier else None),
+             "tp_atr_multiplier": (float(profile.tp_atr_multiplier)
+                                   if profile.tp_atr_multiplier else None),
+             **{k: cfg.get(k) for k in ("backstop_points", "tp_nominal_long",
+                                        "tp_nominal_short")}}
 
+    if sl_mode == "pts":
+        bk = _pos(backstop_points)
+        if bk is None:
+            return redirect(
+                f"/ui/strategies/{strategy_id}",
+                flash="SL en puntos fijos requiere un valor > 0",
+                category="error")
+        cfg["backstop_points"] = bk
+    else:
+        profile.sl_atr_multiplier = _pos(sl_atr_multiplier)
+        cfg.pop("backstop_points", None)
+
+    if tp_mode == "nominal":
+        tpl, tps = _pos(tp_nominal_long), _pos(tp_nominal_short)
+        if tpl is None or tps is None:
+            return redirect(
+                f"/ui/strategies/{strategy_id}",
+                flash="TP nominal requiere valor > 0 para largos Y cortos",
+                category="error")
+        cfg["tp_nominal_long"], cfg["tp_nominal_short"] = tpl, tps
+    elif tp_mode == "off":
+        cfg.pop("tp_nominal_long", None)
+        cfg.pop("tp_nominal_short", None)
+        profile.tp_atr_multiplier = None
+    else:                                   # "unico" (legacy, retrocompat)
+        profile.tp_atr_multiplier = _pos(tp_atr_multiplier)
+        cfg.pop("tp_nominal_long", None)
+        cfg.pop("tp_nominal_short", None)
+
+    profile.pipeline_config_json = cfg or None
+    despues = {"sl_atr_multiplier": (float(profile.sl_atr_multiplier)
+                                     if profile.sl_atr_multiplier else None),
+               "tp_atr_multiplier": (float(profile.tp_atr_multiplier)
+                                     if profile.tp_atr_multiplier else None),
+               **{k: cfg.get(k) for k in ("backstop_points",
+                                          "tp_nominal_long",
+                                          "tp_nominal_short")}}
     await AuditService().log(
         db, actor="admin", action="UPDATE", object_type="StrategyProfile",
-        object_id=strategy_id,
-        new_value={"sl_atr_multiplier": str(profile.sl_atr_multiplier),
-                   "tp_atr_multiplier": str(profile.tp_atr_multiplier)},
-        reason="SL/TP ATR multipliers updated via UI",
+        object_id=strategy_id, old_value=antes, new_value=despues,
+        reason=f"SL/TP editados via UI (sl_mode={sl_mode}, tp_mode={tp_mode})",
     )
     await db.commit()
     return redirect(
-        f"/ui/strategies/{strategy_id}", flash="SL/TP por ATR actualizados",
+        f"/ui/strategies/{strategy_id}", flash="SL/TP actualizados",
     )
 
 

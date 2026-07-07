@@ -370,8 +370,9 @@ async def _dispatch_approved(
     # Risk profiles (tiers): one dispatch destination per enabled profile, each to
     # its own TradersPost webhook. No profiles → single base destination (unchanged).
     destinations = dprof.resolve_destinations(config)
-    base_sl = config.get("sl_atr_multiplier")
-    base_tp = config.get("tp_atr_multiplier")
+    # R-obs-2c — el bracket por destino considera TODAS las llaves (×ATR o
+    # stop fijo + TP nominal): un perfil solo difiere si overridea algo.
+    base_bracket = {k: config.get(k) for k in dprof._BRACKET_KEYS}
 
     any_sent = False
     any_failed = False
@@ -380,21 +381,25 @@ async def _dispatch_approved(
     for di, dest in enumerate(destinations):
         dest_config = dprof.make_dest_config(config, dest)
 
-        # Per-profile SL/TP only differs if the profile overrides the multipliers
-        # (rare — by default SL/TP are inherited from the researched base).
+        # Per-profile SL/TP only differs if the profile overrides something
+        # (rare — by default the bracket is inherited from the researched
+        # base, INCLUIDO el stop de puntos fijos con TP nominal).
         dest_result = pipeline_result
-        if not is_exit and (
-            dest["sl_atr_multiplier"] != base_sl
-            or dest["tp_atr_multiplier"] != base_tp
+        if not is_exit and any(
+            dest.get(k) != base_bracket.get(k) for k in dprof._BRACKET_KEYS
         ):
             atr_v = getattr(pipeline_result, "atr_value", None)
-            sl_p, tp_p = dprof.recompute_sl_tp(
+            sl_p, tp_p = dprof.recompute_bracket(
                 entry_price, float(atr_v) if atr_v is not None else None,
-                is_long, dest["sl_atr_multiplier"], dest["tp_atr_multiplier"],
+                is_long, dest,
             )
+            # FAIL-CLOSED: si el bracket del perfil no es computable o no
+            # pasa la guarda (lado/precio), el destino usa el bracket BASE
+            # del L5 — nunca se envía una entrada con stop inválido.
             dest_result = SimpleNamespace(
                 sl_price=sl_p if sl_p is not None else getattr(pipeline_result, "sl_price", None),
-                tp_price=tp_p,
+                tp_price=(tp_p if sl_p is not None
+                          else getattr(pipeline_result, "tp_price", None)),
                 atr_value=getattr(pipeline_result, "atr_value", None),
                 score=getattr(pipeline_result, "score", None),
                 market_data_provider=getattr(pipeline_result, "market_data_provider", None),

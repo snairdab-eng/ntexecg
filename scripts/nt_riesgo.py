@@ -470,10 +470,13 @@ def _listado_crudo(trades: list) -> dict:
             "n_perdedores": len(perdedores),
         },
         # R-obs-2 — rango de operación por lado (para el topo de 1h de
-        # TradersPost en las entradas límite de la escalera)
+        # TradersPost en las entradas límite de la escalera). getattr:
+        # robusto ante trades sin `side` (fixtures viejas) → quedan fuera.
         "duracion_h_por_lado": {
-            "long": _rango_h([t for t in trades if t.side == "long"]),
-            "short": _rango_h([t for t in trades if t.side == "short"]),
+            "long": _rango_h([t for t in trades
+                              if getattr(t, "side", None) == "long"]),
+            "short": _rango_h([t for t in trades
+                               if getattr(t, "side", None) == "short"]),
         },
     }
 

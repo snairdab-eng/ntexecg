@@ -46,6 +46,56 @@ def recompute_sl_tp(
     return sl, tp
 
 
+# Las llaves de bracket que cada destino hereda/overridea (R-obs-2c): la
+# MISMA precedencia del L5 — backstop_points (pts fijos) REEMPLAZA al SL
+# ×ATR; tp_nominal del lado PREVALECE sobre el TP ×ATR único.
+_BRACKET_KEYS = ("sl_atr_multiplier", "tp_atr_multiplier", "backstop_points",
+                 "tp_nominal_long", "tp_nominal_short")
+
+
+def recompute_bracket(entry_price: float | None, atr: float | None,
+                      is_long: bool, dest: dict) -> tuple[float | None,
+                                                          float | None]:
+    """Bracket del DESTINO con la precedencia del L5 (R-obs-2c: ×ATR o
+    puntos fijos, también por perfil). Espeja sl_tp_calculator:
+      SL: backstop_points (fijo desde la señal, no necesita ATR) >
+          sl_atr_multiplier × ATR.
+      TP: tp_nominal_<lado> × ATR > tp_atr_multiplier × ATR >
+          (sin ATR con backstop) ancho del backstop espejado > None.
+    Devuelve (None, None) si el SL no es computable — el caller debe caer
+    FAIL-CLOSED al bracket base del L5, nunca enviar sin stop."""
+    if entry_price is None or entry_price <= 0:
+        return None, None
+    bk = dest.get("backstop_points")
+    bk = float(bk) if isinstance(bk, (int, float)) and bk > 0 else None
+    hay_atr = atr is not None and atr > 0
+    if bk is not None:
+        sl = entry_price - bk if is_long else entry_price + bk
+    elif dest.get("sl_atr_multiplier") and hay_atr:
+        k = float(dest["sl_atr_multiplier"])
+        sl = entry_price - atr * k if is_long else entry_price + atr * k
+    else:
+        return None, None                      # SL no computable → base
+    nominal = dest.get("tp_nominal_long" if is_long else "tp_nominal_short")
+    tp = None
+    if isinstance(nominal, (int, float)) and nominal > 0 and hay_atr:
+        tp = (entry_price + atr * nominal if is_long
+              else entry_price - atr * nominal)
+    elif isinstance(nominal, (int, float)) and nominal > 0 and bk is not None:
+        # fail-closed sin ATR: ancho del backstop espejado (como el L5)
+        tp = entry_price + bk if is_long else entry_price - bk
+    elif dest.get("tp_atr_multiplier") and hay_atr:
+        k = float(dest["tp_atr_multiplier"])
+        tp = entry_price + atr * k if is_long else entry_price - atr * k
+    # Guarda P0 espejada: precios del lado correcto y > 0, o nada.
+    if sl <= 0 or (sl >= entry_price if is_long else sl <= entry_price):
+        return None, None
+    if tp is not None and (tp <= 0 or (tp <= entry_price if is_long
+                                       else tp >= entry_price)):
+        tp = None
+    return sl, tp
+
+
 def resolve_destinations(config: dict) -> list[dict]:
     """Return the list of effective dispatch destinations.
 
@@ -59,6 +109,12 @@ def resolve_destinations(config: dict) -> list[dict]:
     base_tp = config.get("tp_atr_multiplier")
     base_dry = config.get("dry_run", True)
     base_tpen = config.get("traderspost_enabled", False)
+    # R-obs-2c — el bracket de la base viaja COMPLETO a cada destino: los
+    # perfiles HEREDAN el SL/TP del perfil principal tal cual, sea ×ATR o
+    # stop de puntos fijos (backstop) con TP nominal por lado.
+    base_bk = config.get("backstop_points")
+    base_tpl = config.get("tp_nominal_long")
+    base_tps = config.get("tp_nominal_short")
 
     profiles = config.get("profiles") or []
     enabled = [p for p in profiles if isinstance(p, dict) and p.get("enabled")]
@@ -69,6 +125,9 @@ def resolve_destinations(config: dict) -> list[dict]:
         "scale_entry": base_scale,
         "sl_atr_multiplier": base_sl,
         "tp_atr_multiplier": base_tp,
+        "backstop_points": base_bk,
+        "tp_nominal_long": base_tpl,
+        "tp_nominal_short": base_tps,
         "dry_run": base_dry,
         "traderspost_enabled": base_tpen,
     }
@@ -101,12 +160,25 @@ def resolve_destinations(config: dict) -> list[dict]:
             v = p.get(key)
             return v if v not in (None, "") else base
 
+        # R-obs-2c — herencia del bracket: los perfiles heredan el SL/TP de
+        # la base TAL CUAL (stop fijo + TP nominal incluidos). El override
+        # Avanzado ×ATR de un perfil es explícito: si el operador lo pone,
+        # ese destino usa ×ATR (el stop fijo/nominal heredado se apaga para
+        # que el override no quede mudo bajo la precedencia del L5).
+        p_sl = p.get("sl_atr_multiplier")
+        # TP explícito en el perfil (aunque sea None = "sin TP") reemplaza a
+        # la base COMPLETA: también apaga el TP nominal heredado — si no, el
+        # nominal ganaría por precedencia y el override quedaría mudo.
+        tp_explicito = "tp_atr_multiplier" in p
         dests.append({
             "name": (p.get("name") or "perfil")[:30],
             "webhook_url": _ovr("webhook_url", base_webhook),
             "scale_entry": scale,
             "sl_atr_multiplier": _ovr("sl_atr_multiplier", base_sl),
-            "tp_atr_multiplier": p["tp_atr_multiplier"] if "tp_atr_multiplier" in p else base_tp,
+            "tp_atr_multiplier": p["tp_atr_multiplier"] if tp_explicito else base_tp,
+            "backstop_points": None if p_sl not in (None, "") else base_bk,
+            "tp_nominal_long": None if tp_explicito else base_tpl,
+            "tp_nominal_short": None if tp_explicito else base_tps,
             # Kill-switch por capas (NX-02): un perfil solo puede RESTRINGIR el
             # envío, nunca abrirlo por encima de la base (que ya fusiona global
             # OR/AND estrategia). dry_run hereda con OR; traderspost_enabled con
@@ -139,6 +211,11 @@ def make_dest_config(base_config: dict, dest: dict) -> dict:
     cfg["scale_entry"] = dest["scale_entry"]
     cfg["sl_atr_multiplier"] = dest["sl_atr_multiplier"]
     cfg["tp_atr_multiplier"] = dest["tp_atr_multiplier"]
+    # R-obs-2c — el bracket heredado/overrideado viaja completo al config
+    # proyectado (payload extras y gate ven la misma precedencia del L5).
+    cfg["backstop_points"] = dest.get("backstop_points")
+    cfg["tp_nominal_long"] = dest.get("tp_nominal_long")
+    cfg["tp_nominal_short"] = dest.get("tp_nominal_short")
     cfg["traderspost_webhook_url"] = dest["webhook_url"]
     cfg["dry_run"] = dest["dry_run"]
     cfg["traderspost_enabled"] = dest["traderspost_enabled"]

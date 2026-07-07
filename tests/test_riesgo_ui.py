@@ -543,7 +543,11 @@ async def test_cuenta_editable_persiste_y_recomputa(client: AsyncClient,
     assert "101.6% de la cuenta" not in html          # % relativo a cuenta
     assert "Sin trades rojos" in html
     assert "sin freno adicional" in html              # el crudo ya protege
-    assert "5.1" in html                              # peor 10,162/200k
+    # R-obs-2b: las cajas de "efecto" (donde vivía el 5.1% del peor trade)
+    # se retiraron a pedido del operador — la confianza in-sample del
+    # elegido (el crudo espejo, PF 1.62) vive ahora en la línea ✅ del
+    # espejo de palancas.
+    assert "PF in-sample 1.62" in html
 
 
 @pytest.mark.asyncio

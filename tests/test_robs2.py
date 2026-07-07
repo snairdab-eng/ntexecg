@@ -239,6 +239,158 @@ async def test_ficha_proteccion_espeja_lineas_sin_cajas(client: AsyncClient,
     assert "sin saltar señales" in html
 
 
+# ---------------------------------------------------------------------------
+# R-obs-2c — SL/TP en ×ATR o PUNTOS FIJOS (base) + herencia en los 4 perfiles
+# ---------------------------------------------------------------------------
+
+def _cfg_bracket(**profiles_kw) -> dict:
+    return {
+        "traderspost_webhook_url": "https://tp/base",
+        "sl_atr_multiplier": 2.5, "tp_atr_multiplier": 6.0,
+        "backstop_points": 90.0,
+        "tp_nominal_long": 11.5, "tp_nominal_short": 8.0,
+        "scale_entry": {"mode": "execute", "levels": [0.25, 0.5],
+                        "quantities": [0, 5, 5], "max_micro_contracts": 10},
+        "dry_run": True, "traderspost_enabled": False,
+        **profiles_kw,
+    }
+
+
+def test_perfiles_heredan_bracket_completo_y_niveles():
+    """Los 4 perfiles heredan de la base el bracket COMPLETO (stop fijo +
+    TP nominal por lado) y los niveles ATR — pedido explícito del operador."""
+    from app.services import dispatch_profiles as dp
+    cfg = _cfg_bracket(profiles=[
+        {"name": f"p{i}", "enabled": True, "webhook_url": f"https://tp/{i}"}
+        for i in range(4)])
+    dests = dp.resolve_destinations(cfg)
+    assert len(dests) == 5                    # base + 4 perfiles
+    for d in dests:
+        assert d["backstop_points"] == 90.0
+        assert d["tp_nominal_long"] == 11.5
+        assert d["tp_nominal_short"] == 8.0
+        assert d["scale_entry"]["levels"] == [0.25, 0.5]
+
+
+def test_override_atr_de_un_perfil_apaga_lo_heredado():
+    """El override Avanzado es explícito: SL×ATR en el perfil REEMPLAZA al
+    stop fijo heredado (si no, la precedencia del L5 lo dejaría mudo); TP
+    explícito (aunque None) apaga el nominal heredado."""
+    from app.services import dispatch_profiles as dp
+    cfg = _cfg_bracket(profiles=[
+        {"name": "atr", "enabled": True, "webhook_url": "https://tp/a",
+         "sl_atr_multiplier": 4.0, "tp_atr_multiplier": None}])
+    d = dp.resolve_destinations(cfg)[1]
+    assert d["backstop_points"] is None       # el override manda
+    assert d["sl_atr_multiplier"] == 4.0
+    assert d["tp_nominal_long"] is None and d["tp_nominal_short"] is None
+    assert d["tp_atr_multiplier"] is None     # "sin TP" explícito
+    # y el config proyectado lleva las mismas llaves (payload/gate)
+    proj = dp.make_dest_config(cfg, d)
+    assert proj["backstop_points"] is None
+    assert proj["tp_nominal_long"] is None
+
+
+def test_recompute_bracket_precedencia_l5():
+    """recompute_bracket espeja la precedencia del L5: backstop (sin ATR)
+    > SL×ATR; TP nominal del lado > TP único; guarda P0 espejada."""
+    from app.services.dispatch_profiles import recompute_bracket
+    dest = {"backstop_points": 90.0, "sl_atr_multiplier": 2.5,
+            "tp_nominal_long": 11.5, "tp_nominal_short": 8.0,
+            "tp_atr_multiplier": 6.0}
+    # long con ATR: backstop fijo + nominal del lado largo
+    sl, tp = recompute_bracket(5000.0, 10.0, True, dest)
+    assert sl == 5000.0 - 90.0
+    assert tp == 5000.0 + 10.0 * 11.5
+    # short: nominal del lado corto
+    sl, tp = recompute_bracket(5000.0, 10.0, False, dest)
+    assert sl == 5000.0 + 90.0
+    assert tp == 5000.0 - 10.0 * 8.0
+    # sin ATR: el backstop se computa igual; TP cae al ancho del backstop
+    sl, tp = recompute_bracket(5000.0, None, True, dest)
+    assert sl == 4910.0 and tp == 5090.0
+    # sin backstop → SL×ATR; TP único cuando no hay nominal
+    d2 = {"sl_atr_multiplier": 2.0, "tp_atr_multiplier": 6.0}
+    sl, tp = recompute_bracket(5000.0, 10.0, True, d2)
+    assert sl == 4980.0 and tp == 5060.0
+    # sin ATR ni backstop → no computable (el caller cae al bracket base)
+    assert recompute_bracket(5000.0, None, True, d2) == (None, None)
+    # guarda P0 espejada: backstop más grande que el precio → inválido
+    d3 = {"backstop_points": 6000.0}
+    assert recompute_bracket(5000.0, 10.0, True, d3) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_sltp_form_modo_pts_y_nominal(client: AsyncClient, db) -> None:
+    """El form SL/TP guarda en ×ATR o PUNTOS FIJOS y TP nominal por lado —
+    los mismos campos que aplica el Motor de Riesgo."""
+    from sqlalchemy import select
+
+    from app.models.strategy import Strategy
+    from app.models.strategy_profile import StrategyProfile
+    db.add(Strategy(strategy_id="BR_Test", name="T", asset_symbol="MES",
+                    status="paper", enabled=True))
+    await db.commit()
+
+    async def _prof():
+        return (await db.execute(select(StrategyProfile).where(
+            StrategyProfile.strategy_id == "BR_Test"))).scalar_one()
+
+    # pts + nominal (el combo del estudio)
+    r = await client.post("/ui/strategies/BR_Test/sltp", data={
+        "sl_mode": "pts", "backstop_points": "90",
+        "tp_mode": "nominal", "tp_nominal_long": "11.5",
+        "tp_nominal_short": "8"})
+    assert r.status_code == 303
+    prof = await _prof()
+    cfg = prof.pipeline_config_json
+    assert cfg["backstop_points"] == 90.0
+    assert cfg["tp_nominal_long"] == 11.5 and cfg["tp_nominal_short"] == 8.0
+    # volver a ×ATR único: apaga backstop y nominales
+    r = await client.post("/ui/strategies/BR_Test/sltp", data={
+        "sl_mode": "atr", "sl_atr_multiplier": "2.5",
+        "tp_mode": "unico", "tp_atr_multiplier": "6"})
+    assert r.status_code == 303
+    await db.refresh(prof)
+    cfg = prof.pipeline_config_json or {}
+    assert "backstop_points" not in cfg
+    assert "tp_nominal_long" not in cfg
+    assert float(prof.sl_atr_multiplier) == 2.5
+    assert float(prof.tp_atr_multiplier) == 6.0
+    # validación: pts sin valor → error y nada cambia
+    r = await client.post("/ui/strategies/BR_Test/sltp", data={
+        "sl_mode": "pts", "backstop_points": "", "tp_mode": "unico",
+        "tp_atr_multiplier": "6"})
+    assert r.status_code == 303 and "requiere" in r.headers["location"]
+    # retrocompat: POST legacy sin modos = ×ATR único (tests viejos)
+    r = await client.post("/ui/strategies/BR_Test/sltp", data={
+        "sl_atr_multiplier": "1.5", "tp_atr_multiplier": ""})
+    assert r.status_code == 303
+    await db.refresh(prof)
+    assert float(prof.sl_atr_multiplier) == 1.5
+    assert prof.tp_atr_multiplier is None
+
+
+@pytest.mark.asyncio
+async def test_form_sltp_renderiza_modos(client: AsyncClient, db) -> None:
+    from app.models.strategy import Strategy
+    from app.models.strategy_profile import StrategyProfile
+    db.add(Strategy(strategy_id="BR_UI", name="T", asset_symbol="MES",
+                    status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="BR_UI", pipeline_config_json={
+        "backstop_points": 90.0, "tp_nominal_long": 11.5,
+        "tp_nominal_short": 8.0}))
+    await db.commit()
+    r = await client.get("/ui/strategies/BR_UI")
+    assert r.status_code == 200
+    html = r.text
+    assert 'name="sl_mode"' in html and 'name="tp_mode"' in html
+    assert "puntos fijos desde la señal" in html
+    assert "nominal por lado" in html
+    assert "slMode: &#39;pts&#39;" in html or "slMode: 'pts'" in html
+    assert "heredan de la base el bracket COMPLETO" in html
+
+
 def test_reporte_md_incluye_rango_por_lado():
     from scripts.mr_report import render_md
     res = json.loads(json.dumps(ESTUDIO))

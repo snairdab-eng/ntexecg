@@ -292,22 +292,65 @@
                 <a href="/ui/riesgo?strategy={{ strategy.strategy_id }}" class="text-indigo-400 hover:text-indigo-300 ml-1">ver estudio →</a>
             </div>
             {% endif %}
-            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/sltp" class="space-y-2">
+            {# R-obs-2c — SL/TP en ×ATR o PUNTOS FIJOS desde la UI (hay
+                 estudios que recomiendan stop fijo y otros ×ATR). Los 4
+                 perfiles HEREDAN este bracket tal cual (niveles incluidos). #}
+            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/sltp" class="space-y-3"
+                  x-data="{ slMode: {{ "'pts'" if mrcfg.get('backstop_points') else "'atr'" }}, tpMode: {{ "'nominal'" if (mrcfg.get('tp_nominal_long') or mrcfg.get('tp_nominal_short')) else ("'unico'" if profile.tp_atr_multiplier else "'off'") }} }">
                 <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label class="block text-xs text-gray-400 mb-1">SL × ATR</label>
-                        <input name="sl_atr_multiplier" type="number" step="0.1" min="0"
-                               value="{{ profile.sl_atr_multiplier or '' }}" placeholder="heredar (1.5)"
-                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    <div class="space-y-2">
+                        <label class="block text-xs text-gray-400">SL — modo</label>
+                        <select name="sl_mode" x-model="slMode"
+                                class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                            <option value="atr">× ATR (multiplicador)</option>
+                            <option value="pts">puntos fijos desde la señal (backstop)</option>
+                        </select>
+                        <div x-show="slMode === 'atr'">
+                            <label class="block text-xs text-gray-400 mb-1">SL × ATR</label>
+                            <input name="sl_atr_multiplier" type="number" step="0.1" min="0"
+                                   value="{{ profile.sl_atr_multiplier or '' }}" placeholder="heredar (1.5)"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                        </div>
+                        <div x-show="slMode === 'pts'" x-cloak>
+                            <label class="block text-xs text-gray-400 mb-1">SL en puntos (precio fijo desde la señal)</label>
+                            <input name="backstop_points" type="number" step="any" min="0"
+                                   value="{{ mrcfg.get('backstop_points') or '' }}" placeholder="p. ej. 90"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                            <p class="text-xs text-gray-600 mt-1">Mismo campo que aplica el Motor de Riesgo (<code>backstop_points</code>). FX en puntos de precio (p. ej. 6E: 0.02).</p>
+                        </div>
                     </div>
-                    <div>
-                        <label class="block text-xs text-gray-400 mb-1">TP × ATR (bracket)</label>
-                        <input name="tp_atr_multiplier" type="number" step="0.1" min="0"
-                               value="{{ profile.tp_atr_multiplier or '' }}" placeholder="vacío = sin TP"
-                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    <div class="space-y-2">
+                        <label class="block text-xs text-gray-400">TP — modo</label>
+                        <select name="tp_mode" x-model="tpMode"
+                                class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                            <option value="nominal">nominal por lado (× ATR — el del estudio)</option>
+                            <option value="unico">único × ATR (legacy)</option>
+                            <option value="off">sin TP</option>
+                        </select>
+                        <div x-show="tpMode === 'nominal'" x-cloak class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">TP largos × ATR</label>
+                                <input name="tp_nominal_long" type="number" step="0.1" min="0"
+                                       value="{{ mrcfg.get('tp_nominal_long') or '' }}" placeholder="p99"
+                                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">TP cortos × ATR</label>
+                                <input name="tp_nominal_short" type="number" step="0.1" min="0"
+                                       value="{{ mrcfg.get('tp_nominal_short') or '' }}" placeholder="p99"
+                                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                            </div>
+                        </div>
+                        <div x-show="tpMode === 'unico'">
+                            <label class="block text-xs text-gray-400 mb-1">TP × ATR (bracket)</label>
+                            <input name="tp_atr_multiplier" type="number" step="0.1" min="0"
+                                   value="{{ profile.tp_atr_multiplier or '' }}" placeholder="p. ej. 6.0"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                        </div>
+                        <p x-show="tpMode === 'off'" x-cloak class="text-xs text-amber-300">⚠ Sin TP el bracket queda incompleto — puede fallar con <code>oto-orders-not-supported</code>.</p>
                     </div>
                 </div>
-                <p class="text-xs text-gray-500">Si tu broker exige bracket (TP+SL), pon un TP (p. ej. <b>6.0</b>). Vacío = sin TP → puede fallar con <code>oto-orders-not-supported</code>.</p>
+                <p class="text-xs text-gray-500">El TP en <b>puntos fijos no existe por diseño</b> (validado 2026-07-04): un TP fijo se estrecha relativo a la volatilidad justo cuando las ganadoras corren — dispararía antes que LuxAlgo. El backstop sí es fijo porque capa pérdida. <b>Los 4 perfiles heredan este SL/TP y los niveles</b> tal cual.</p>
                 <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar SL/TP</button>
             </form>
         </div>
@@ -401,7 +444,7 @@
                         </div>
                     </div>
                     <details class="mt-2">
-                        <summary class="text-xs text-gray-500 cursor-pointer select-none">Avanzado — override de niveles / SL / TP (normalmente NO tocar; viene de los estudios)</summary>
+                        <summary class="text-xs text-gray-500 cursor-pointer select-none">Avanzado — override de niveles / SL / TP (normalmente NO tocar: el perfil HEREDA el bracket completo de la base — stop fijo y TP nominal incluidos. Un SL×ATR aquí REEMPLAZA al stop fijo heredado en este perfil; un TP aquí apaga el nominal)</summary>
                         <div class="grid grid-cols-3 gap-2 mt-2">
                             <div>
                                 <label class="block text-xs text-gray-400 mb-1">Niveles ATR — coma</label>
@@ -423,7 +466,7 @@
                 </div>
                 {% endfor %}
                 <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar perfiles</button>
-                <p class="text-xs text-gray-600">Para que un perfil ejecute escalonado, la base debe tener Scale Entry en modo ejecución. El SL/TP se hereda de la base (mover el SL cambia WR/PF) — para bajar riesgo usa menos contratos.</p>
+                <p class="text-xs text-gray-600">Para que un perfil ejecute escalonado, la base debe tener Scale Entry en modo ejecución. <b>Los 4 perfiles heredan de la base el bracket COMPLETO</b> (SL ×ATR o stop de puntos fijos + TP nominal por lado) <b>y los niveles ATR (C2, C3, …)</b> — mover el SL cambia WR/PF; para bajar riesgo usa menos contratos.</p>
             </form>
         </div>
 
