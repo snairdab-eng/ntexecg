@@ -260,6 +260,39 @@ async def test_pagina_sin_estudio_y_sin_master(client: AsyncClient,
     assert "Calcular" in r2.text
 
 
+@pytest.mark.asyncio
+async def test_script_valido_con_job_en_memoria(client: AsyncClient,
+                                                dirs: Path) -> None:
+    """Regresión (bug producción 2026-07-06): con un job en JOBS, el
+    autoescape de Jinja convertía las comillas de `job: '<estado>'` en
+    &#39; → SyntaxError → riesgoApp sin definir → TODOS los botones del
+    componente muertos ("me dejó eliminar una vez pero después ya no":
+    la primera carga era sin job → null → script válido; tras Calcular,
+    job='done' rompía cada carga siguiente). tojson es autoescape-safe."""
+    _write_lab_manifest(dirs, {"ES5m_Test": {
+        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv",
+        "confirmed": True}})
+    _seed_motor(dirs)
+    rr.JOBS["ES_Test"] = {"status": "done", "tail": "", "rc": 0}
+    try:
+        r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    finally:
+        rr.JOBS.pop("ES_Test", None)
+    assert r.status_code == 200
+    html = r.text
+    script = html.split("function riesgoApp()")[1].split("</script>")[0]
+    # el veneno exacto del bug: entidades HTML dentro del JS inline
+    for entidad in ("&#39;", "&#34;", "&quot;", "&amp;"):
+        assert entidad not in script, entidad
+    assert 'job: "done",' in script
+    # y sin job: null literal (no la cadena "None")
+    rr.JOBS.pop("ES_Test", None)
+    r2 = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    script2 = r2.text.split("function riesgoApp()")[1].split("</script>")[0]
+    assert "job: null," in script2
+    assert "None" not in script2.split("cuenta:")[0]
+
+
 # ---------------------------------------------------------------------------
 # P1-1 — banner "sin recomendación validada" (nunca en blanco)
 # ---------------------------------------------------------------------------

@@ -7,8 +7,10 @@
 
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- HTMX CDN -->
-    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrZMPbm7tXCCC39FOjMKRoqXXFkNnHO" crossorigin="anonymous"></script>
+    <!-- HTMX CDN — SRI verificado contra el archivo servido (2026-07-06):
+         el hash anterior tenía la cola corrupta → el navegador BLOQUEABA
+         htmx en silencio (bridge-badge congelado, partials muertos). -->
+    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
     <!-- Alpine.js CDN -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 

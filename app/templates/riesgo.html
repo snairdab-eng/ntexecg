@@ -441,8 +441,12 @@ function riesgoApp() {
     return {
         busy: false, msg: '', ok: true, tail: '', copiado: false,
         nueva: false, nuevaSel: '', nuevaId: '', msgNueva: '', okNueva: true,
-        job: {{ "'" + job + "'" if job else 'null' }},
-        cuenta: {{ cuenta }},
+        {# tojson es seguro ante autoescape: 'done' → "done", None → null.
+           La versión anterior ("'" + job + "'") salía como &#39;done&#39; y el
+           SyntaxError mataba TODO el componente (botones muertos en cuanto
+           había un job en memoria — bug de producción 2026-07-06). #}
+        job: {{ job | tojson }},
+        cuenta: {{ cuenta | tojson }},
 
         async _subir(strategy, fileInput) {
             const fd = new FormData();
