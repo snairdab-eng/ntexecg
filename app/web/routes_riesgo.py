@@ -288,11 +288,22 @@ def _proteccion_ctx(res: dict, cuenta: float,
                          f"trades en el lado eliminado — valida en demo)")
     else:
         lado_txt = "ambos lados operan (no bloquear ninguno)"
+    # R-obs-2b — la ficha de protección ESPEJA las líneas de la validada
+    # (mismos datos, números propios): + cancel_after, sizing y confianza.
+    ca = ((res.get("corte_fills") or {}).get("cancel_after_s"))
+    ca_txt = (f"{int(ca)}s (corte de fills del estudio; máx duro "
+              f"TradersPost 3600s)" if con_escalera and ca else
+              "no aplica — entrada a la señal, sin piernas límite profundas")
+    conf_txt = (f"PF in-sample {m.get('pf')} — sin validar OOS "
+                f"(para decidir, NO promesa a futuro)")
     palancas = [
         {"icon": "🛑", "titulo": "SL", "texto": sl_txt},
         {"icon": "🪜", "titulo": "Escalera", "texto": esc_txt},
         {"icon": "🎯", "titulo": "TP", "texto": tp_txt},
         {"icon": "↔", "titulo": "Lado", "texto": lado_txt},
+        {"icon": "⏱", "titulo": "cancel_after", "texto": ca_txt},
+        {"icon": "📐", "titulo": "Sizing", "texto": "tamaño fijo, sin equity"},
+        {"icon": "✅", "titulo": "Confianza", "texto": conf_txt},
     ]
     return {
         **{k: pc[k] for k in ("cuenta_usd", "umbral_alarma_pct", "alarmas",

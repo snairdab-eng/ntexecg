@@ -492,7 +492,7 @@ async def test_orden_tarjetas_adyacentes_heatmap_colapsado(
     i_kpi1 = html.index("PF fuera de muestra (OOS) ★")     # tarjetas estudio 1
     i_kpi2 = html.index("PF (in-sample) ★")                # tarjetas estudio 2
     i_reco = html.index("Recomendación (validada OOS)")    # detalle 1
-    i_prot = html.index("palancas y efecto")               # detalle 2 (título
+    i_prot = html.index("(in-sample) — palancas")          # detalle 2 (título
     # único de la tarjeta; el banner del bloque KPI solo la menciona)
     i_json = html.index("pipeline_config_json")            # JSON de activación
     i_heat = html.index("Candidatas del walk-forward")     # heatmap (colapsado)

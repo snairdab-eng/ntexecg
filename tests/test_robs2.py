@@ -209,6 +209,36 @@ async def test_ficha_muestra_rango_por_lado(client: AsyncClient,
     _seed_motor(dirs, clave="ES_Test2", estudio=ESTUDIO)
 
 
+@pytest.mark.asyncio
+async def test_ficha_proteccion_espeja_lineas_sin_cajas(client: AsyncClient,
+                                                        dirs: Path) -> None:
+    """R-obs-2b: la ficha de protección espeja las LÍNEAS de la validada
+    (SL, Escalera, TP, Lado, cancel_after, Sizing, Confianza — números
+    propios) y las 4 cajas de 'efecto' se retiraron (tachadas por el
+    operador: sus números ya viven en las tarjetas KPI)."""
+    _manifest_es(dirs)
+    estudio = json.loads(json.dumps(ESTUDIO))
+    estudio["proteccion"] = PROTECCION
+    _seed_motor(dirs, estudio=estudio)
+    r = await client.get(f"/ui/riesgo?strategy={SID}")
+    assert r.status_code == 200
+    html = r.text
+    assert "(in-sample) — palancas" in html
+    # las líneas nuevas del espejo: la validada usa "cancel_after coherente";
+    # la protección su propio "cancel_after"; Sizing/Confianza en AMBAS
+    assert "<b>cancel_after:</b>" in html
+    assert html.count("<b>Sizing:</b>") >= 2
+    assert html.count("<b>Confianza:</b>") >= 2
+    assert "PF in-sample" in html
+    assert "tamaño fijo, sin equity" in html
+    # las cajas tachadas: FUERA
+    for caja in ("Peor trade protegido", "Max DD protegido", "Costo en net",
+                 "Ganadoras cortadas por el stop"):
+        assert caja not in html, caja
+    # participación 100% visible en el objetivo del bloque
+    assert "sin saltar señales" in html
+
+
 def test_reporte_md_incluye_rango_por_lado():
     from scripts.mr_report import render_md
     res = json.loads(json.dumps(ESTUDIO))

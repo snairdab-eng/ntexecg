@@ -294,7 +294,7 @@
         </div>
         {% endif %}
         <div class="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2">
-            <b>{{ p.etiqueta }}.</b> Objetivo: máxima participación quitando los trades desastrosos, con un SL que deje respirar (suelo del MAE de ganadoras: p95 {{ p.suelo_atr }}×ATR). Palancas y efecto abajo, en "Recomendación de protección".
+            <b>{{ p.etiqueta }}.</b> Objetivo: capar los trades desastrosos <b>sin saltar señales</b> (participación 100% obligatoria), con un SL que deje respirar (suelo del MAE de ganadoras: p95 {{ p.suelo_atr }}×ATR). Palancas abajo, en "Recomendación de protección".
         </div>
     </div>
     {% elif estudio %}
@@ -334,31 +334,16 @@
     {% if estudio.proteccion %}
     {% set p = estudio.proteccion %}
     <div class="bg-gray-900 border border-rose-900 rounded p-4 space-y-3">
-        <div class="text-sm font-semibold text-gray-200">Recomendación de protección (in-sample) — palancas y efecto</div>
-        <!-- las mismas palancas que el estudio validado (espejo intencional) -->
+        {# R-obs-2b — espejo de la ficha validada: mismas líneas, números
+           propios. Las cajas de "efecto" se retiraron (el operador las
+           tachó): sus números YA viven en las 6 tarjetas KPI de arriba. #}
+        <div class="text-sm font-semibold text-gray-200">Recomendación de protección (in-sample) — palancas</div>
+        <!-- las mismas líneas que el estudio validado (espejo intencional) -->
         <ul class="text-xs text-gray-300 space-y-1.5">
             {% for pal in p.palancas %}
             <li>{{ pal.icon }} <b>{{ pal.titulo }}:</b> {{ pal.texto }}.</li>
             {% endfor %}
         </ul>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-            <div class="bg-gray-950 rounded p-2 border border-gray-800">
-                <div class="text-gray-500">Peor trade protegido</div>
-                <div class="text-gray-100 font-bold">${{ '{:,.0f}'.format(p.efecto.peor_trade_usd) }} <span class="text-gray-400 font-normal">({{ p.efecto.peor_pct_cuenta }}% de la cuenta)</span></div>
-            </div>
-            <div class="bg-gray-950 rounded p-2 border border-gray-800">
-                <div class="text-gray-500">Max DD protegido</div>
-                <div class="text-gray-100 font-bold">${{ '{:,.0f}'.format(p.efecto.max_dd_usd) }} <span class="text-gray-400 font-normal">({{ p.efecto.dd_pct_cuenta }}%)</span></div>
-            </div>
-            <div class="bg-gray-950 rounded p-2 border border-gray-800">
-                <div class="text-gray-500">Costo en net</div>
-                <div class="font-bold {% if p.efecto.costo_net_usd < 0 %}text-red-300{% else %}text-emerald-300{% endif %}">${{ '{:,.0f}'.format(p.efecto.costo_net_usd) }}</div>
-            </div>
-            <div class="bg-gray-950 rounded p-2 border border-gray-800">
-                <div class="text-gray-500">Ganadoras cortadas por el stop</div>
-                <div class="text-gray-100 font-bold">{{ p.efecto.ganadoras_cortadas_pct if p.efecto.ganadoras_cortadas_pct is not none else '—' }}%</div>
-            </div>
-        </div>
         <div class="text-xs text-gray-500">{{ p.nota_supervivencia }}. Aplicar sigue siendo un paso aparte (config de la estrategia).</div>
     </div>
     {% endif %}
