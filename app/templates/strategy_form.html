@@ -5,7 +5,20 @@
 <div class="max-w-2xl mx-auto space-y-4">
     <h1 class="text-xl font-bold text-white">Nueva Estrategia</h1>
 
+    {# Puente P3 — promoción estudio→viva: alta prellenada desde el estudio
+       validado. El id viene BLOQUEADO (una sola identidad en el ciclo de
+       vida); tras crear, se encadena al diff de aplicar en Riesgo. #}
+    {% if from_estudio %}
+    <div class="bg-indigo-900/30 border border-indigo-700 rounded p-3 text-xs text-indigo-200">
+        ➕ <b>Promoción desde el Motor de Riesgo:</b> alta prellenada con el estudio de
+        <code class="text-indigo-100">{{ from_estudio }}</code>. Nace en <b>paper + dry_run</b> (desarmada);
+        al crearla vuelves a Riesgo con el diff de la recomendación listo para aplicar.
+        Pega la URL del webhook de TradersPost — eso no es derivable del estudio.
+    </div>
+    {% endif %}
+
     <form method="post" action="/ui/strategies/new" class="space-y-5 bg-gray-900 border border-gray-800 rounded p-5">
+        {% if from_estudio %}<input type="hidden" name="from_estudio" value="{{ from_estudio }}">{% endif %}
 
         <!-- Sección 1 — Identidad -->
         <fieldset class="space-y-3">
@@ -14,13 +27,16 @@
             <div>
                 <label class="block text-xs text-gray-400 mb-1">strategy_id <span class="text-red-400">*</span></label>
                 <input name="strategy_id" required pattern="[a-zA-Z0-9_]+" placeholder="mes5m_confirmation"
-                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 font-mono text-sm">
+                       value="{{ prefill.strategy_id if prefill else '' }}"
+                       {% if prefill %}readonly title="Identidad heredada del estudio — no se re-teclea"{% endif %}
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono text-sm {% if prefill %}text-gray-400 bg-gray-800/60{% else %}text-gray-100{% endif %}">
                 <p class="text-xs text-gray-600 mt-1">Solo letras, números y guion bajo. Va en la URL del webhook.</p>
             </div>
 
             <div>
                 <label class="block text-xs text-gray-400 mb-1">Nombre <span class="text-red-400">*</span></label>
                 <input name="name" required placeholder="Mismo nombre que en TradersPost"
+                       value="{{ prefill.name if prefill else '' }}"
                        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
             </div>
 
@@ -32,9 +48,10 @@
                         class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
                     <option value="">Seleccionar activo…</option>
                     {% for a in assets %}
-                    <option value="{{ a.symbol }}">{{ a.symbol }} — {{ a.name }}</option>
+                    <option value="{{ a.symbol }}" {% if prefill and a.symbol == prefill.asset_symbol %}selected{% endif %}>{{ a.symbol }} — {{ a.name }}</option>
                     {% endfor %}
                 </select>
+                {% if prefill %}<p class="text-xs text-gray-600 mt-1">Sugerido: <b>{{ prefill.asset_symbol }}</b> (micro del instrumento del estudio) — confírmalo.</p>{% endif %}
             </div>
 
             <!-- Ticker hint (filled via HTMX) -->
@@ -44,10 +61,9 @@
                 <div>
                     <label class="block text-xs text-gray-400 mb-1">Timeframe</label>
                     <select name="timeframe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
-                        <option value="5m">5m</option>
-                        <option value="15m">15m</option>
-                        <option value="1h">1h</option>
-                        <option value="4h">4h</option>
+                        {% for tf in ['5m', '15m', '1h', '4h'] %}
+                        <option value="{{ tf }}" {% if prefill and prefill.timeframe == tf %}selected{% endif %}>{{ tf }}</option>
+                        {% endfor %}
                     </select>
                 </div>
                 <div>

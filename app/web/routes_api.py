@@ -219,12 +219,29 @@ async def get_strategy_config(strategy_id: str, db: AsyncSession = Depends(get_d
             "atr_timeframe": p.atr_timeframe if p else None,
             "tp_atr_multiplier": _fl(p.tp_atr_multiplier) if p else None,
             "windows": pcfg.get("windows"),
+            # Puente Riesgo↔Estrategias P1: los campos MR-5 del Motor de
+            # Riesgo eran invisibles vía API (auditoría 2026-07-06).
+            "backstop_points": pcfg.get("backstop_points"),
+            "tp_nominal_long": pcfg.get("tp_nominal_long"),
+            "tp_nominal_short": pcfg.get("tp_nominal_short"),
+            "short_size_factor": pcfg.get("short_size_factor"),
+            "entry_reserve_timeout_seconds": pcfg.get(
+                "entry_reserve_timeout_seconds"),
         },
         "effective": {
             "sl_atr_multiplier": eff.get("sl_atr_multiplier"),
             "atr_timeframe": eff.get("atr_timeframe"),
             "tp_atr_multiplier": eff.get("tp_atr_multiplier"),
             "window": readable_window(eff.get("session_config_json")),
+            # MR-5 efectivos (config_resolver ya los valida/filtra):
+            # backstop_points REEMPLAZA al SL×ATR; tp_nominal_* PREVALECE
+            # sobre tp_atr_multiplier — quien lea "effective" debe verlo.
+            "backstop_points": eff.get("backstop_points"),
+            "tp_nominal_long": eff.get("tp_nominal_long"),
+            "tp_nominal_short": eff.get("tp_nominal_short"),
+            "short_size_factor": eff.get("short_size_factor"),
+            "entry_reserve_timeout_seconds": eff.get(
+                "entry_reserve_timeout_seconds"),
         },
         "scale_entry": pcfg.get("scale_entry"),
     }

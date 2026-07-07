@@ -39,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.web.common import render
+from app.web.common import flash_messages, render
 import app.web.routes_lab as routes_lab                # manifest compartido
 from scripts.lab_manifest import MICRO_TO_LAB, csv_instrument
 from scripts.mr_sims import proteccion_para_cuenta     # selección PURA (v2)
@@ -327,6 +327,245 @@ def _activacion_json(reco: dict) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Puente Riesgo↔Estrategias (SPEC 2026-07-06) — P1 deriva + P2 aplicar.
+# El estudio JAMÁS muta la config viva solo: aplicar es SIEMPRE un acto del
+# operador con el diff a la vista (preview → confirmar). Nunca toca el
+# kill-switch (mode/dry_run/traderspost/status) y preserva el mode de
+# scale_entry (NX-11: aplicar niveles no arma la ejecución escalonada).
+# ---------------------------------------------------------------------------
+
+def _num_eq(a, b) -> bool:
+    try:
+        return (a is not None and b is not None
+                and abs(float(a) - float(b)) < 1e-9)
+    except (TypeError, ValueError):
+        return False
+
+
+def _se_igual(vivo: dict | None, reco: dict | None) -> bool:
+    """Escalera igual = mismos levels/quantities/max. mode y stop_mode son
+    del operador (NX-11) y NO cuentan para la deriva."""
+    vivo, reco = vivo or {}, reco or {}
+    try:
+        return ([float(x) for x in (vivo.get("levels") or [])]
+                == [float(x) for x in (reco.get("levels") or [])]
+                and [int(x) for x in (vivo.get("quantities") or [])]
+                == [int(x) for x in (reco.get("quantities") or [])]
+                and _num_eq(vivo.get("max_micro_contracts"),
+                            reco.get("max_micro_contracts")))
+    except (TypeError, ValueError):
+        return False
+
+
+def deriva_estudio(pcfg: dict | None, act: dict | None,
+                   fecha: str | None = None,
+                   hay_viva: bool = True) -> dict | None:
+    """P1 — estado de la config viva frente a la recomendación validada
+    (_activacion_json): aplicada / difiere / sin_aplicar /
+    sin_estrategia_viva. Sin recomendación → None (sin badge)."""
+    if not act:
+        return None
+    if not hay_viva:
+        return {"estado": "sin_estrategia_viva",
+                "texto": "sin estrategia viva"}
+    pcfg = pcfg or {}
+    iguales: list[bool] = []
+    presentes: list[bool] = []
+    for k in ("backstop_points", "tp_nominal_long", "tp_nominal_short",
+              "entry_reserve_timeout_seconds"):
+        if k in act:
+            iguales.append(_num_eq(pcfg.get(k), act[k]))
+            presentes.append(pcfg.get(k) is not None)
+    if "scale_entry" in act:
+        iguales.append(_se_igual(pcfg.get("scale_entry"),
+                                 act["scale_entry"]))
+        presentes.append(bool(pcfg.get("scale_entry")))
+    suf = f" (estudio {fecha})" if fecha else ""
+    if iguales and all(iguales):
+        return {"estado": "aplicada", "texto": f"aplicada{suf}"}
+    if not any(presentes):
+        return {"estado": "sin_aplicar",
+                "texto": f"recomendación SIN aplicar{suf}"}
+    return {"estado": "difiere", "texto": f"difiere del estudio{suf}"}
+
+
+async def _viva_y_reco(db: AsyncSession, strategy: str):
+    """Resuelve (profile_viva, reco, fecha) o (None, error_response)."""
+    strategy = (strategy or "").strip()
+    if not _KEY_RE.match(strategy):
+        return None, JSONResponse({"error": "strategy_id inválido"},
+                                  status_code=400)
+    manifest = routes_lab.load_manifest()
+    entry = manifest.get(strategy)
+    if entry is None:
+        return None, JSONResponse({"error": "estrategia fuera del manifest"},
+                                  status_code=400)
+    res = _latest_estudio(clave_de(strategy, entry["instrument"]))
+    reco = (res or {}).get("recomendacion")
+    if not reco:
+        return None, JSONResponse(
+            {"error": "sin recomendación validada — corre Calcular y "
+                      "necesita pasar el gate OOS"}, status_code=400)
+    from app.models.strategy_profile import StrategyProfile
+    prow = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == strategy))).scalar_one_or_none()
+    from app.models.strategy import Strategy
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy))).scalar_one_or_none()
+    if srow is None:
+        return None, JSONResponse(
+            {"error": "sin estrategia viva con este id — dala de alta en "
+                      "Estrategias primero (o promuévela desde el estudio)"},
+            status_code=400)
+    return {"profile": prow, "reco": reco,
+            "fecha": (res or {}).get("_fecha")}, None
+
+
+def _diff_aplicar(pcfg: dict, act: dict, fecha: str | None,
+                  sl_atr_vivo, tp_atr_vivo) -> list[dict]:
+    """Filas del diff vivo → recomendado (P2 preview). Solo informa; el
+    merge real es _merge_activacion."""
+    filas: list[dict] = []
+
+    def fila(campo, vivo, reco, cambia, nota=None):
+        filas.append({"campo": campo, "vivo": vivo, "recomendado": reco,
+                      "cambia": cambia, "nota": nota})
+
+    if "backstop_points" in act:
+        vivo_bk = pcfg.get("backstop_points")
+        fila("SL / stop de precio fijo (backstop_points)",
+             (f"{vivo_bk:g} pts" if vivo_bk
+              else (f"SL {sl_atr_vivo}×ATR (legacy)" if sl_atr_vivo
+                    else "SL ×ATR heredado")),
+             f"{act['backstop_points']:g} pts desde la señal",
+             not _num_eq(vivo_bk, act["backstop_points"]),
+             nota="el SL×ATR queda IGNORADO mientras el backstop esté activo")
+    for k, lado in (("tp_nominal_long", "largos"),
+                    ("tp_nominal_short", "cortos")):
+        if k in act:
+            vivo_tp = pcfg.get(k)
+            fila(f"TP nominal {lado} ({k})",
+                 (f"{vivo_tp:g}×ATR" if vivo_tp
+                  else (f"TP {tp_atr_vivo}×ATR (legacy)" if tp_atr_vivo
+                        else "sin TP")),
+                 f"{act[k]:g}×ATR (p99 de cierres LuxAlgo)",
+                 not _num_eq(vivo_tp, act[k]))
+    if "scale_entry" in act:
+        vivo_se = pcfg.get("scale_entry") or {}
+        reco_se = act["scale_entry"]
+
+        def _se_txt(se):
+            if not se:
+                return "sin escalera"
+            return (f"levels {se.get('levels')} · qty {se.get('quantities')}"
+                    f" · max {se.get('max_micro_contracts')}")
+        fila("Escalera (levels/quantities/max)", _se_txt(vivo_se),
+             _se_txt(reco_se), not _se_igual(vivo_se, reco_se),
+             nota="el mode vigente se PRESERVA (NX-11) — aplicar no arma "
+                  "la ejecución escalonada")
+    if "entry_reserve_timeout_seconds" in act:
+        vivo_ca = pcfg.get("entry_reserve_timeout_seconds")
+        fila("cancel_after / reserva (s)",
+             f"{vivo_ca}s" if vivo_ca else "default (3600s)",
+             f"{act['entry_reserve_timeout_seconds']}s",
+             not _num_eq(vivo_ca or 3600,
+                         act["entry_reserve_timeout_seconds"]),
+             nota="⚠ fijar el MISMO valor A MANO en TradersPost "
+                  "(Cancel entry after)")
+    return filas
+
+
+def _merge_activacion(pcfg: dict, act: dict) -> dict:
+    """Merge de la activación sobre el pcfg vivo. scale_entry preserva el
+    mode vigente (NX-11) y el stop_mode; el resto se escribe tal cual.
+    NUNCA toca mode/dry_run/traderspost/status (viven fuera del pcfg)."""
+    cfg = dict(pcfg or {})
+    for k in ("backstop_points", "tp_nominal_long", "tp_nominal_short",
+              "entry_reserve_timeout_seconds"):
+        if k in act:
+            cfg[k] = act[k]
+    if "scale_entry" in act:
+        prev = cfg.get("scale_entry") or {}
+        se = dict(act["scale_entry"])
+        prev_mode = prev.get("mode")
+        se["mode"] = (prev_mode if prev_mode in ("execute", "live")
+                      else "design_only")
+        se["stop_mode"] = prev.get("stop_mode", "common_position_stop")
+        cfg["scale_entry"] = se
+    return cfg
+
+
+@router.get("/ui/riesgo/aplicar/preview")
+async def riesgo_aplicar_preview(strategy: str,
+                                 db: AsyncSession = Depends(get_db)
+                                 ) -> JSONResponse:
+    ctx, err = await _viva_y_reco(db, strategy)
+    if err:
+        return err
+    act = _activacion_json(ctx["reco"])
+    prof = ctx["profile"]
+    pcfg = (prof.pipeline_config_json or {}) if prof else {}
+    sl_vivo = (float(prof.sl_atr_multiplier)
+               if prof and prof.sl_atr_multiplier is not None else None)
+    tp_vivo = (float(prof.tp_atr_multiplier)
+               if prof and prof.tp_atr_multiplier is not None else None)
+    return JSONResponse({
+        "strategy": strategy.strip(),
+        "fecha_estudio": ctx["fecha"],
+        "filas": _diff_aplicar(pcfg, act, ctx["fecha"], sl_vivo, tp_vivo),
+        "deriva": deriva_estudio(pcfg, act, ctx["fecha"]),
+        "avisos": [
+            "No toca mode/dry_run/traderspost_enabled/status.",
+            "scale_entry conserva su mode vigente (NX-11) — la ejecución "
+            "se arma aparte con scripts/set_scale_execution.py.",
+            "⚠ cancel_after: fijar el mismo valor A MANO en TradersPost.",
+        ],
+    })
+
+
+class AplicarReq(BaseModel):
+    strategy: str
+
+
+@router.post("/ui/riesgo/aplicar")
+async def riesgo_aplicar(req: AplicarReq,
+                         db: AsyncSession = Depends(get_db)) -> JSONResponse:
+    ctx, err = await _viva_y_reco(db, req.strategy)
+    if err:
+        return err
+    strategy = req.strategy.strip()
+    act = _activacion_json(ctx["reco"])
+    prof = ctx["profile"]
+    if prof is None:
+        from app.models.strategy_profile import StrategyProfile
+        prof = StrategyProfile(strategy_id=strategy)
+        db.add(prof)
+    before = dict(prof.pipeline_config_json or {})
+    cfg = _merge_activacion(before, act)
+    prof.pipeline_config_json = cfg
+    llaves = [k for k in ("backstop_points", "tp_nominal_long",
+                          "tp_nominal_short", "entry_reserve_timeout_seconds",
+                          "scale_entry") if k in act]
+    from app.services.audit_service import AuditService
+    await AuditService().log_strategy_change(
+        db, actor="riesgo_aplicar", strategy_id=strategy,
+        old_data={k: before.get(k) for k in llaves},
+        new_data={k: cfg.get(k) for k in llaves},
+        action="APPLY_RIESGO_RECO",
+        reason=f"recomendación del estudio {ctx['fecha']} aplicada por el "
+               f"operador (preview confirmado)")
+    await db.commit()
+    return JSONResponse({
+        "ok": True, "strategy": strategy, "fecha_estudio": ctx["fecha"],
+        "aplicado": {k: cfg.get(k) for k in llaves},
+        "deriva": deriva_estudio(cfg, act, ctx["fecha"]),
+        "recordatorio": "⚠ cancel_after: fijar el mismo valor a mano en "
+                        "TradersPost; la ejecución escalonada se arma con "
+                        "scripts/set_scale_execution.py.",
+    })
+
+
 def _aplicar_ctx(res: dict, unidades: dict | None) -> dict | None:
     """R-obs-5 — tarjeta "Configuración a aplicar": el resumen ACCIONABLE
     de lo que el operador configura en TradersPost, desde la recomendación
@@ -527,7 +766,11 @@ async def riesgo_page(request: Request, strategy: str | None = None,
     ctx: dict = {
         "groups": groups, "key": key, "manifest_entry": None,
         "motor": None, "avisos": [], "estudio": None, "clave": None,
-        "job": None, "link_vivo": None, "cuenta": _leer_cuenta(),
+        "job": None, "link_vivo": None, "deriva": None,
+        "cuenta": _leer_cuenta(),
+        # Puente P3: el flash de la promoción (incluye el token del webhook,
+        # que se muestra UNA sola vez) debe sobrevivir el redirect a Riesgo.
+        "messages": flash_messages(request),
         "vivas_nuevas": sorted([v for v in vivas
                                 if v["strategy_id"] not in manifest
                                 and v["instrument"]],
@@ -579,6 +822,24 @@ async def riesgo_page(request: Request, strategy: str | None = None,
                     MOTOR_DIR / clave / "snapshots")
             except (KeyError, ValueError):
                 ctx["avisos"] = []
+        # Puente P1 — badge de deriva: config viva vs recomendación validada
+        est = ctx["estudio"]
+        if est and est.get("reco"):
+            pcfg: dict | None = None
+            if ctx["link_vivo"]:
+                try:
+                    from app.models.strategy_profile import StrategyProfile
+                    prow = (await db.execute(
+                        select(StrategyProfile).where(
+                            StrategyProfile.strategy_id == key)
+                    )).scalar_one_or_none()
+                    pcfg = ((prow.pipeline_config_json or {})
+                            if prow else {})
+                except Exception:
+                    pcfg = None
+            ctx["deriva"] = deriva_estudio(
+                pcfg, _activacion_json(est["reco"]), est.get("fecha"),
+                hay_viva=bool(ctx["link_vivo"]))
     return await render(request, "riesgo.html", ctx)
 
 

@@ -352,7 +352,22 @@
     {% if estudio.aplicar %}
     <div class="bg-gray-900 border border-emerald-900 rounded p-4 grid md:grid-cols-2 gap-4">
         <div class="space-y-2 text-sm">
-            <div class="font-semibold text-emerald-300">Configuración a aplicar — <span class="font-mono text-gray-200">{{ key }}</span></div>
+            <div class="flex items-center justify-between flex-wrap gap-2">
+                <div class="font-semibold text-emerald-300">Configuración a aplicar — <span class="font-mono text-gray-200">{{ key }}</span></div>
+                {% if deriva %}
+                <span class="text-xs px-2 py-0.5 rounded {% if deriva.estado == 'aplicada' %}bg-emerald-900 text-emerald-300{% elif deriva.estado == 'sin_estrategia_viva' %}bg-gray-800 text-gray-400{% else %}bg-amber-900 text-amber-300{% endif %}">{{ deriva.texto }}</span>
+                {% endif %}
+            </div>
+            {# ── Puente P2: aplicar SUPERVISADO — diff a la vista, confirmación
+                 explícita, kill-switch intacto. Sin viva → CTA de promoción. ── #}
+            {% if link_vivo %}
+            <button @click="aplicarPreview()" :disabled="busy"
+                    class="text-xs px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-semibold disabled:opacity-50">⇩ Aplicar a la config viva…</button>
+            {% else %}
+            <a href="/ui/strategies/new?from_estudio={{ key }}"
+               class="inline-block text-xs px-3 py-1.5 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold">➕ dar de alta en Estrategias →</a>
+            <span class="text-xs text-gray-500">no hay estrategia viva con este id — promuévela para poder aplicar</span>
+            {% endif %}
             {% if estudio.aplicar.catalogo_incompleto %}
             <div class="bg-amber-900/30 border border-amber-700 rounded p-2 text-xs text-amber-200">
                 ⚠ <b>Catálogo incompleto</b> — este instrumento no tiene <code>tick_size</code>/<code>tick_value</code> en el Symbol Mapper: se muestran solo los $, no la unidad natural. Complétalo en la pestaña Symbol Mapper.
@@ -368,7 +383,7 @@
                 {% endfor %}
                 </tbody>
             </table>
-            <div class="text-xs text-gray-500">Unidades del instrumento desde el <b>Symbol Mapper</b> (fuente única). Aplicar es un paso aparte — nada se toca en vivo desde aquí.</div>
+            <div class="text-xs text-gray-500">Unidades del instrumento desde el <b>Symbol Mapper</b> (fuente única). Aplicar es SUPERVISADO — el botón muestra el diff y nada cambia sin tu confirmación (queda en el AuditLog).</div>
         </div>
         <div class="space-y-1">
             <div class="flex items-center justify-between">
@@ -434,6 +449,51 @@
         Sin estrategias en el manifest — da de alta la primera con <b>＋ nueva estrategia</b> (sube su lista de operaciones).
     </div>
     {% endif %}
+
+    {% if key %}
+    <!-- ══ Puente P2: modal de APLICAR — el diff a la vista antes de tocar
+         nada. Confirmar = merge al pipeline_config_json + AuditLog. ══ -->
+    <div x-show="aplicarModal" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+        <div class="bg-gray-900 border border-emerald-800 rounded-lg max-w-3xl w-full max-h-[85vh] overflow-auto p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-emerald-300">Aplicar recomendación — <span class="font-mono text-gray-200">{{ key }}</span>
+                    <span class="text-xs text-gray-500 font-normal" x-text="aplicarData && aplicarData.fecha_estudio ? '(estudio ' + aplicarData.fecha_estudio + ')' : ''"></span></div>
+                <button @click="aplicarModal = false" class="text-gray-400 hover:text-gray-200">✕</button>
+            </div>
+            <table class="w-full text-xs">
+                <thead><tr class="text-gray-500 border-b border-gray-700">
+                    <th class="text-left py-1 pr-2">Campo</th>
+                    <th class="text-left py-1 pr-2">Vivo</th>
+                    <th class="text-left py-1">Recomendado</th>
+                </tr></thead>
+                <tbody>
+                <template x-for="f in (aplicarData ? aplicarData.filas : [])" :key="f.campo">
+                    <tr class="border-b border-gray-800 last:border-0" :class="f.cambia ? '' : 'opacity-50'">
+                        <td class="py-1.5 pr-2 text-gray-400 align-top" x-text="f.campo"></td>
+                        <td class="py-1.5 pr-2 text-gray-300 align-top" x-text="f.vivo"></td>
+                        <td class="py-1.5 align-top" :class="f.cambia ? 'text-emerald-300 font-semibold' : 'text-gray-400'">
+                            <span x-text="f.recomendado"></span>
+                            <div class="text-gray-500 font-normal" x-show="f.nota" x-text="f.nota"></div>
+                        </td>
+                    </tr>
+                </template>
+                </tbody>
+            </table>
+            <ul class="text-xs text-amber-200 bg-amber-900/20 border border-amber-800 rounded p-2 space-y-1">
+                <template x-for="a in (aplicarData ? aplicarData.avisos : [])" :key="a"><li x-text="a"></li></template>
+            </ul>
+            <div class="flex items-center gap-2 justify-end">
+                <span x-show="msgAplicar" x-text="msgAplicar" class="text-xs"
+                      :class="okAplicar ? 'text-emerald-300' : 'text-red-300'"></span>
+                <button @click="aplicarModal = false"
+                        class="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">Cancelar</button>
+                <button @click="aplicarConfirm()" :disabled="busy"
+                        class="text-xs px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-semibold disabled:opacity-50">✓ Confirmar y aplicar</button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 </div>
 
 <script>
@@ -441,12 +501,42 @@ function riesgoApp() {
     return {
         busy: false, msg: '', ok: true, tail: '', copiado: false,
         nueva: false, nuevaSel: '', nuevaId: '', msgNueva: '', okNueva: true,
+        aplicarModal: false, aplicarData: null, msgAplicar: '', okAplicar: true,
         {# tojson es seguro ante autoescape: 'done' → "done", None → null.
            La versión anterior ("'" + job + "'") salía como &#39;done&#39; y el
            SyntaxError mataba TODO el componente (botones muertos en cuanto
            había un job en memoria — bug de producción 2026-07-06). #}
         job: {{ job | tojson }},
         cuenta: {{ cuenta | tojson }},
+
+        init() {
+            // Puente P3→P2: llegar con ?aplicar=1 (recién promovida desde el
+            // estudio) abre el diff directo — un solo flujo alta→aplicar.
+            if (new URLSearchParams(location.search).get('aplicar') === '1') {
+                this.aplicarPreview();
+            }
+        },
+        // ── Puente P2: aplicar supervisado (preview → confirmar) ──
+        async aplicarPreview() {
+            this.msgAplicar = ''; this.okAplicar = true;
+            const r = await fetch('/ui/riesgo/aplicar/preview?strategy={{ key }}');
+            const j = await r.json();
+            if (!r.ok) { this.ok = false; this.msg = '⛔ ' + (j.error || 'error'); return; }
+            this.aplicarData = j;
+            this.aplicarModal = true;
+        },
+        async aplicarConfirm() {
+            this.busy = true;
+            try {
+                const r = await fetch('/ui/riesgo/aplicar', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ strategy: '{{ key }}' }) });
+                const j = await r.json();
+                if (!r.ok) { this.okAplicar = false; this.msgAplicar = '⛔ ' + (j.error || 'error'); return; }
+                this.msgAplicar = '✅ aplicada — recargando…';
+                setTimeout(() => location.href = '/ui/riesgo?strategy={{ key }}', 900);
+            } finally { this.busy = false; }
+        },
 
         async _subir(strategy, fileInput) {
             const fd = new FormData();

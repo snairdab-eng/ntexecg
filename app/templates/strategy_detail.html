@@ -260,8 +260,38 @@
         <div><span class="text-gray-500">dry_run:</span> <span class="text-gray-200">{{ profile.dry_run }}</span></div>
         <div><span class="text-gray-500">TradersPost URL:</span> <span class="text-gray-200 break-all">{{ profile.traderspost_webhook_url or '—' }}</span></div>
 
+        {% set mrcfg = (profile.pipeline_config_json or {}) if profile else {} %}
         <div class="border-t border-gray-800 mt-3 pt-3">
             <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">SL / TP por ATR</div>
+            {# ── Puente P1: si el Motor de Riesgo puso backstop / TP nominal,
+                 estos campos legacy quedan IGNORADOS por el L5 — decirlo aquí
+                 evita la deriva invisible de la auditoría 2026-07-06. ── #}
+            {% if mrcfg.get('backstop_points') %}
+            <div class="bg-amber-900/30 border border-amber-700 rounded p-2 text-xs text-amber-200 mb-2">
+                ⚠ <b>SL × ATR ignorado</b> — stop de <b>precio fijo</b> activo (Motor de Riesgo):
+                <b>{{ mrcfg.get('backstop_points') }} pts</b> desde la señal (<code>backstop_points</code>).
+            </div>
+            {% endif %}
+            {% if mrcfg.get('tp_nominal_long') or mrcfg.get('tp_nominal_short') %}
+            <div class="bg-amber-900/30 border border-amber-700 rounded p-2 text-xs text-amber-200 mb-2">
+                ⚠ <b>TP × ATR ignorado</b> — TP nominal por lado activo (Motor de Riesgo):
+                L <b>{{ mrcfg.get('tp_nominal_long') or '—' }}×ATR</b> ·
+                S <b>{{ mrcfg.get('tp_nominal_short') or '—' }}×ATR</b>
+                (por encima del p99 de cierres de LuxAlgo; casi nunca dispara).
+            </div>
+            {% endif %}
+            {% if mrcfg.get('short_size_factor') is not none %}
+            <div class="text-xs text-gray-400 mb-2">
+                ↔ <code>short_size_factor</code>: <b>{{ mrcfg.get('short_size_factor') }}</b> (tamaño de entradas cortas; afinable del operador).
+            </div>
+            {% endif %}
+            {% if deriva_riesgo %}
+            <div class="text-xs mb-2">
+                Estudio del Motor de Riesgo:
+                <span class="px-1.5 py-0.5 rounded {% if deriva_riesgo.estado == 'aplicada' %}bg-emerald-900 text-emerald-300{% elif deriva_riesgo.estado == 'sin_estrategia_viva' %}bg-gray-800 text-gray-400{% else %}bg-amber-900 text-amber-300{% endif %}">{{ deriva_riesgo.texto }}</span>
+                <a href="/ui/riesgo?strategy={{ strategy.strategy_id }}" class="text-indigo-400 hover:text-indigo-300 ml-1">ver estudio →</a>
+            </div>
+            {% endif %}
             <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/sltp" class="space-y-2">
                 <div class="grid grid-cols-2 gap-3">
                     <div>

@@ -140,13 +140,44 @@ async def ticker_hint(
 
 @router.get("/ui/strategies/new", response_class=HTMLResponse)
 async def new_strategy_form(
-    request: Request, db: AsyncSession = Depends(get_db)
+    request: Request, db: AsyncSession = Depends(get_db),
+    from_estudio: str | None = None,
 ) -> HTMLResponse:
     # P3-1: templates_list eliminado — el form lo ignoraba (0 refs en
     # strategy_form.html, auditoría Fase A) y la UI de Templates se retiró.
+    #
+    # Puente P3 — PROMOCIÓN estudio→viva: llegar con ?from_estudio=<id>
+    # prellena el alta desde el estudio validado (id bloqueado — una sola
+    # tecleada de identidad en todo el ciclo de vida). El alta nace paper +
+    # dry_run como siempre; nada se arma aquí.
+    prefill = None
+    if from_estudio:
+        try:
+            import re as _re
+
+            import app.web.routes_riesgo as rr
+            from scripts.lab_manifest import MICRO_TO_LAB
+            entry = rr.routes_lab.load_manifest().get(from_estudio)
+            if entry:
+                instrument = (entry["instrument"] or "").upper()
+                # micro sugerido: el primero del catálogo que mapea a este
+                # instrumento y no ES el instrumento (MES para ES, etc.)
+                micro = next((m for m, lab in MICRO_TO_LAB.items()
+                              if lab == instrument and m != instrument),
+                             instrument)
+                m_tf = _re.match(r"^[A-Za-z0-9]*?(\d+m|\d+h)_", from_estudio)
+                prefill = {
+                    "strategy_id": from_estudio,
+                    "name": from_estudio.replace("_", " "),
+                    "asset_symbol": micro,
+                    "timeframe": m_tf.group(1) if m_tf else "5m",
+                }
+        except Exception:
+            prefill = None
     return await render(
         request, "strategy_form.html",
-        {"assets": await _assets(db)}, db=db,
+        {"assets": await _assets(db), "prefill": prefill,
+         "from_estudio": from_estudio if prefill else None}, db=db,
     )
 
 
@@ -166,6 +197,7 @@ async def create_strategy_ui(
     enforce_timeframe_match: str = Form(""),
     signal_max_age_entry_seconds: str = Form(""),
     signal_max_age_exit_seconds: str = Form(""),
+    from_estudio: str = Form(""),
 ) -> RedirectResponse:
     # Reject duplicate strategy_id
     existing = await db.execute(
@@ -319,6 +351,16 @@ async def create_strategy_ui(
         reason="created via UI",
     )
     await db.commit()
+    # Puente P3 — promoción desde el estudio: encadenar directo al diff de
+    # aplicar en Riesgo (?aplicar=1 abre el modal). El flash con el token
+    # viaja por query param y Riesgo YA renderiza messages — no se pierde.
+    if from_estudio.strip() and from_estudio.strip() == strategy_id:
+        return redirect(
+            f"/ui/riesgo?strategy={strategy_id}&aplicar=1",
+            flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — token "
+                  f"webhook (cópialo YA, no se volverá a mostrar): "
+                  f"{new_token}",
+        )
     return redirect(
         f"/ui/strategies/{strategy_id}",
         flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — token webhook "
@@ -376,6 +418,23 @@ async def strategy_detail(
     )
     token_hashed = bool(strategy.webhook_token_hash) and not strategy.webhook_token
 
+    # Puente P1 — badge de deriva vs el estudio del Motor de Riesgo (si
+    # existe). Solo lectura y a prueba de todo: sin estudio → sin badge.
+    deriva_riesgo = None
+    try:
+        import app.web.routes_riesgo as rr
+        entry = rr.routes_lab.load_manifest().get(strategy_id)
+        if entry:
+            res = rr._latest_estudio(
+                rr.clave_de(strategy_id, entry["instrument"]))
+            reco = (res or {}).get("recomendacion")
+            if reco:
+                deriva_riesgo = rr.deriva_estudio(
+                    (profile.pipeline_config_json or {}) if profile else {},
+                    rr._activacion_json(reco), (res or {}).get("_fecha"))
+    except Exception:
+        deriva_riesgo = None
+
     return await render(
         request, "strategy_detail.html",
         {
@@ -383,6 +442,7 @@ async def strategy_detail(
             "decisions": decisions, "webhook_url": webhook_url,
             "token_hashed": token_hashed,
             "tp_env_enabled": app_settings.TRADERSPOST_ENABLED,
+            "deriva_riesgo": deriva_riesgo,
             "messages": flash_messages(request),
         }, db=db,
     )
