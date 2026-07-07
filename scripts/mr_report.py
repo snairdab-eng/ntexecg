@@ -527,11 +527,20 @@ def render_md(res: dict) -> str:
             L.append("Sin trades rojos a esta cuenta — el crudo no tiene "
                      "pérdidas desastrosas.")
         L.append("")
-        tp_txt = ("L {}× / S {}×ATR".format(
-            el["tp_por_lado_atr"].get("long"),
-            el["tp_por_lado_atr"].get("short"))
-            if el["tp_por_lado_atr"] else "—")
+        tp_txt = ("L {}× / S {}×ATR (nominal, por encima del p99 de "
+                  "cierres de LuxAlgo — se toca rara vez)".format(
+                      el["tp_por_lado_atr"].get("long"),
+                      el["tp_por_lado_atr"].get("short"))
+                  if el["tp_por_lado_atr"] else "—")
+        esc = el.get("escalera") or {}
+        piernas = esc.get("piernas") or []
+        esc_txt = (" + ".join(f"{p['micros']} micros @ {p['depth_atr']:g}×ATR"
+                              for p in piernas)
+                   if (len(piernas) > 1 or any(p["depth_atr"] > 0
+                                               for p in piernas))
+                   else "entrada única a la señal")
         L.append(f"**Combinación elegida (supervivencia > net):** "
+                 f"escalera {esc_txt} · "
                  f"SL {el['sl_atr'] if el['sl_atr'] else '—'}×ATR · "
                  f"backstop {_usd(el['backstop_usd']) if el['backstop_usd'] else '—'} · "
                  f"TP {tp_txt} · lado {el['lado'] or 'ambos'} — "

@@ -289,37 +289,28 @@
 
     <!-- ══════ 5) DETALLES — debajo de las tarjetas, cada uno bajo su bloque ══════ -->
 
-    <!-- Recomendación del estudio VALIDADO (palancas + JSON de activación) -->
+    <!-- Recomendación del estudio VALIDADO (palancas) -->
     {% if estudio.reco %}
-    <div class="bg-gray-900 border border-gray-800 rounded p-4 grid md:grid-cols-2 gap-4">
-        <div class="space-y-2 text-sm">
-            <div class="font-semibold text-gray-200">Recomendación (validada OOS) — {{ estudio.reco.config }}</div>
-            <ul class="text-xs text-gray-300 space-y-1.5">
-                {% if estudio.backstop_fmt %}
-                <li>🛑 <b>SL / backstop:</b> {{ estudio.backstop_fmt }} — stop de <b>precio fijo</b> desde la señal (no ×ATR).</li>
-                {% endif %}
-                <li>🪜 <b>Escalera:</b>
-                    {% for p in estudio.reco.escalera.piernas %}{{ p.micros }} MES @ {{ p.depth_atr }}×ATR{{ ' + ' if not loop.last }}{% endfor %}
-                    (anclada a la señal, total {{ estudio.reco.escalera.total_micros }} micros = 1 mini).</li>
-                <li>🎯 <b>TP:</b> nominal L {{ estudio.reco.tp_nominal_atr.long }}× / S {{ estudio.reco.tp_nominal_atr.short }}×ATR — por encima del p99 del cierre; <b>que cierre LuxAlgo</b> (solo satisface TradersPost).</li>
-                <li>↔ <b>Lado:</b> {{ estudio.ls }} — <code>short_size_factor</code> es afinable del operador (no lo fija el estudio).</li>
-                {% if estudio.reco.cancel_after_seconds %}
-                <li>⏱ <b>cancel_after coherente:</b> {{ estudio.reco.cancel_after_seconds }}s (p90 del toque de la pierna más profunda; máx duro TradersPost 3600s).</li>
-                {% endif %}
-                <li>📐 <b>Sizing:</b> tamaño fijo, sin equity.</li>
-                <li>✅ <b>Confianza:</b> PF OOS <b>{{ estudio.reco.confianza_oos.pf_out }}</b> (Δ{{ estudio.reco.confianza_oos.delta_pf_out }}) · {{ estudio.reco.confianza_oos.veredicto }}.</li>
-            </ul>
-            {% if link_vivo %}
-            <a href="{{ link_vivo }}" class="inline-block text-xs px-2 py-1 rounded bg-indigo-800 hover:bg-indigo-700 text-white">⚙ afinar/aplicar en la config viva →</a>
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-2 text-sm">
+        <div class="font-semibold text-gray-200">Recomendación (validada OOS) — {{ estudio.reco.config }}</div>
+        <ul class="text-xs text-gray-300 space-y-1.5">
+            {% if estudio.backstop_fmt %}
+            <li>🛑 <b>SL / backstop:</b> {{ estudio.backstop_fmt }} — stop de <b>precio fijo</b> desde la señal (no ×ATR).</li>
             {% endif %}
-        </div>
-        <div class="space-y-1">
-            <div class="flex items-center justify-between">
-                <div class="text-xs text-gray-500">Para el <code>pipeline_config_json</code> de la estrategia (merge, no reemplazo) — aplicar es un paso aparte:</div>
-                <button @click="copiar()" class="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200" x-text="copiado ? '✓ copiado' : 'copiar'"></button>
-            </div>
-            <pre id="activacion-json" class="bg-gray-950 rounded p-3 text-xs text-emerald-200 overflow-auto max-h-80">{{ estudio.activacion }}</pre>
-        </div>
+            <li>🪜 <b>Escalera:</b>
+                {% for p in estudio.reco.escalera.piernas %}{{ p.micros }} MES @ {{ p.depth_atr }}×ATR{{ ' + ' if not loop.last }}{% endfor %}
+                (anclada a la señal, total {{ estudio.reco.escalera.total_micros }} micros = 1 mini).</li>
+            <li>🎯 <b>TP:</b> nominal L {{ estudio.reco.tp_nominal_atr.long }}× / S {{ estudio.reco.tp_nominal_atr.short }}×ATR — por encima del p99 de cierres de LuxAlgo (bracket que exige TradersPost; se toca rara vez).</li>
+            <li>↔ <b>Lado:</b> {{ estudio.ls }} — <code>short_size_factor</code> es afinable del operador (no lo fija el estudio).</li>
+            {% if estudio.reco.cancel_after_seconds %}
+            <li>⏱ <b>cancel_after coherente:</b> {{ estudio.reco.cancel_after_seconds }}s (p90 del toque de la pierna más profunda; máx duro TradersPost 3600s).</li>
+            {% endif %}
+            <li>📐 <b>Sizing:</b> tamaño fijo, sin equity.</li>
+            <li>✅ <b>Confianza:</b> PF OOS <b>{{ estudio.reco.confianza_oos.pf_out }}</b> (Δ{{ estudio.reco.confianza_oos.delta_pf_out }}) · {{ estudio.reco.confianza_oos.veredicto }}.</li>
+        </ul>
+        {% if link_vivo %}
+        <a href="{{ link_vivo }}" class="inline-block text-xs px-2 py-1 rounded bg-indigo-800 hover:bg-indigo-700 text-white">⚙ afinar/aplicar en la config viva →</a>
+        {% endif %}
     </div>
     {% endif %}
 
@@ -353,6 +344,39 @@
             </div>
         </div>
         <div class="text-xs text-gray-500">{{ p.nota_supervivencia }}. Aplicar sigue siendo un paso aparte (config de la estrategia).</div>
+    </div>
+    {% endif %}
+
+    <!-- ══ R-obs-5: CONFIGURACIÓN A APLICAR — lo que el operador pone en
+         TradersPost (resumen accionable + JSON de activación al lado) ══ -->
+    {% if estudio.aplicar %}
+    <div class="bg-gray-900 border border-emerald-900 rounded p-4 grid md:grid-cols-2 gap-4">
+        <div class="space-y-2 text-sm">
+            <div class="font-semibold text-emerald-300">Configuración a aplicar — <span class="font-mono text-gray-200">{{ key }}</span></div>
+            {% if estudio.aplicar.catalogo_incompleto %}
+            <div class="bg-amber-900/30 border border-amber-700 rounded p-2 text-xs text-amber-200">
+                ⚠ <b>Catálogo incompleto</b> — este instrumento no tiene <code>tick_size</code>/<code>tick_value</code> en el Symbol Mapper: se muestran solo los $, no la unidad natural. Complétalo en la pestaña Symbol Mapper.
+            </div>
+            {% endif %}
+            <table class="w-full text-xs">
+                <tbody>
+                {% for f in estudio.aplicar.filas %}
+                <tr class="border-b border-gray-800 last:border-0">
+                    <td class="py-1.5 pr-2 text-gray-500 whitespace-nowrap align-top">{{ f.campo }}</td>
+                    <td class="py-1.5 text-gray-200">{{ f.valor }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <div class="text-xs text-gray-500">Unidades del instrumento desde el <b>Symbol Mapper</b> (fuente única). Aplicar es un paso aparte — nada se toca en vivo desde aquí.</div>
+        </div>
+        <div class="space-y-1">
+            <div class="flex items-center justify-between">
+                <div class="text-xs text-gray-500">Para el <code>pipeline_config_json</code> de la estrategia (merge, no reemplazo):</div>
+                <button @click="copiar()" class="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200" x-text="copiado ? '✓ copiado' : 'copiar'"></button>
+            </div>
+            <pre id="activacion-json" class="bg-gray-950 rounded p-3 text-xs text-emerald-200 overflow-auto max-h-80">{{ estudio.activacion }}</pre>
+        </div>
     </div>
     {% endif %}
 

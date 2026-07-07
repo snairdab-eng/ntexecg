@@ -122,14 +122,21 @@ PROTECCION = {
     "perdedores": [{"number": 46, "side": "short", "pnl_usd": -10162.5},
                    {"number": 12, "side": "long", "pnl_usd": -900.0}],
     "combos": [
-        {"sl_atr": None, "backstop_usd": None, "tp_por_lado_atr": None,
+        {"escalera": {"nombre": "entrada única a la señal",
+                      "piernas": [{"depth_atr": 0.0, "micros": 10}]},
+         "sl_atr": None, "backstop_usd": None,
+         "tp_por_lado_atr": {"long": 11.5, "short": 8.0},
          "lado": None, "n_palancas": 0, "participacion_pct": 100.0,
          "ganadoras_cortadas_pct": 0.0,
          "metricas": {"n": 120, "net_usd": 28175.0, "pf": 1.62,
                       "wr_pct": 79.2, "max_dd_usd": 11750.0,
                       "peor_trade_usd": -10162.5}},
-        {"sl_atr": 4.0, "backstop_usd": None, "tp_por_lado_atr": None,
-         "lado": None, "n_palancas": 1, "participacion_pct": 100.0,
+        {"escalera": {"nombre": "5+5 MES @ 0.25/0.5× + backstop",
+                      "piernas": [{"depth_atr": 0.25, "micros": 5},
+                                  {"depth_atr": 0.5, "micros": 5}]},
+         "sl_atr": 4.0, "backstop_usd": None,
+         "tp_por_lado_atr": {"long": 11.5, "short": 8.0},
+         "lado": None, "n_palancas": 2, "participacion_pct": 100.0,
          "ganadoras_cortadas_pct": 2.1,
          "metricas": {"n": 120, "net_usd": 26400.0, "pf": 1.7,
                       "wr_pct": 77.5, "max_dd_usd": 6100.0,
@@ -502,8 +509,54 @@ async def test_cuenta_editable_persiste_y_recomputa(client: AsyncClient,
     assert "200000" in html                           # persistió (input)
     assert "101.6% de la cuenta" not in html          # % relativo a cuenta
     assert "Sin trades rojos" in html
-    assert "sin SL ×ATR adicional" in html            # el crudo ya protege
+    assert "sin freno adicional" in html              # el crudo ya protege
     assert "5.1" in html                              # peor 10,162/200k
+
+
+@pytest.mark.asyncio
+async def test_config_a_aplicar_unidades_y_copy(client: AsyncClient,
+                                                dirs: Path, db) -> None:
+    """R-obs 3/4/5: tarjeta 'Configuración a aplicar' (bloqueos sí/no
+    explícitos, JSON al lado), unidades con fuente única en Symbol Mapper
+    (sin tick data → aviso 'catálogo incompleto', nunca un número
+    engañoso), y la copy nueva de las palancas de protección (freno
+    catastrófico, escalera REAL, TP por encima del p99)."""
+    _manifest_es(dirs)
+    est = json.loads(json.dumps(ESTUDIO))
+    est["proteccion"] = PROTECCION
+    est["meta"] = {"fecha": "2026-07-05", "usd_por_punto": 50.0,
+                   "activo": "ES"}
+    est["backstop"] = {"atr_mediana_pts": 14.7}
+    _seed_motor(dirs, estudio=est)
+
+    # SIN catálogo: solo $ + aviso — nunca ticks/pts inventados
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert r.status_code == 200
+    html = r.text
+    assert "Configuración a aplicar" in html
+    assert "catálogo incompleto" in html.lower()
+    assert "Bloquear largos" in html and "Bloquear cortos" in html
+    assert "por encima de los cierres de LuxAlgo" in html
+    assert "backstop_points" in html               # el JSON sigue al lado
+    # copy nueva de las palancas de protección (elegido = SL 4 + escalera)
+    assert "freno catastrófico" in html
+    assert "Sin stop adicional de $ fijo" in html
+    assert "se toca rara vez" in html
+    assert "5 micros @ 0.25×ATR" in html           # escalera REAL, no fijo
+    assert "la escalera no mejoró" not in html
+
+    # CON catálogo (Symbol Mapper, fuente única): unidad natural + $
+    from app.models.symbol_map import SymbolMap
+    db.add(SymbolMap(tv_symbol="MES", mapped_symbol="MESU2026",
+                     exchange="CME", contract_type="future",
+                     pine_script_config='"ticker": "MES"',
+                     tick_size=0.25, tick_value=1.25, active=True))
+    await db.commit()
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    html = r.text
+    assert "360 ticks" in html                     # backstop 90 pts / 0.25
+    assert "$4,500" in html                        # y el $ del estudio
+    assert "Catálogo incompleto" not in html
 
 
 @pytest.mark.asyncio

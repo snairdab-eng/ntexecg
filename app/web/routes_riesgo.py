@@ -42,7 +42,6 @@ from app.db.session import get_db
 from app.web.common import render
 import app.web.routes_lab as routes_lab                # manifest compartido
 from scripts.lab_manifest import MICRO_TO_LAB, csv_instrument
-from scripts.mr_report import fmt_stop                 # FX en ticks/$ (P1-2)
 from scripts.mr_sims import proteccion_para_cuenta     # selección PURA (v2)
 
 router = APIRouter()
@@ -182,11 +181,34 @@ def _comparacion(res: dict) -> list[dict] | None:
         reco["metricas"].get("participacion_pct"))
 
 
-def _proteccion_ctx(res: dict, cuenta: float) -> dict | None:
+def _fmt_unidad(pts, unidades: dict | None, ppt) -> str:
+    """R-obs-4 — unidad natural del instrumento + $, con FUENTE ÚNICA en
+    Symbol Mapper (symbol_maps.tick_value/tick_size — los mismos que ya
+    consume config_resolver; nada duplicado en la estrategia).
+
+    Regla de la referencia: FX (tick_size chico) o $/punto enorme → ticks,
+    no puntos (el yen en 'puntos' es ilegible). Sin tick data en el catálogo
+    → SOLO el $ (nunca un número engañoso) + aviso de catálogo incompleto."""
+    if pts is None:
+        return "—"
+    usd = round(pts * ppt) if ppt else None
+    usd_txt = f"${usd:,.0f}" if usd is not None else "—"
+    ts = (unidades or {}).get("tick_size")
+    if not ts:
+        return f"{usd_txt} (⚠ catálogo incompleto — sin tick_size/" \
+               f"tick_value en Symbol Mapper)"
+    if ts < 0.01 or (ppt or 0) >= 500:          # FX / $-por-punto enorme
+        return f"{round(pts / ts):,} ticks = {usd_txt}"
+    return f"{pts:g} pts = {round(pts / ts):,} ticks = {usd_txt}"
+
+
+def _proteccion_ctx(res: dict, cuenta: float,
+                    unidades: dict | None = None) -> dict | None:
     """Estudio 2 (protección de cuenta, in-sample): selección PURA por la
     cuenta editable sobre los combos que el motor YA persistió + las mismas
-    6 tarjetas KPI y las mismas palancas (SL, TP, escalera, lado) que el
-    estudio validado — espejo campo por campo."""
+    6 tarjetas KPI y las mismas palancas (SL, escalera, TP, lado) que el
+    estudio validado — espejo campo por campo (R-obs-1: mismas palancas,
+    mismas métricas; solo cambia split/gate)."""
     prot = res.get("proteccion")
     if not prot or not prot.get("combos"):
         return None
@@ -194,38 +216,73 @@ def _proteccion_ctx(res: dict, cuenta: float) -> dict | None:
     pc = proteccion_para_cuenta(prot, cuenta, b_t)
     el = pc["elegido"]
     m = el["metricas"]
-    activo = (res.get("meta") or {}).get("activo")
     ppt = (res.get("meta") or {}).get("usd_por_punto")
+    atr_med = prot.get("atr_mediana_pts")
 
+    def unidad_atr(x_atr):
+        if x_atr is None or not atr_med:
+            return None
+        return _fmt_unidad(x_atr * atr_med, unidades, ppt)
+
+    # 🛑 SL — copy R-obs-3: freno catastrófico, sin decir "backstop" en el
+    # título ni cerrar con "sin backstop"
     if el["sl_atr"]:
-        sl_txt = (f"SL {el['sl_atr']:g}×ATR — respeta el suelo del MAE de "
-                  f"las ganadoras (p95 {prot['suelo_atr']}×ATR: deja "
-                  f"respirar, capa el desastre)")
+        sl_txt = (f"SL {el['sl_atr']:g}×ATR — freno catastrófico anclado a "
+                  f"la señal (respeta el suelo del MAE de las ganadoras, "
+                  f"p95 {prot['suelo_atr']}×ATR; capa el desastre sin sacar "
+                  f"ganadores)")
+        u = unidad_atr(el["sl_atr"])
+        if u:
+            sl_txt += f" · ≈ {u} con el ATR mediano"
+        if el["backstop_usd"]:
+            sl_txt += (f" + stop de $ fijo "
+                       f"{_fmt_unidad(el['backstop_usd'] / ppt if ppt else None, unidades, ppt)}")
+        else:
+            sl_txt += ". Sin stop adicional de $ fijo"
+    elif el["backstop_usd"]:
+        b_pts = el["backstop_usd"] / ppt if ppt else None
+        sl_txt = (f"stop de PRECIO FIJO desde la señal: "
+                  f"{_fmt_unidad(b_pts, unidades, ppt)} — capa el desastre; "
+                  f"sin SL ×ATR adicional")
     else:
-        sl_txt = "sin SL ×ATR adicional"
-    if el["backstop_usd"]:
-        bk = (fmt_stop(activo, el["backstop_usd"] / ppt, el["backstop_usd"])
-              if activo and ppt else f"${el['backstop_usd']:,.0f}/mini")
-        sl_txt += f" · backstop {bk}"
+        sl_txt = "sin freno adicional — el crudo ya protege a esta cuenta"
+
+    # 🪜 Escalera — la recomendación REAL (niveles + cantidad), ya no un
+    # "sin escalera" fijo
+    piernas = (el.get("escalera") or {}).get("piernas") or []
+    con_escalera = (len(piernas) > 1
+                    or any(p["depth_atr"] > 0 for p in piernas))
+    if con_escalera:
+        esc_txt = " + ".join(
+            f"{p['micros']} micros @ {p['depth_atr']:g}×ATR"
+            + (f" (≈ {unidad_atr(p['depth_atr'])})"
+               if p["depth_atr"] > 0 and unidad_atr(p["depth_atr"]) else "")
+            for p in piernas) + " — anclada a la señal"
     else:
-        sl_txt += " · sin backstop"
+        esc_txt = ("entrada única a la señal — la escalera no mejoró la "
+                   "supervivencia a esta cuenta")
+
     tp = el["tp_por_lado_atr"]
-    tp_txt = (f"TP nominal L {tp.get('long')}× / S {tp.get('short')}×ATR "
-              f"(que cierre LuxAlgo)" if tp else
-              "sin TP — que cierre LuxAlgo")
+    if tp:
+        tp_txt = (f"TP nominal L {tp.get('long')}× / S {tp.get('short')}×ATR "
+                  f"— por encima del p99 de cierres de LuxAlgo (bracket que "
+                  f"exige TradersPost; se toca rara vez)")
+    else:
+        tp_txt = ("corrida vieja sin TP nominal — recalcula (el TP nominal "
+                  "va siempre)")
     if el["lado"]:
         etq = {"long": "largos", "short": "cortos"}[el["lado"]]
-        lado_txt = f"solo {etq} — el otro lado guarda el desastre"
+        otro = {"long": "cortos", "short": "largos"}[el["lado"]]
+        lado_txt = (f"solo {etq} — bloquear {otro}: el lado eliminado "
+                    f"guarda el desastre")
         if prot.get("lado_muestra_chica"):
             lado_txt += (f" (muestra chica: {prot.get('lado_n_malo')} "
                          f"trades en el lado eliminado — valida en demo)")
     else:
-        lado_txt = "ambos lados"
+        lado_txt = "ambos lados operan (no bloquear ninguno)"
     palancas = [
-        {"icon": "🛑", "titulo": "SL / backstop", "texto": sl_txt},
-        {"icon": "🪜", "titulo": "Escalera",
-         "texto": ("sin escalera — entrada única a la señal (1 mini, "
-                   "comparable 1:1 con el crudo)")},
+        {"icon": "🛑", "titulo": "SL", "texto": sl_txt},
+        {"icon": "🪜", "titulo": "Escalera", "texto": esc_txt},
         {"icon": "🎯", "titulo": "TP", "texto": tp_txt},
         {"icon": "↔", "titulo": "Lado", "texto": lado_txt},
     ]
@@ -268,6 +325,70 @@ def _activacion_json(reco: dict) -> dict:
             "max_micro_contracts": esc.get("total_micros", 10),
         }
     return out
+
+
+def _aplicar_ctx(res: dict, unidades: dict | None) -> dict | None:
+    """R-obs-5 — tarjeta "Configuración a aplicar": el resumen ACCIONABLE
+    de lo que el operador configura en TradersPost, desde la recomendación
+    VALIDADA (la que se aplica; la protección es para decidir). Cada valor
+    en ×ATR + unidad natural del instrumento + $ (Symbol Mapper)."""
+    reco = res.get("recomendacion")
+    if not reco:
+        return None
+    ppt = (res.get("meta") or {}).get("usd_por_punto")
+    atr_med = (res.get("backstop") or {}).get("atr_mediana_pts")
+    gl = (res.get("gestion_lado") or {}).get("recomendacion")
+
+    def unidad_atr(x_atr):
+        if x_atr is None or not atr_med:
+            return "—"
+        return _fmt_unidad(x_atr * atr_med, unidades, ppt)
+
+    filas: list[dict] = []
+    if reco.get("backstop"):
+        b = reco["backstop"]
+        filas.append({
+            "campo": "SL / backstop (stop de precio fijo)",
+            "valor": (f"{_fmt_unidad(b['pts'], unidades, ppt)} desde la "
+                      f"señal (${b['usd_por_micro']:,.0f}/micro)"),
+        })
+    tp = reco.get("tp_nominal_atr") or {}
+    filas.append({
+        "campo": "TP nominal (por lado)",
+        "valor": (f"L {tp.get('long')}×ATR ≈ {unidad_atr(tp.get('long'))} · "
+                  f"S {tp.get('short')}×ATR ≈ {unidad_atr(tp.get('short'))} "
+                  f"— por encima de los cierres de LuxAlgo (se toca rara "
+                  f"vez)"),
+    })
+    piernas = sorted((reco.get("escalera") or {}).get("piernas") or [],
+                     key=lambda p: p["depth_atr"])
+    if piernas:
+        filas.append({
+            "campo": "Escalera (niveles ATR + cantidad)",
+            "valor": " + ".join(
+                f"{p['micros']} micros @ {p['depth_atr']:g}×ATR"
+                + (f" (≈ {unidad_atr(p['depth_atr'])})"
+                   if p["depth_atr"] > 0 else " (a mercado)")
+                for p in piernas),
+        })
+    # bloqueo por lado, sí/no EXPLÍCITO (de la gestión por lado P1b)
+    bloquear = gl["lado_malo"] if (gl and gl.get("accion") == "cortar") else None
+    filas.append({"campo": "Bloquear largos",
+                  "valor": "SÍ — gestión por lado (cortar)"
+                  if bloquear == "long" else "no"})
+    filas.append({"campo": "Bloquear cortos",
+                  "valor": "SÍ — gestión por lado (cortar)"
+                  if bloquear == "short" else "no"})
+    if reco.get("cancel_after_seconds"):
+        filas.append({
+            "campo": "cancel_after (entrada límite)",
+            "valor": f"{reco['cancel_after_seconds']}s "
+                     f"(entry_reserve_timeout_seconds)",
+        })
+    return {
+        "filas": filas,
+        "catalogo_incompleto": not (unidades or {}).get("tick_size"),
+    }
 
 
 def _motivo_sin_reco(res: dict) -> dict:
@@ -314,7 +435,8 @@ def _motivo_sin_reco(res: dict) -> dict:
     }
 
 
-def _estudio_ctx(clave: str, cuenta: float = CUENTA_DEFAULT) -> dict | None:
+def _estudio_ctx(clave: str, cuenta: float = CUENTA_DEFAULT,
+                 unidades: dict | None = None) -> dict | None:
     res = _latest_estudio(clave)
     if res is None:
         return None
@@ -323,7 +445,6 @@ def _estudio_ctx(clave: str, cuenta: float = CUENTA_DEFAULT) -> dict | None:
     configs = res.get("configs") or []
     heat = _latest_run_file(clave, "heatmap_*.png")
     md = _latest_run_file(clave, "Riesgo_*.md")
-    activo = (res.get("meta") or {}).get("activo") or clave.split("_")[0]
     return {
         "fecha": res.get("_fecha"),
         "base": res["linea_base"]["total"],
@@ -335,14 +456,19 @@ def _estudio_ctx(clave: str, cuenta: float = CUENTA_DEFAULT) -> dict | None:
         "part_reco": ((reco or {}).get("metricas") or {}
                       ).get("participacion_pct"),
         # A — protección de cuenta (in-sample; selección por la cuenta)
-        "proteccion": _proteccion_ctx(res, cuenta),
+        "proteccion": _proteccion_ctx(res, cuenta, unidades),
+        # R-obs-5 — tarjeta "Configuración a aplicar" (unidades del Symbol
+        # Mapper — fuente única; aviso si el catálogo está incompleto)
+        "aplicar": _aplicar_ctx(res, unidades),
         "reco": reco,
         "sin_reco": None if reco else _motivo_sin_reco(res),
-        # P1-2: backstop legible por instrumento (FX en ticks/$ — display,
-        # el cálculo del stop en L5 no cambia)
-        "backstop_fmt": (fmt_stop(activo, reco["backstop"]["pts"],
-                                  reco["backstop"]["usd_por_mini"])
-                         if reco and reco.get("backstop") else None),
+        # P1-2/R-obs-4: backstop legible por instrumento — unidad natural
+        # desde el Symbol Mapper (display; el cálculo del stop en L5 no
+        # cambia). Sin tick data → $ + aviso de catálogo incompleto.
+        "backstop_fmt": (_fmt_unidad(
+            reco["backstop"]["pts"], unidades,
+            (res.get("meta") or {}).get("usd_por_punto"))
+            if reco and reco.get("backstop") else None),
         "activacion": (json.dumps(_activacion_json(reco), indent=2,
                                   ensure_ascii=False) if reco else None),
         "corte": {"cancel_after_s": corte.get("cancel_after_s"),
@@ -412,13 +538,34 @@ async def riesgo_page(request: Request, strategy: str | None = None,
         instrument = entry["instrument"]
         clave = clave_de(key, instrument)
         motor = _motor_manifest(clave)
+        # R-obs-4 — unidades del instrumento con FUENTE ÚNICA en el Symbol
+        # Mapper (tick_size/tick_value del catálogo, los mismos que consume
+        # config_resolver): el micro (MES) y el mini (ES) comparten tick_size.
+        unidades = None
+        try:
+            from app.models.symbol_map import SymbolMap
+            rows = (await db.execute(select(SymbolMap))).scalars().all()
+            for sm in rows:
+                tv = (sm.tv_symbol or "").strip().upper()
+                if (MICRO_TO_LAB.get(tv) or tv) == instrument.upper() \
+                        and sm.tick_size:
+                    unidades = {
+                        "tick_size": float(sm.tick_size),
+                        "tick_value": (float(sm.tick_value)
+                                       if sm.tick_value is not None
+                                       else None),
+                        "tv_symbol": sm.tv_symbol,
+                    }
+                    break
+        except Exception:
+            pass
         ctx.update({
             "manifest_entry": {"csv": Path(entry["csv"]).name,
                                "instrument": instrument,
                                "confirmed": bool(entry.get("confirmed"))},
             "clave": clave,
             "motor": motor,
-            "estudio": _estudio_ctx(clave, ctx["cuenta"]),
+            "estudio": _estudio_ctx(clave, ctx["cuenta"], unidades),
             "job": (JOBS.get(clave) or {}).get("status"),
             "link_vivo": (f"/ui/strategies/{key}"
                           if key in vivas_ids else None),

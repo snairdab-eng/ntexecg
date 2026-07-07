@@ -557,6 +557,15 @@ def fills_cutoff_study(sts: list[SimTrade],
 TP_META_GRID_L = (4.0, 4.5, 5.0, 5.5, 6.0, 6.5)
 TP_META_GRID_S = (0.5, 1.0, 1.5, 2.0)
 
+# TP nominal SIEMPRE (R-obs-2): TradersPost exige bracket válido en toda
+# entrada; el TP nominal debe existir por lado AUNQUE falte muestra para un
+# p99 fiable. Con menos de MIN_GANADORAS_P99 ganadoras en el lado, cae a un
+# default ANCHO documentado (15×ATR — muy por encima de cualquier cierre
+# típico de LuxAlgo: casi nunca dispara, que cierre LuxAlgo). NUNCA cae al
+# TP ajustado k×ATR (ese estrangula al motor — descartado por diseño).
+TP_NOMINAL_FALLBACK_ATR = 15.0
+MIN_GANADORAS_P99 = 10
+
 
 def _ceil_half(x: float) -> float:
     return math.ceil(x * 2.0) / 2.0
@@ -581,20 +590,24 @@ def tp_nominal_study(sts: list[SimTrade], ppt: float,
         del_lado = [st for st in sts if st.side == lado]
         ganadoras = [st for st in del_lado if st.native_pnl_usd > 0]
         exc = sorted(st.native_pnl_pts(ppt) / st.atr_pts for st in ganadoras)
-        if exc:
-            p95, p99 = pctl(exc, 0.95), pctl(exc, 0.99)
+        fallback = len(exc) < MIN_GANADORAS_P99
+        p95 = round(pctl(exc, 0.95), 4) if exc else None
+        p99 = round(pctl(exc, 0.99), 4) if exc else None
+        if not fallback:
             tp = _ceil_half(p99)
             if tp <= p99:
                 tp += 0.5                  # estrictamente POR ENCIMA del p99
-            tp_nominal[lado] = tp
-            dispararia = sum(1 for st in del_lado if st.mfe_atr >= tp)
         else:
-            p95 = p99 = None
-            dispararia = 0
+            # R-obs-2: muestra chica → default ANCHO documentado, nunca el
+            # TP ajustado k×ATR. El TP nominal SIEMPRE existe (bracket).
+            tp = TP_NOMINAL_FALLBACK_ATR
+        tp_nominal[lado] = tp
+        dispararia = sum(1 for st in del_lado if st.mfe_atr >= tp)
         giveback = sum(st.mfe_pts * ppt - st.native_pnl_usd
                        for st in ganadoras)
         por_lado[lado] = {
             "n_ganadoras": len(ganadoras),
+            "tp_nominal_fallback": fallback,
             "cierre_atr": {
                 "p50": round(pctl(exc, 0.5), 2) if exc else None,
                 "p90": round(pctl(exc, 0.9), 2) if exc else None,
@@ -791,12 +804,15 @@ ETIQUETA_PROTECCION = ("in-sample, sin validar OOS — para proteger la "
 
 
 def _eval_proteccion(sts: list[SimTrade], ppt: float, hc: HaircutCfg,
+                     esc_nombre: str, legs: tuple,
                      sl_atr: float | None, b_usd: float | None,
-                     tp_by_side: dict | None, lado: str | None) -> dict:
-    """Un combo de protección: entrada ÚNICA a la señal (1 mini, como el
-    CRUDO — comparable 1:1), con SL ×ATR y/o backstop $ (manda el más
-    cercano), TP nominal opcional y filtro de lado opcional. Stop manda
-    sobre TP (conservador, mismo criterio que la escalera)."""
+                     tp_by_side: dict | None, lado: str | None,
+                     cancel_after_s: float | None = None) -> dict:
+    """Un combo de protección — el MISMO modelo de la escalera del estudio
+    validado (piernas ancladas a la señal, fills por MAE con corte de
+    cancel_after, stop manda sobre TP), con el stop generalizado: SL ×ATR
+    (distancia por trade) y/o backstop $ fijo — manda el más cercano.
+    Métricas completas de metrics_usd sobre TODA la muestra (sin split)."""
     b_pts = b_usd / ppt if b_usd else None
     pnls: list[float] = []
     participados: list[float] = []
@@ -808,31 +824,51 @@ def _eval_proteccion(sts: list[SimTrade], ppt: float, hc: HaircutCfg,
         stops = [x for x in ((sl_atr * st.atr_pts if sl_atr else None),
                              b_pts) if x is not None]
         stop_pts = min(stops) if stops else None
-        if stop_pts is not None and st.mae_pts >= stop_pts:
-            pnl = -(stop_pts + hc.gap_pts) * ppt - hc.comision_rt_usd
-            if st.native_pnl_usd > 0:
+        stopped = stop_pts is not None and st.mae_pts >= stop_pts
+        tp_atr = (tp_by_side or {}).get(st.side)
+        tp_hit = (not stopped and tp_atr is not None
+                  and st.mfe_atr >= tp_atr)
+        acc = fw = 0.0
+        for d, w in legs:
+            if not leg_filled(st, d, cancel_after_s)[0]:
+                continue
+            fw += w
+            if stopped:
+                pnl_pts = -(stop_pts + hc.gap_pts - d * st.atr_pts)
+            elif tp_hit:
+                pnl_pts = (tp_atr + d) * st.atr_pts
+            else:
+                pnl_pts = st.native_pnl_pts(ppt) + d * st.atr_pts
+            acc += w * (pnl_pts - hc.slip_pts)
+        if fw > 0:
+            usd = acc * ppt - hc.comision_rt_usd * fw
+            pnls.append(usd)
+            participados.append(usd)
+            if stopped and st.native_pnl_usd > 0:
                 cortadas += 1              # ganadora que el stop mató
         else:
-            tp_atr = (tp_by_side or {}).get(st.side)
-            if tp_atr is not None and st.mfe_atr >= tp_atr:
-                pnl = tp_atr * st.atr_pts * ppt - hc.comision_rt_usd
-            else:
-                pnl = st.native_pnl_usd - hc.comision_rt_usd
-        pnls.append(pnl)
-        participados.append(pnl)
+            pnls.append(0.0)               # ninguna pierna llenó
     m = metrics_usd(pnls)
     if participados:
         m["wr_pct"] = round(
             100 * sum(1 for p in participados if p > 0) / len(participados), 1)
     ganadoras = sum(1 for st in sts if st.native_pnl_usd > 0
                     and (not lado or st.side == lado))
+    es_escalera = len(legs) > 1 or any(d > 0 for d, _ in legs)
     return {
+        "escalera": {
+            "nombre": esc_nombre,
+            "piernas": [{"depth_atr": d, "micros": round(w * TOTAL_MICROS)}
+                        for d, w in legs],
+        },
         "sl_atr": sl_atr,
         "backstop_usd": b_usd,
         "tp_por_lado_atr": tp_by_side,
         "lado": lado,
-        "n_palancas": sum(x is not None
-                          for x in (sl_atr, b_usd, tp_by_side, lado)),
+        # el TP nominal NO cuenta como palanca: es el bracket obligatorio
+        # (siempre presente, casi nunca dispara), no una optimización
+        "n_palancas": (int(es_escalera) + int(sl_atr is not None)
+                       + int(b_usd is not None) + int(lado is not None)),
         "participacion_pct": (round(100 * len(participados) / len(sts), 1)
                               if sts else None),
         "ganadoras_cortadas_pct": (round(100 * cortadas / ganadoras, 1)
@@ -841,24 +877,37 @@ def _eval_proteccion(sts: list[SimTrade], ppt: float, hc: HaircutCfg,
     }
 
 
+# Escaleras por defecto del estudio de protección (sin run_studies, p. ej.
+# tests unitarios): entrada única (el espejo del crudo) + la balanceada.
+PROTECCION_ESCALERAS_BASE = (("entrada única a la señal", SENAL),
+                             ("balanceada", BALANCEADA))
+
+
 def proteccion_study(sts: list[SimTrade], ppt: float,
                      hc: HaircutCfg | None = None,
                      suelo_atr: float | None = None,
                      tp_nominal: dict | None = None,
-                     gestion_lado: dict | None = None) -> dict:
-    """Barrido IN-SAMPLE de las 4 palancas (SL ×ATR, backstop $, TP nominal,
-    lado) para PROTEGER LA CUENTA: capar los trades desastrosos manteniendo
-    la máxima participación. SIN gate OOS a propósito — convive con el
-    estudio validado, no lo reemplaza.
+                     gestion_lado: dict | None = None,
+                     escaleras: list[tuple[str, tuple]] | None = None,
+                     cancel_after_s: float | None = None) -> dict:
+    """Estudio de PROTECCIÓN DE CUENTA — espejo COMPLETO del estudio
+    validado, sobre TODA la muestra (R-obs-1): las MISMAS palancas
+    (SL ×ATR, backstop $ fijo, escalera niveles+cantidad, TP nominal por
+    lado, gestión por lado largos/cortos) y las MISMAS métricas
+    (metrics_usd: PF, WR, expectancy, maxDD, net, peor, n + participación).
+    La ÚNICA diferencia: sin split OOS y sin gate — la selección es por
+    supervivencia > net (proteccion_para_cuenta, cuenta editable).
 
-    El suelo del SL (MAE p95 de las GANADORAS) filtra los candidatos: un
-    stop más ceñido que el retroceso típico de las ganadoras mata a las
-    recuperadoras — no protege, destruye. El lado solo entra como candidato
-    cuando la gestión por lado (P1b) disparó (no forzarla).
+    El suelo del SL (MAE p95 de las GANADORAS) filtra los frenos: un stop
+    más ceñido que el retroceso típico de las ganadoras mata recuperadoras.
+    El freno es UNO por combo (SL ×ATR o backstop $ — alternativas, no
+    apilados): la recomendación queda accionable. El lado se barre en ambos
+    sentidos (largos sí/no, cortos sí/no); el candidato de P1b solo aporta
+    el caveat de muestra. El TP nominal va SIEMPRE (bracket, no palanca).
 
-    La SELECCIÓN por tamaño de cuenta NO vive aquí: los combos se persisten
-    en $ absolutos y `proteccion_para_cuenta` (pura) elige al instante para
-    la cuenta editable de la pestaña — cero segundo cálculo."""
+    La SELECCIÓN por cuenta NO vive aquí: los combos se persisten en $
+    absolutos y `proteccion_para_cuenta` (pura) elige al instante para la
+    cuenta editable — cero segundo cálculo."""
     hc = hc or HaircutCfg()
     if not sts:
         return {"suelo_atr": None, "atr_mediana_pts": None,
@@ -877,13 +926,18 @@ def proteccion_study(sts: list[SimTrade], ppt: float,
     rec = (gestion_lado or {}).get("recomendacion")
     lado_cand = rec["lado_bueno"] if rec else None
 
+    esc_cands = list(escaleras or PROTECCION_ESCALERAS_BASE)
+    frenos: list[tuple[float | None, float | None]] = [(None, None)]
+    frenos += [(k, None) for k in sl_cands]
+    frenos += [(None, b) for b in bk_cands]
+
     combos: list[dict] = []
-    for sl in (None, *sl_cands):
-        for b in (None, *bk_cands):
-            for tp in ((None, tp_nominal) if tp_nominal else (None,)):
-                for lado in ((None, lado_cand) if lado_cand else (None,)):
-                    combos.append(_eval_proteccion(sts, ppt, hc,
-                                                   sl, b, tp, lado))
+    for nombre, legs in esc_cands:
+        for sl, b in frenos:
+            for lado in (None, "long", "short"):
+                combos.append(_eval_proteccion(
+                    sts, ppt, hc, nombre, legs, sl, b, tp_nominal, lado,
+                    cancel_after_s))
     perdedores = sorted(
         ({"number": st.number, "side": st.side,
           "pnl_usd": st.native_pnl_usd}
@@ -896,6 +950,7 @@ def proteccion_study(sts: list[SimTrade], ppt: float,
         "lado_muestra_chica": bool(rec and rec.get("muestra_chica")),
         "lado_n_malo": rec["n_lado_malo"] if rec else None,
         "tp_nominal_atr": tp_nominal,
+        "n_escaleras": len(esc_cands),
         "umbral_alarma_pct": ALARMA_PCT,
         "etiqueta": ETIQUETA_PROTECCION,
         "combos": combos,
@@ -1398,16 +1453,34 @@ def run_studies(sts: list[SimTrade], ppt: float,
     ls = ls_asymmetry(sts)
     # P1b — la 4ª palanca: gestión por lado, ESTRUCTURAL (no OOS)
     gestion_lado = side_management(sts, ls)
-    # v2 — Protección de cuenta (in-sample, SIN gate OOS; convive con el
-    # estudio validado). El suelo del SL viene del mae_floor (una fuente).
-    proteccion = proteccion_study(
-        sts, ppt, hc,
-        suelo_atr=mae_floor["ganadoras_mae_atr"]["p95"],
-        tp_nominal=tp_nominal, gestion_lado=gestion_lado)
     robustez = (robustez_study(
         sts, configs, ppt, hc, ca,
         corte_fills["tope_natural_atr"] if corte_fills else None)
         if configs else None)
+
+    # ── R-obs-1: Protección de cuenta = espejo COMPLETO del estudio
+    # validado sobre TODA la muestra. Las candidatas de escalera son las
+    # MISMAS que el walk-forward puso sobre la mesa (líderes + top score +
+    # referencias) + entrada única + balanceada — mismas palancas, mismas
+    # métricas; solo cambia split/gate (aquí decide supervivencia > net). ──
+    esc_cands: list[tuple[str, tuple]] = list(PROTECCION_ESCALERAS_BASE)
+    if robustez:
+        por_nombre = {c["nombre"]: c for c in configs}
+        vistas = {legs for _, legs in esc_cands}
+        for t in robustez["tabla"]:
+            c = por_nombre.get(t["nombre"])
+            if c is None or c["solo_lado"]:
+                continue
+            legs = tuple((l["depth_atr"], l["peso"]) for l in c["legs"])
+            if legs not in vistas:
+                vistas.add(legs)
+                esc_cands.append((c["nombre"], legs))
+    proteccion = proteccion_study(
+        sts, ppt, hc,
+        suelo_atr=mae_floor["ganadoras_mae_atr"]["p95"],
+        tp_nominal=tp_nominal, gestion_lado=gestion_lado,
+        escaleras=esc_cands, cancel_after_s=ca)
+
     recomendacion = None
     if robustez and robustez["elegido"]:
         el = robustez["elegido"]

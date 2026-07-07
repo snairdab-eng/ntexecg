@@ -149,19 +149,41 @@ def test_ladder_grid_conjunto():
 # ---------------------------------------------------------------------------
 
 def test_tp_nominal_por_encima_del_p99():
-    # ganadoras long cierran en 1..4 ×ATR (ATR 4 → pnl 4·k pts → $200·k)
+    # 12 ganadoras long cierran en 1..4 ×ATR (ATR 4 → pnl 4·k pts → $200·k)
+    # — muestra suficiente (≥ MIN_GANADORAS_P99) para el camino p99
     sts = [st(i, atr=4.0, mfe=4.0 * k + 2, pnl_usd=200.0 * k)
-           for i, k in enumerate([1, 2, 3, 4], start=1)]
-    sts.append(st(9, atr=4.0, mae=10.0, pnl_usd=-500.0))    # perdedor
+           for i, k in enumerate([1, 2, 3, 4] * 3, start=1)]
+    sts.append(st(99, atr=4.0, mae=10.0, pnl_usd=-500.0))   # perdedor
     r = tp_nominal_study(sts, PPT, HC0)
     lado = r["por_lado"]["long"]
     p99 = lado["cierre_atr"]["p99"]
     tp = lado["tp_nominal_atr"]
     assert tp > p99                        # estrictamente POR ENCIMA
-    assert tp == 4.0                       # p99≈3.97 → medio paso arriba
-    assert lado["n_ganadoras"] == 4
-    # en la mesa = Σ(MFE−salida) de ganadoras = Σ 2 pts·$50 = $400
-    assert lado["en_la_mesa_usd"] == pytest.approx(400.0)
+    assert tp == 4.5                       # p99=4.0 → medio paso arriba
+    assert lado["n_ganadoras"] == 12
+    assert lado["tp_nominal_fallback"] is False
+    # en la mesa = Σ(MFE−salida) de ganadoras = Σ 2 pts·$50 = $1,200
+    assert lado["en_la_mesa_usd"] == pytest.approx(1200.0)
+
+
+def test_tp_nominal_siempre_con_fallback_ancho():
+    """R-obs-2: el TP nominal SIEMPRE existe por lado (TradersPost exige
+    bracket). Con muestra chica (< 10 ganadoras) cae al default ANCHO
+    documentado (15×ATR) — nunca al TP ajustado k×ATR, nunca None."""
+    from scripts.mr_sims import TP_NOMINAL_FALLBACK_ATR
+
+    # long: 3 ganadoras (muestra chica) · short: CERO ganadoras
+    sts = [st(i, atr=4.0, mfe=4.0 * k + 2, pnl_usd=200.0 * k)
+           for i, k in enumerate([1, 2, 3], start=1)]
+    sts.append(st(9, side="short", atr=4.0, mae=10.0, pnl_usd=-500.0))
+    r = tp_nominal_study(sts, PPT, HC0)
+    tps = r["tp_nominal_atr"]
+    assert tps["long"] == TP_NOMINAL_FALLBACK_ATR
+    assert tps["short"] == TP_NOMINAL_FALLBACK_ATR
+    assert r["por_lado"]["long"]["tp_nominal_fallback"] is True
+    assert r["por_lado"]["short"]["tp_nominal_fallback"] is True
+    # el default es ANCHO de verdad: nadie lo toca en esta muestra
+    assert r["por_lado"]["long"]["tp_nominal_dispararia_n"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +376,12 @@ def test_proteccion_lado_cuando_sl_no_alcanza():
     assert pc["efecto"]["max_dd_usd"] == 0.0
 
 
-def test_proteccion_supervivencia_sobre_net():
-    """SUPERVIVENCIA > NET: si nada deja el peor trade ≤ umbral, se
-    recomienda IGUAL el combo que más se acerca — aunque sea net-negativo
-    (el costo queda a la vista)."""
+def test_proteccion_supervivencia_sobre_net_y_escalera():
+    """SUPERVIVENCIA > NET + la ESCALERA como palanca real (R-obs-1): la
+    entrada única con cualquier freno deja el peor trade en 16-20% de la
+    cuenta, pero la BALANCEADA + SL 8× promedia el precio de las piernas y
+    lo baja a 8.5% → protege. Y es net-NEGATIVA: se recomienda igual, con
+    el costo a la vista. Métricas completas del espejo presentes."""
     from scripts.mr_sims import proteccion_para_cuenta
 
     sts = [st(i, atr=4.0, mae=4.0, pnl_usd=300.0) for i in range(1, 11)]
@@ -369,13 +393,40 @@ def test_proteccion_supervivencia_sobre_net():
     assert prot["suelo_atr"] == pytest.approx(8.0)
     pc = proteccion_para_cuenta(prot, 10_000.0, crudo)
     el = pc["elegido"]
-    assert pc["protegido"] is False               # nada llega al 10%
-    assert el["sl_atr"] == pytest.approx(8.0)     # lo más cercano (16%)
+    assert pc["protegido"] is True                # la escalera rescata
+    assert el["escalera"]["nombre"] == "balanceada"
+    assert len(el["escalera"]["piernas"]) == 10   # niveles + cantidad
+    assert sum(p["micros"] for p in el["escalera"]["piernas"]) == 10
+    assert el["sl_atr"] == pytest.approx(8.0)     # freno en el suelo
+    assert pc["efecto"]["peor_pct_cuenta"] <= 10.0
     assert el["metricas"]["net_usd"] < 0          # net-negativo: se
     assert pc["efecto"]["costo_net_usd"] < 0      # recomienda igual
-    assert pc["efecto"]["peor_pct_cuenta"] < pc["crudo"]["peor_pct_cuenta"]
     assert "supervivencia > net" in pc["nota_supervivencia"]
-    assert "más se acerca" in pc["nota_supervivencia"]
+    # el set COMPLETO de métricas del espejo (las mismas de metrics_usd
+    # que usa el estudio validado)
+    for k in ("n", "ganadores", "pf", "wr_pct", "net_usd", "max_dd_usd",
+              "max_dd_pct_hwm", "peor_trade_usd", "promedio_usd",
+              "ganancia_bruta_usd", "perdida_bruta_usd"):
+        assert k in el["metricas"], k
+
+
+def test_proteccion_tp_nominal_en_todos_los_combos():
+    """R-obs-2: el TP nominal va SIEMPRE en los combos de protección
+    (bracket obligatorio, no palanca — no se cuenta en n_palancas)."""
+    from scripts.mr_sims import (metrics_usd, proteccion_para_cuenta,
+                                 proteccion_study)
+
+    sts = _sts_ym_sl()
+    tp = {"long": 15.0, "short": 15.0}
+    prot = proteccion_study(sts, PPT, HC0, tp_nominal=tp)
+    assert all(c["tp_por_lado_atr"] == tp for c in prot["combos"])
+    crudo = metrics_usd([s.native_pnl_usd for s in sts])
+    pc = proteccion_para_cuenta(prot, 10_000.0, crudo)
+    el = pc["elegido"]
+    assert el["tp_por_lado_atr"]["long"] == 15.0
+    assert el["tp_por_lado_atr"]["short"] == 15.0
+    # el combo "crudo espejo" (0 palancas) también lleva el bracket
+    assert min(c["n_palancas"] for c in prot["combos"]) == 0
 
 
 def test_proteccion_sl_respeta_suelo():
@@ -1012,11 +1063,21 @@ class TestESReal:
 
         _, res = corrida
         assert res["recomendacion"] is not None       # estudio 1 (validado)
+        # R-obs-2: TP nominal SIEMPRE por lado en la recomendación validada
+        tpn = res["recomendacion"]["tp_nominal_atr"]
+        assert tpn.get("long") is not None and tpn.get("short") is not None
         prot = res["proteccion"]                       # estudio 2 (cuenta)
         assert prot["combos"]
         suelo = prot["suelo_atr"]
         assert suelo is not None and suelo > 0
         assert all(c["sl_atr"] is None or c["sl_atr"] >= suelo
+                   for c in prot["combos"])
+        # R-obs-1: espejo completo — la escalera es palanca (candidatas del
+        # walk-forward + única + balanceada) y el TP va en TODOS los combos
+        assert prot["n_escaleras"] > 2
+        assert all("escalera" in c and c["escalera"]["piernas"]
+                   for c in prot["combos"])
+        assert all((c["tp_por_lado_atr"] or {}).get("long") is not None
                    for c in prot["combos"])
         # ES a $10k: el peor crudo (−$10,162) es ROJO y la protección
         # elegida lo recorta (aunque no llegue al umbral, mejora)

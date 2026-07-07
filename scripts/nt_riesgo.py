@@ -647,9 +647,16 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
         ef = pc["efecto"]
         print(f"\n▎PROTECCIÓN DE CUENTA (in-sample, cuenta $10,000 por "
               f"defecto — editable en la pestaña):")
+        esc_p = (el.get("escalera") or {}).get("piernas") or []
+        esc_txt = ("+".join(f"{p['micros']}@{p['depth_atr']:g}x"
+                            for p in esc_p)
+                   if (len(esc_p) > 1 or any(p["depth_atr"] > 0
+                                             for p in esc_p))
+                   else "única")
         print(f"  {pc['n_alarmas']} trade(s) ROJOS "
               f"(pérdida ≥{pc['umbral_alarma_pct']:.0f}% de la cuenta) · "
-              f"elegido: SL {el['sl_atr'] or '—'}×ATR · backstop "
+              f"elegido: escalera {esc_txt} · "
+              f"SL {el['sl_atr'] or '—'}×ATR · backstop "
               f"{_fmt_usd(el['backstop_usd'])} · "
               f"lado {el['lado'] or 'ambos'} · "
               f"TP {'sí' if el['tp_por_lado_atr'] else '—'}")
