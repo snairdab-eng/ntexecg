@@ -240,16 +240,24 @@ class NinjaTraderBridgeProvider(MarketDataProvider):
           - mtime is older than heartbeat_max_age seconds
         Never raises — bridge unavailability is a normal operational state.
         """
+        age = await self.heartbeat_age(symbol)
+        return age is not None and age <= self._max_age
+
+    async def heartbeat_age(self, symbol: str) -> float | None:
+        """Edad REAL del heartbeat: segundos desde el último export del bridge
+        para el símbolo. None si el archivo no existe o el bridge no está
+        montado. Nunca lanza — la inactividad del bridge es estado normal.
+        (is_active la compara contra heartbeat_max_age; el dashboard muestra
+        la edad tal cual para que el operador vea 'hace Xs'.)"""
         heartbeat = self._bridge_path / f"heartbeat_{symbol}.json"
         try:
             if not heartbeat.exists():
-                return False
-            age_seconds = (
+                return None
+            return (
                 datetime.now() - datetime.fromtimestamp(heartbeat.stat().st_mtime)
             ).total_seconds()
-            return age_seconds <= self._max_age
         except OSError:
-            return False
+            return None
 
     async def get_bars(
         self, symbol: str, timeframe: str, limit: int = 300
@@ -336,6 +344,14 @@ class MarketDataService:
 
     async def is_active(self, symbol: str) -> bool:
         return await self.provider.is_active(symbol)
+
+    async def heartbeat_age(self, symbol: str) -> float | None:
+        """Edad real del heartbeat en segundos, o None. Solo el bridge tiene
+        heartbeat; providers sin él (yfinance, datos retardados) → None."""
+        fn = getattr(self.provider, "heartbeat_age", None)
+        if fn is None:
+            return None
+        return await fn(symbol)
 
     async def get_bridge_status(self, symbols: list[str] | None = None) -> dict:
         """Return activity status per symbol for dashboard display.

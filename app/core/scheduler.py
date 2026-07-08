@@ -55,8 +55,11 @@ class HeartbeatMonitor:
 
                 # Probe each distinct DATA symbol once per cycle: micro and parent
                 # share bridge files (MES → ES), so we never hit the bridge twice
-                # for the same data symbol within a single cycle.
-                probe_cache: dict[str, tuple[bool, float | None]] = {}
+                # for the same data symbol within a single cycle. Each probe
+                # captures (active, ATR 5m, ATR 1h, heartbeat age).
+                probe_cache: dict[
+                    str, tuple[bool, float | None, float | None, float | None]
+                ] = {}
 
                 for sm in symbol_maps:
                     # Resolve which bridge symbol backs this tradeable symbol.
@@ -75,6 +78,7 @@ class HeartbeatMonitor:
                             active = False
 
                         atr_5m: float | None = None
+                        atr_1h: float | None = None
                         if active:
                             try:
                                 atr_5m = await self._svc.get_atr(data_symbol, "5m", 14)
@@ -84,10 +88,35 @@ class HeartbeatMonitor:
                                     data_symbol, exc,
                                 )
                                 atr_5m = None
+                            # ATR 1h — el bridge exporta bars_1h (MarketBarsUpdater
+                            # ya los persiste); misma lectura por ciclo.
+                            try:
+                                atr_1h = await self._svc.get_atr(data_symbol, "1h", 14)
+                            except Exception as exc:
+                                logger.error(
+                                    "heartbeat_atr1h_failed data_symbol={} error={}",
+                                    data_symbol, exc,
+                                )
+                                atr_1h = None
 
-                        probe_cache[data_symbol] = (active, atr_5m)
+                        # Edad REAL del heartbeat (aunque esté inactivo: explica
+                        # el 'hace Xs' que causó el inactivo). None si el provider
+                        # no tiene heartbeat o falta el archivo.
+                        hb_age: float | None = None
+                        hb_fn = getattr(self._svc, "heartbeat_age", None)
+                        if hb_fn is not None:
+                            try:
+                                hb_age = await hb_fn(data_symbol)
+                            except Exception as exc:
+                                logger.error(
+                                    "heartbeat_age_failed data_symbol={} error={}",
+                                    data_symbol, exc,
+                                )
+                                hb_age = None
 
-                    active, atr_5m = probe_cache[data_symbol]
+                        probe_cache[data_symbol] = (active, atr_5m, atr_1h, hb_age)
+
+                    active, atr_5m, atr_1h, hb_age = probe_cache[data_symbol]
 
                     # Persist status keyed by the TRADEABLE symbol (tv_symbol),
                     # not the data symbol — the operator monitors what they trade.
@@ -97,6 +126,10 @@ class HeartbeatMonitor:
                         provider=provider_name,
                         is_active=active,
                         last_atr_5m=atr_5m,
+                        last_atr_1h=atr_1h,
+                        heartbeat_age_seconds=(
+                            int(round(hb_age)) if hb_age is not None else None
+                        ),
                     )
 
                     if not active:

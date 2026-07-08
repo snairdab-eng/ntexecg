@@ -13,9 +13,12 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.web.units import fmt_atr
 
 _templates_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
+# fmt_atr disponible en todas las plantillas (tabla del bridge: FX en ticks).
+templates.env.globals["fmt_atr"] = fmt_atr
 
 
 async def base_context(request: Request, db: AsyncSession | None = None) -> dict:

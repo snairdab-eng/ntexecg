@@ -280,19 +280,62 @@ async def analytics_redirect(days: int = 14) -> RedirectResponse:
 # ---------------------------------------------------------------------------
 
 async def _bridge_rows(db: AsyncSession) -> list[dict]:
-    result = await db.execute(
+    """Una fila por símbolo de DATOS (el bridge sirve un feed por dato: micro y
+    padre comparten archivos), con badge de los tradeables que respalda. Colapsa
+    las filas duplicadas (16 tradeables → 8 feeds) y adjunta tick_size del Symbol
+    Mapper (fuente única) para expresar los ATR de FX en ticks, no en '0.00'."""
+    from app.models.symbol_map import SymbolMap
+
+    statuses = (await db.execute(
         select(MarketDataStatus).order_by(MarketDataStatus.symbol)
-    )
-    statuses = result.scalars().all()
-    rows: list[dict] = []
+    )).scalars().all()
+    sm_by_tv = {
+        sm.tv_symbol: sm
+        for sm in (await db.execute(select(SymbolMap))).scalars().all()
+    }
+
+    groups: dict[str, dict] = {}
     for st in statuses:
-        rows.append({
-            "symbol": st.symbol,
-            "active": st.is_active,
-            "atr_5m": st.last_atr_5m,
-            "atr_1h": st.last_atr_1h,
-            "heartbeat_age": st.heartbeat_age_seconds,
-        })
+        sm = sm_by_tv.get(st.symbol)
+        # DATO = market_data_symbol si el tradeable lo redirige (MES → ES),
+        # si no el propio símbolo (padres se mapean a sí mismos).
+        data_symbol = (sm.market_data_symbol if sm and sm.market_data_symbol
+                       else st.symbol)
+        tick_size = (float(sm.tick_size)
+                     if sm and sm.tick_size is not None else None)
+
+        g = groups.get(data_symbol)
+        if g is None:
+            g = groups[data_symbol] = {
+                "symbol": data_symbol,
+                "active": st.is_active,
+                "atr_5m": st.last_atr_5m,
+                "atr_1h": st.last_atr_1h,
+                "heartbeat_age": st.heartbeat_age_seconds,
+                "tick_size": tick_size,
+                "tradeables": [],
+            }
+        else:
+            # Mismo feed: conserva señal viva y el primer dato no nulo (micro y
+            # padre comparten probe → valores idénticos, esto es defensivo).
+            g["active"] = g["active"] or st.is_active
+            if g["atr_5m"] is None:
+                g["atr_5m"] = st.last_atr_5m
+            if g["atr_1h"] is None:
+                g["atr_1h"] = st.last_atr_1h
+            if g["heartbeat_age"] is None:
+                g["heartbeat_age"] = st.heartbeat_age_seconds
+            if g["tick_size"] is None:
+                g["tick_size"] = tick_size
+        # Tradeable respaldado = símbolo operado distinto del dato (ES → MES).
+        if st.symbol != data_symbol:
+            g["tradeables"].append(st.symbol)
+
+    rows: list[dict] = []
+    for ds in sorted(groups):
+        g = groups[ds]
+        g["tradeables"] = sorted(set(g["tradeables"]))
+        rows.append(g)
     return rows
 
 
