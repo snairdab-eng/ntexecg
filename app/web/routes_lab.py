@@ -46,6 +46,7 @@ from app.services.lab_metrics import (
 # del reporte offline); la guarda dura anti-espejismo del out sigue en 15.
 LOW_N_BUCKET = 10
 from app.web.common import render
+from app.web.manifest_store import guardar_manifest, load_manifest, lock_integrar
 
 router = APIRouter()
 
@@ -63,15 +64,9 @@ _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 JOBS: dict[str, dict] = {}
 
 
-def load_manifest() -> dict:
-    """entries del manifest CSV↔estrategia (B6.1); {} si no hay manifest."""
-    p = LAB_DIR / "lab_manifest.json"
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8")).get("entries") or {}
-    except (ValueError, OSError):
-        return {}
+# LAB-1 — `load_manifest`/`guardar_manifest` viven en app.web.manifest_store
+# (fuente única compartida con Riesgo). Se re-exportan como símbolos de este
+# módulo por retrocompat (los tests y routes_riesgo los usan desde aquí).
 
 
 def resolve_key(strategy: str | None, instrument: str | None) -> str | None:
@@ -171,9 +166,15 @@ async def lab_page(request: Request, instrument: str = "ES",
                        key=lambda kv: (kv[1]["instrument"], kv[0])):
         groups.setdefault(e["instrument"], []).append(k)
     cached = load_cache(key)
+    datos = _datos_ctx(manifest) if manifest else None
+    # LAB-1 — ficha del dato de ESTA llave (identidad siempre visible, como el
+    # "MASTER EN USO" del motor): CSV del manifest + fechas. None si la llave es
+    # un instrumento sin manifest (retrocompat).
+    ficha = next((d for d in (datos or []) if d["key"] == key), None)
     ctx: dict = {"instruments": INSTRUMENTS, "instrument": instrument,
                  "key": key, "groups": groups,
-                 "datos": _datos_ctx(manifest) if manifest else None,
+                 "datos": datos, "ficha": ficha,
+                 "export_name": (ficha["csv"] if ficha else None),
                  "regen_cmd": REGEN_CMD, "meta": None, "base": None,
                  "hours": None, "low_n_bucket": LOW_N_BUCKET}
     if cached is not None:
@@ -462,9 +463,14 @@ async def lab_resim(sel: ResimSel) -> JSONResponse:
 
 @router.post("/ui/lab/upload")
 async def lab_upload(strategy: str = Form(...),
-                     file: UploadFile = File(...)) -> JSONResponse:
+                     file: UploadFile = File(...),
+                     recalc: bool = Form(True)) -> JSONResponse:
     """Sube un CSV de LuxAlgo etiquetado con su strategy_id. Se VALIDA con el
-    parser real ANTES de aceptar (basura no entra); actualiza el manifest."""
+    parser real ANTES de aceptar (basura no entra); actualiza el manifest y
+    ENCADENA el recálculo de la caché (LAB-1, opt-out con recalc=false: un
+    upload deja la pestaña fresca sin un segundo clic). Nunca recomputa en el
+    request — el recalc corre en subproceso con polling (mismo mecanismo JOBS;
+    si ya hay uno de esta llave, no lo pisa)."""
     manifest = load_manifest()
     if not _KEY_RE.match(strategy or "") or strategy not in manifest:
         return JSONResponse({"error": "estrategia fuera del manifest"},
@@ -488,15 +494,24 @@ async def lab_upload(strategy: str = Form(...),
             {"error": "el CSV no parsea como ListaDeOperaciones de LuxAlgo"},
             status_code=400)
     rel = dest.relative_to(TRADES_DIR.parent).as_posix()
-    manifest[strategy] = {**manifest[strategy], "csv": rel}
-    mp = LAB_DIR / "lab_manifest.json"
-    data = (json.loads(mp.read_text(encoding="utf-8"))
-            if mp.exists() else {"version": 1})
-    data["entries"] = manifest
-    mp.write_text(json.dumps(data, indent=1, ensure_ascii=False),
-                  encoding="utf-8")
-    return JSONResponse({"ok": True, "csv": rel, "n_trades": len(trades),
-                         "hint": "recalcula para regenerar la caché"})
+    # SERIALIZADO por estrategia (fuente única + lock compartidos): dos subidas
+    # simultáneas de la misma clave no se pisan el manifest.
+    async with lock_integrar(strategy):
+        manifest = load_manifest()                    # releer bajo el lock
+        manifest[strategy] = {**(manifest.get(strategy) or {}), "csv": rel}
+        guardar_manifest(manifest)
+    # Encadenar recalc (opt-out). El job corre en 2º plano; polling en la UI.
+    enqueued = _enqueue_recalc(strategy) if recalc else False
+    return JSONResponse({
+        "ok": True, "csv": rel, "n_trades": len(trades),
+        "recalc": ("running" if enqueued
+                   else ("busy" if recalc else "skipped")),
+        "hint": ("recálculo encolado — la caché se regenera en 2º plano"
+                 if enqueued else
+                 "ya hay un recálculo corriendo para esta estrategia"
+                 if recalc else
+                 "recalcula para regenerar la caché"),
+    })
 
 
 def _recalc_cmd(key: str, is_strategy: bool) -> list[str]:
@@ -526,6 +541,20 @@ async def _run_recalc(key: str, cmd: list[str]) -> None:
         JOBS[key].update({"status": "error", "tail": repr(exc)})
 
 
+def _enqueue_recalc(key: str) -> bool:
+    """Encola el job de recalc de `key` en 2º plano (mismo mecanismo JOBS).
+    Devuelve False si ya hay uno corriendo (no lo pisa). Punto único usado
+    por el endpoint /ui/lab/recalc y por el encadenado del upload (LAB-1)."""
+    if (JOBS.get(key) or {}).get("status") == "running":
+        return False
+    cmd = _recalc_cmd(key, is_strategy=key in load_manifest())
+    JOBS[key] = {"status": "running",
+                 "started": datetime.now().isoformat(timespec="seconds"),
+                 "tail": ""}
+    JOBS[key]["task"] = asyncio.create_task(_run_recalc(key, cmd))
+    return True
+
+
 class RecalcReq(BaseModel):
     instrument: str = "ES"
     strategy: str | None = None
@@ -538,14 +567,9 @@ async def lab_recalc(req: RecalcReq) -> JSONResponse:
     key = resolve_key(req.strategy, req.instrument)
     if key is None:
         return JSONResponse({"error": "llave inválida"}, status_code=400)
-    if (JOBS.get(key) or {}).get("status") == "running":
+    if not _enqueue_recalc(key):
         return JSONResponse({"error": "ya hay un recálculo corriendo"},
                             status_code=409)
-    cmd = _recalc_cmd(key, is_strategy=key in load_manifest())
-    JOBS[key] = {"status": "running",
-                 "started": datetime.now().isoformat(timespec="seconds"),
-                 "tail": ""}
-    JOBS[key]["task"] = asyncio.create_task(_run_recalc(key, cmd))
     return JSONResponse({"ok": True, "status": "running", "key": key},
                         status_code=202)
 

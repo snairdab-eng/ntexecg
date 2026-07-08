@@ -35,27 +35,129 @@
         {% endif %}
     </div>
 
+    <!-- LAB-1 — helper de "generar/recalcular caché" (dispara el MISMO job de
+         2º plano de /ui/lab/recalc y pollea; recarga al terminar). Se carga
+         siempre (fuera del condicional de meta) para servir a la ficha
+         sin-caché y al banner stale. -->
+    <script>
+    function labGen(key) {
+        return {
+            msg: '', busy: false,
+            async gen() {
+                if (this.busy) return;
+                this.busy = true; this.msg = '⏳ generando…';
+                try {
+                    const r = await fetch('/ui/lab/recalc', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ strategy: key }),
+                    });
+                    if (r.status === 409) { this.msg = '⏳ ya hay un recálculo corriendo'; }
+                    else if (!r.ok) { this.msg = '❌ error ' + r.status; this.busy = false; return; }
+                    this._poll();
+                } catch (e) { this.msg = '❌ ' + e; this.busy = false; }
+            },
+            async _poll() {
+                try {
+                    const r = await fetch('/ui/lab/recalc/status?strategy=' + encodeURIComponent(key));
+                    const j = await r.json();
+                    if (j.status === 'running') { this.msg = '⏳ generando…'; setTimeout(() => this._poll(), 2000); }
+                    else if (j.status === 'done') { this.msg = '✅ listo — recargando'; setTimeout(() => location.reload(), 800); }
+                    else { this.msg = '❌ error (ver cola del job)'; this.busy = false; }
+                } catch (e) { this.msg = '❌ ' + e; this.busy = false; }
+            },
+        };
+    }
+    </script>
+
     {% if meta is none %}
+    {% if ficha %}
+    <!-- LAB-1 — estrategia del manifest SIN caché: ficha de datos + botón que
+         genera la caché (mismo job), en vez del comando de consola. -->
+    <div class="bg-gray-900 border border-amber-700/60 rounded p-4" x-data="labGen('{{ key }}')">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+            <div>
+                <div class="text-sm font-semibold text-amber-200">Sin caché del Laboratorio para <span class="font-mono">{{ key }}</span> todavía.</div>
+                <div class="text-xs text-gray-400 mt-1">El visor no recomputa el backtest en la petición — la caché se genera en 2º plano (en el server con la cola cosida). El dato base ya está listo:</div>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs mt-2">
+                    <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                        <div class="text-gray-500">Export (CSV)</div>
+                        <div class="text-gray-200 font-semibold truncate" title="{{ ficha.csv }}">{{ ficha.csv }}</div>
+                    </div>
+                    <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                        <div class="text-gray-500">Fecha CSV</div>
+                        <div class="text-gray-200">{{ ficha.csv_date[:16] if ficha.csv_date else '⚠ falta' }}</div>
+                    </div>
+                    <div class="bg-gray-950 rounded p-2 border border-gray-800">
+                        <div class="text-gray-500">Instrumento</div>
+                        <div class="text-gray-200">{{ ficha.instrument }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="text-right">
+                <button @click="gen()" :disabled="busy"
+                        class="px-3 py-2 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white text-sm font-medium">Generar caché ahora</button>
+                <div class="text-xs text-gray-400 mt-1" x-text="msg"></div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <!-- retrocompat: instrumento sin manifest → comando de consola -->
     <div class="bg-amber-900/30 border border-amber-700 rounded p-4 text-sm text-amber-200">
         <b>Sin caché del Laboratorio para {{ instrument }}.</b> Este visor no recomputa el backtest en la petición web — genera la matriz de features primero (en el servidor, con la cola cosida):
         <pre class="mt-2 bg-gray-950 rounded p-2 text-xs text-amber-100">{{ regen_cmd }}</pre>
     </div>
+    {% endif %}
     {% else %}
 
+    <!-- LAB-1 — identidad del dato SIEMPRE visible (como "MASTER EN USO" del
+         motor): export (CSV del manifest), cobertura, n_trades, fecha de caché.
+         El operador ve de un vistazo QUÉ dato está mirando. -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+        <div class="bg-gray-950 rounded p-2 border border-gray-800">
+            <div class="text-gray-500">Export en uso (CSV)</div>
+            {% if export_name %}
+            <div class="text-gray-200 font-semibold truncate" title="{{ export_name }}">{{ export_name }}</div>
+            {% else %}
+            <div class="text-gray-400">— (instrumento sin manifest)</div>
+            {% endif %}
+        </div>
+        <div class="bg-gray-950 rounded p-2 border border-gray-800">
+            <div class="text-gray-500">Trades (in / out)</div>
+            <div class="text-gray-200 font-semibold">{{ meta.n_trades }} <span class="text-gray-500 font-normal">({{ meta.n_in }} / {{ meta.n_out }})</span></div>
+        </div>
+        <div class="bg-gray-950 rounded p-2 border border-gray-800">
+            <div class="text-gray-500">Cobertura</div>
+            <div class="text-gray-200">{% if meta.coverage %}{{ meta.coverage[0][:10] }} → {{ meta.coverage[1][:10] }}{% else %}—{% endif %}</div>
+        </div>
+        <div class="bg-gray-950 rounded p-2 border {% if meta.stale %}border-amber-600{% else %}border-gray-800{% endif %}">
+            <div class="text-gray-500">Caché generada</div>
+            <div class="{% if meta.stale %}text-amber-300 font-semibold{% else %}text-gray-200{% endif %}">{{ meta.cache_mtime }}{% if meta.stale %} ⚠{% endif %}</div>
+        </div>
+    </div>
+
     {% if meta.stale %}
-    <div class="bg-amber-900/30 border border-amber-700 rounded p-3 text-xs text-amber-200">
-        ⚠ <b>Caché desactualizada:</b> el CSV de trades es más nuevo que la matriz ({{ meta.cache_mtime }}). Regenera con: <code>{{ regen_cmd }}</code>
+    <!-- LAB-1 — banner ÁMBAR FUERTE + botón (no solo texto): el operador jamás
+         debe leer un estudio viejo sin darse cuenta. -->
+    <div class="bg-amber-500/20 border-2 border-amber-500 rounded p-3 flex items-center justify-between flex-wrap gap-3"
+         x-data="labGen('{{ key }}')">
+        <div class="text-sm text-amber-100">
+            ⚠ <b>ESTUDIO DESACTUALIZADO</b> — la caché está desactualizada: el CSV de trades es más nuevo que esta matriz (generada {{ meta.cache_mtime }}). Los números de abajo NO reflejan el último listado.
+        </div>
+        <div class="text-right shrink-0">
+            <button @click="gen()" :disabled="busy"
+                    class="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-sm font-semibold">Recalcular</button>
+            <div class="text-xs text-amber-200 mt-1" x-text="msg"></div>
+        </div>
     </div>
     {% endif %}
 
+    {% if meta.get('uncovered') or (meta.get('tz') and meta.tz.get('offset_minutes') is not none) %}
     <div class="text-xs text-gray-500">
-        Matriz: <b class="text-gray-300">{{ meta.n_trades }}</b> trades
-        (in {{ meta.n_in }} / out {{ meta.n_out }})
-        {% if meta.coverage %}· cobertura {{ meta.coverage[0][:10] }} → {{ meta.coverage[1][:10] }}{% endif %}
-        · generada {{ meta.cache_mtime }}
-        {% if meta.get('uncovered') %}· ⚠ {{ meta.uncovered }} sin barras (usa --stitch-db en el server){% endif %}
-        {% if meta.get('tz') and meta.tz.get('offset_minutes') is not none %}· TZ {{ '%+d'|format(meta.tz.offset_minutes) }} min (sanity {{ (meta.tz.sanity * 100)|round(0)|int }}%){% endif %}
+        {% if meta.get('uncovered') %}⚠ {{ meta.uncovered }} sin barras (usa --stitch-db en el server){% endif %}
+        {% if meta.get('tz') and meta.tz.get('offset_minutes') is not none %}{% if meta.get('uncovered') %}· {% endif %}TZ {{ '%+d'|format(meta.tz.offset_minutes) }} min (sanity {{ (meta.tz.sanity * 100)|round(0)|int }}%){% endif %}
     </div>
+    {% endif %}
 
     <!-- Línea base — B4.2: la síntesis vive en el panel de veredicto; la
          tabla completa (maxDD, p95|MAE|, …) queda como detalle colapsable -->
@@ -681,11 +783,19 @@
                 this.upMsg = '⏳ subiendo…';
                 try {
                     const fd = new FormData(ev.target);
+                    const key = fd.get('strategy');
                     const r = await fetch('/ui/lab/upload', { method: 'POST', body: fd });
                     const j = await r.json();
-                    this.upMsg = r.ok
-                        ? ('✅ ' + j.csv + ' (' + j.n_trades + ' trades) — recalcula para regenerar')
-                        : ('❌ ' + (j.error || r.status));
+                    if (!r.ok) { this.upMsg = '❌ ' + (j.error || r.status); return; }
+                    this.upMsg = '✅ ' + j.csv + ' (' + j.n_trades + ' trades)';
+                    // LAB-1 — el recalc se encadena en el server; polleamos aquí
+                    // para dejar la pestaña fresca sin un segundo clic.
+                    if (j.recalc === 'running') {
+                        this.jobs[key] = '⏳ recálculo encolado…';
+                        this._poll(key);
+                    } else if (j.recalc === 'busy') {
+                        this.jobs[key] = '⏳ ya hay un recálculo corriendo';
+                    }
                 } catch (e) { this.upMsg = '❌ ' + e; }
             },
         };

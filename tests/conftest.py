@@ -124,6 +124,23 @@ def _clear_symbol_mapper_cache() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _fast_lab_recalc(monkeypatch) -> None:
+    """LAB-1 — el upload (Lab y Riesgo) encadena un recalc en 2º plano, que en
+    producción es un subproceso real de scripts.lab_analyze. En la suite eso
+    arrancaría el analizador PESADO contra el repo REAL (lento y con efectos);
+    aquí se sustituye por un subproceso trivial e instantáneo — el mecanismo
+    JOBS/polling sigue siendo real. Los tests que verifican el job (o quieren
+    su propio comando) monkeypatchean _recalc_cmd y sobrescriben este default.
+    """
+    import sys
+    import app.web.routes_lab as _rl
+
+    monkeypatch.setattr(
+        _rl, "_recalc_cmd",
+        lambda key, is_strategy: [sys.executable, "-c", "pass"])
+
+
+@pytest.fixture(autouse=True)
 def _isolate_models_dir(tmp_path, monkeypatch) -> None:
     """Point MODELS_DIR at a fresh empty temp dir per test.
 

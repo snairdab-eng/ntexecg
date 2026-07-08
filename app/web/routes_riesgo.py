@@ -41,6 +41,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.web.common import flash_messages, render
 import app.web.routes_lab as routes_lab                # manifest compartido
+from app.web.manifest_store import (               # LAB-1 — fuente única
+    _INTEGRAR_LOCKS,
+    guardar_manifest as _guardar_manifest,
+    lock_integrar as _lock_integrar,
+)
 from scripts.lab_manifest import MICRO_TO_LAB, csv_instrument
 from scripts.mr_sims import proteccion_para_cuenta     # selección PURA (v2)
 
@@ -55,13 +60,10 @@ _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # Jobs de calcular en segundo plano: {clave: {status, tail, ...}}
 JOBS: dict[str, dict] = {}
 
-# P1-4 — integrar SERIALIZADO por estrategia: dos subidas simultáneas de la
-# misma clave no compiten por master.csv/manifest (last-writer-wins mudo).
-_INTEGRAR_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-def _lock_integrar(strategy: str) -> asyncio.Lock:
-    return _INTEGRAR_LOCKS.setdefault(strategy, asyncio.Lock())
+# P1-4 — integrar SERIALIZADO por estrategia (last-writer-wins mudo): el lock
+# y el store del manifest son COMPARTIDOS con el Lab (app.web.manifest_store).
+# `_INTEGRAR_LOCKS` / `_lock_integrar` / `_guardar_manifest` se importan de ahí
+# y se conservan como símbolos de este módulo por retrocompat (tests).
 
 
 # ---------------------------------------------------------------------------
@@ -927,17 +929,6 @@ async def riesgo_page(request: Request, strategy: str | None = None,
     return await render(request, "riesgo.html", ctx)
 
 
-def _guardar_manifest(manifest: dict) -> None:
-    """Persiste las entries del lab_manifest (compartido con el Lab)."""
-    mp = routes_lab.LAB_DIR / "lab_manifest.json"
-    data = (json.loads(mp.read_text(encoding="utf-8"))
-            if mp.exists() else {"version": 1})
-    data["entries"] = manifest
-    mp.parent.mkdir(exist_ok=True)
-    mp.write_text(json.dumps(data, indent=1, ensure_ascii=False),
-                  encoding="utf-8")
-
-
 # ---------------------------------------------------------------------------
 # Subir lista (existente o estrategia NUEVA) → integrar (subproceso awaited)
 # ---------------------------------------------------------------------------
@@ -978,11 +969,16 @@ async def _run_motor(cmd: list[str]) -> tuple[int, str]:
 
 @router.post("/ui/riesgo/upload")
 async def riesgo_upload(strategy: str = Form(...),
-                        file: UploadFile = File(...)) -> JSONResponse:
+                        file: UploadFile = File(...),
+                        recalc_lab: bool = Form(True)) -> JSONResponse:
     """Sube la lista de operaciones y corre `integrar` (cuadre al dólar
     bloqueante, guardia de doble-prefijo — los errores del motor se muestran
     tal cual). Estrategia fuera del manifest = ALTA NUEVA: símbolo detectado
-    del nombre original del CSV, mapeo confirmado por UI."""
+    del nombre original del CSV, mapeo confirmado por UI.
+
+    LAB-1: un solo upload deja las DOS pestañas frescas — además de integrar el
+    master del Motor, encadena el recálculo de la caché del Lab para esta
+    estrategia (2º plano, opt-out con recalc_lab=false)."""
     strategy = (strategy or "").strip()
     if not _KEY_RE.match(strategy):
         return JSONResponse({"error": "strategy_id inválido (usa letras/"
@@ -1044,12 +1040,20 @@ async def riesgo_upload(strategy: str = Form(...),
                               "confirmed": True}
         _guardar_manifest(manifest)
 
+    # LAB-1 — encadenar el recalc de la caché del Lab para esta estrategia
+    # (2º plano; opt-out). El manifest ya apunta al CSV recién integrado, así
+    # que el mismo listado alimenta las dos pestañas. Nunca recomputa aquí.
+    lab_recalc = (routes_lab._enqueue_recalc(strategy) if recalc_lab
+                  else False)
+
     motor = _motor_manifest(clave) or {}
     return JSONResponse({
         "ok": True, "clave": clave, "strategy": strategy,
         "nueva": entry is None,
         "n_trades": (motor.get("trades") or {}).get("n", len(trades)),
         "integrado": motor.get("integrado"),
+        "lab_recalc": ("running" if lab_recalc
+                       else ("busy" if recalc_lab else "skipped")),
         "hint": "dale Calcular para correr el estudio",
     })
 
