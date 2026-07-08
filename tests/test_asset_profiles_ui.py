@@ -5,6 +5,7 @@ confirmación cuando hay estrategias live, API de strategies + cambio de status,
 y la advertencia de multi-estrategia por asset_symbol.
 """
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -14,7 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import SESSION_COOKIE_NAME, create_session_token
 from app.core.config import settings
 from app.models.asset_profile import AssetProfile
+from app.models.decision import StrategyDecision
+from app.models.normalized_signal import NormalizedSignal
+from app.models.raw_signal import RawSignal
 from app.models.strategy import Strategy
+from app.models.strategy_profile import StrategyProfile
+
+UTC = timezone.utc
 
 
 @pytest.fixture(autouse=True)
@@ -151,3 +158,131 @@ async def test_ui_form_rejects_bad_sl(client: AsyncClient, db: AsyncSession) -> 
     })
     assert r.status_code == 303
     assert "error" in r.headers["location"] or "flash" in r.headers["location"]
+
+
+# ---------------------------------------------------------------------------
+# ACT-1 — pestaña Activos conectada a la realidad
+# ---------------------------------------------------------------------------
+
+async def _mk_profile(db: AsyncSession, sid: str, *, pcfg: dict | None = None,
+                      sl=None, tp=None) -> None:
+    db.add(StrategyProfile(strategy_id=sid, pipeline_config_json=pcfg,
+                           sl_atr_multiplier=sl, tp_atr_multiplier=tp))
+    await db.commit()
+
+
+async def _mk_block_n2(db: AsyncSession, sid: str, *, level=2, days_ago=0) -> None:
+    raw = RawSignal(source="luxalgo", strategy_id=sid, payload_json={},
+                    token_valid=True)
+    db.add(raw)
+    await db.flush()
+    norm = NormalizedSignal(raw_signal_id=raw.id, strategy_id=sid,
+                            ticker_received="MES", action="buy", sentiment="long",
+                            signal_ts=datetime.now(UTC), dedupe_key=uuid.uuid4().hex)
+    db.add(norm)
+    await db.flush()
+    db.add(StrategyDecision(
+        normalized_signal_id=norm.id, strategy_id=sid, outcome="BLOCK",
+        block_level=level, block_reason="outside_trading_window",
+        created_at=datetime.now(UTC) - timedelta(days=days_ago)))
+    await db.commit()
+
+
+def test_inheritance_helpers_pure() -> None:
+    """Herencia efectiva (pura): bracket propio del estudio ⇒ NO hereda."""
+    from types import SimpleNamespace
+
+    from app.web.routes_assets import _herencia_agg, _strat_inheritance
+
+    # sin StrategyProfile → hereda todo
+    assert _strat_inheritance(None) == {
+        "sl_inherits": True, "tp_inherits": True, "window_inherits": True}
+    # bracket propio del estudio (backstop + tp_nominal) → NO hereda SL/TP
+    prof = SimpleNamespace(sl_atr_multiplier=None, tp_atr_multiplier=None,
+                           pipeline_config_json={"backstop_points": 90.0,
+                                                 "tp_nominal_long": 11.5})
+    h = _strat_inheritance(prof)
+    assert h["sl_inherits"] is False and h["tp_inherits"] is False
+    assert h["window_inherits"] is True                 # sin windows propias
+    # ventana propia
+    prof2 = SimpleNamespace(sl_atr_multiplier=None, tp_atr_multiplier=None,
+                            pipeline_config_json={"windows": [{"start": "09:30"}]})
+    assert _strat_inheritance(prof2)["window_inherits"] is False
+
+    strats = [SimpleNamespace(strategy_id="a"), SimpleNamespace(strategy_id="b")]
+    agg = _herencia_agg(strats, {"a": prof})             # a override, b hereda
+    assert agg == {"n": 2, "sl_inherit": 1, "tp_inherit": 1, "window_inherit": 2,
+                   "sl_orphan": False, "tp_orphan": False, "window_orphan": False}
+
+
+@pytest.mark.asyncio
+async def test_particion_en_uso_sin_uso(client: AsyncClient, db: AsyncSession) -> None:
+    """MES (con estrategia) EN USO arriba; CL (sin estrategias) en el <details>."""
+    await _mk_asset(db, symbol="MES")
+    await _mk_asset(db, symbol="CL")
+    await _mk_strategy(db, "MES_x", "MES", status="paper")
+    html = (await client.get("/ui/assets")).text
+    assert "Activos EN USO" in html and "Activos SIN estrategias" in html
+    i_det = html.find("<details")
+    assert 0 < html.find('font-mono">MES') < i_det       # MES arriba
+    assert html.find('font-mono">CL') > i_det            # CL colapsado abajo
+
+
+@pytest.mark.asyncio
+async def test_herencia_efectiva_parcial(client: AsyncClient, db: AsyncSession) -> None:
+    """Una con bracket propio del estudio (no hereda SL/TP), otra sin profile
+    (hereda) → 1/2. Nadie tiene ventana propia → 2/2."""
+    await _mk_asset(db, symbol="MES")
+    await _mk_strategy(db, "MES_own", "MES", status="paper")
+    await _mk_strategy(db, "MES_inh", "MES", status="candidate")
+    await _mk_profile(db, "MES_own",
+                      pcfg={"backstop_points": 90.0, "tp_nominal_long": 11.5})
+    html = (await client.get("/ui/assets")).text
+    assert "SL 1/2 heredan" in html
+    assert "TP 1/2 heredan" in html
+    assert "ventana 2/2 heredan" in html
+
+
+@pytest.mark.asyncio
+async def test_herencia_orphan_default(client: AsyncClient, db: AsyncSession) -> None:
+    """Nadie hereda el SL/TP del activo (todas con bracket propio) → 0/1 y el
+    default del activo queda como fallback sin herederos (nota + gris)."""
+    await _mk_asset(db, symbol="MES", sl=2.0)
+    await _mk_strategy(db, "MES_own", "MES", status="paper")
+    await _mk_profile(db, "MES_own",
+                      pcfg={"backstop_points": 90.0, "tp_nominal_short": 8.0})
+    html = (await client.get("/ui/assets")).text
+    assert "SL 0/1 heredan" in html
+    assert "bracket propio del estudio" in html          # nota de fallback
+
+
+@pytest.mark.asyncio
+async def test_n2_blocks_por_activo(client: AsyncClient, db: AsyncSession) -> None:
+    await _mk_asset(db, symbol="MES")
+    await _mk_strategy(db, "MES_x", "MES", status="paper")
+    await _mk_block_n2(db, "MES_x")                       # N2, hoy → cuenta
+    await _mk_block_n2(db, "MES_x")                       # N2, hoy → cuenta
+    await _mk_block_n2(db, "MES_x", level=3)             # N3 → NO cuenta
+    await _mk_block_n2(db, "MES_x", days_ago=9)          # fuera de 7d → NO cuenta
+    html = (await client.get("/ui/assets")).text
+    assert "2 bloqueos" in html
+    assert "/ui/signals?outcome=BLOCK" in html           # link a Señales
+
+
+@pytest.mark.asyncio
+async def test_render_paperpaper_dedupe(client: AsyncClient, db: AsyncSession) -> None:
+    await _mk_asset(db, symbol="MES")
+    await _mk_strategy(db, "MES_a", "MES", status="paper")
+    await _mk_strategy(db, "MES_b", "MES", status="paper")
+    html = (await client.get("/ui/assets")).text
+    assert "paperpaper" not in html                      # el bug de concatenación
+    assert "paper ×2" in html                            # dedupe con conteo
+
+
+@pytest.mark.asyncio
+async def test_no_scale_entry_placeholders(client: AsyncClient, db: AsyncSession) -> None:
+    """Campos que NO existen en el esquema (scale_entry_*) no aparecen."""
+    await _mk_asset(db, symbol="MES")
+    await _mk_strategy(db, "MES_x", "MES", status="paper")
+    assert "scale_entry" not in (await client.get("/ui/assets")).text
+    assert "scale_entry" not in (await client.get("/ui/assets/MES")).text

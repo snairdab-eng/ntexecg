@@ -7,18 +7,26 @@ Campos escalonados (scale_entry_*) NO existen → solo diseño pendiente en el t
 """
 from __future__ import annotations
 
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.asset_profile import AssetProfile
+from app.models.decision import StrategyDecision
 from app.models.strategy import Strategy
+from app.models.strategy_profile import StrategyProfile
 from app.services.audit_service import AuditService
 from app.web.common import render, redirect, flash_messages
 
 router = APIRouter()
+
+# Ventana de conteo de bloqueos N2 Temporal (últimos 7 días).
+_N2_WINDOW_DAYS = 7
 
 VALID_TF = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"}
 LIVE_STATUSES = {"paper", "micro", "limited_live", "live"}
@@ -79,7 +87,71 @@ def _strat_view(s: Strategy) -> dict:
             "asset_symbol": s.asset_symbol, "status": s.status, "enabled": s.enabled}
 
 
-def _asset_view(a: AssetProfile, strats: list[Strategy]) -> dict:
+async def _profiles_by_strategy(db: AsyncSession) -> dict[str, StrategyProfile]:
+    rows = (await db.execute(select(StrategyProfile))).scalars().all()
+    return {p.strategy_id: p for p in rows}
+
+
+async def _n2_blocks_by_strategy(db: AsyncSession) -> dict[str, int]:
+    """Bloqueos N2 Temporal (block_level==2) por strategy_id en los últimos
+    7 días. La ventana de un activo que bloquea señales debe verse."""
+    since = datetime.now(timezone.utc) - timedelta(days=_N2_WINDOW_DAYS)
+    rows = await db.execute(
+        select(StrategyDecision.strategy_id, func.count(StrategyDecision.id))
+        .where(StrategyDecision.block_level == 2,
+               StrategyDecision.created_at >= since)
+        .group_by(StrategyDecision.strategy_id)
+    )
+    return {sid: c for sid, c in rows.all()}
+
+
+def _strat_inheritance(profile: StrategyProfile | None) -> dict:
+    """¿El SL/TP/ventana de la estrategia HEREDA del activo o tiene override
+    propio? Override = StrategyProfile.sl_atr/tp_atr o el bracket propio del
+    estudio en pipeline_config_json (backstop_points / tp_nominal_*); ventana
+    propia = pipeline_config_json.windows. Sin StrategyProfile → hereda todo.
+    Solo lectura: refleja lo que el ConfigResolver ya resuelve (no lo cambia)."""
+    pcfg = (profile.pipeline_config_json or {}) if profile else {}
+    sl_override = bool(
+        (profile is not None and profile.sl_atr_multiplier is not None)
+        or pcfg.get("backstop_points") is not None
+    )
+    tp_override = bool(
+        (profile is not None and profile.tp_atr_multiplier is not None)
+        or pcfg.get("tp_nominal_long") is not None
+        or pcfg.get("tp_nominal_short") is not None
+    )
+    win_override = bool(pcfg.get("windows"))
+    return {"sl_inherits": not sl_override, "tp_inherits": not tp_override,
+            "window_inherits": not win_override}
+
+
+def _herencia_agg(strats: list[Strategy],
+                  profiles: dict[str, StrategyProfile]) -> dict:
+    """Cuántas de las N estrategias del activo heredan realmente cada campo."""
+    n = len(strats)
+    sl = tp = win = 0
+    for s in strats:
+        h = _strat_inheritance(profiles.get(s.strategy_id))
+        sl += h["sl_inherits"]
+        tp += h["tp_inherits"]
+        win += h["window_inherits"]
+    return {
+        "n": n, "sl_inherit": sl, "tp_inherit": tp, "window_inherit": win,
+        # default del activo = fallback SIN herederos cuando nadie lo usa
+        "sl_orphan": n > 0 and sl == 0,
+        "tp_orphan": n > 0 and tp == 0,
+        "window_orphan": n > 0 and win == 0,
+    }
+
+
+def _asset_view(a: AssetProfile, strats: list[Strategy],
+                profiles: dict[str, StrategyProfile] | None = None,
+                n2_by_strategy: dict[str, int] | None = None) -> dict:
+    profiles = profiles or {}
+    n2_by_strategy = n2_by_strategy or {}
+    # status deduplicado con conteo (fix "paperpaper": no repetir crudo).
+    counts = Counter(s.status for s in strats)
     return {
         "id": str(a.id),
         "symbol": a.symbol,
@@ -96,8 +168,14 @@ def _asset_view(a: AssetProfile, strats: list[Strategy]) -> dict:
         "atr_period": a.atr_period,
         "strategies": [_strat_view(s) for s in strats],
         "strategy_statuses": sorted({s.status for s in strats}),
+        "status_counts": [{"status": st, "count": c}
+                          for st, c in sorted(counts.items())],
         "multi_strategy": len(strats) > 1,
         "has_live": any(s.status in LIVE_STATUSES for s in strats),
+        # ACT-1 — herencia efectiva + bloqueos N2 reales de la ventana.
+        "herencia": _herencia_agg(strats, profiles),
+        "n2_blocks": sum(n2_by_strategy.get(s.strategy_id, 0) for s in strats),
+        "single_strategy_id": strats[0].strategy_id if len(strats) == 1 else None,
     }
 
 
@@ -105,9 +183,24 @@ def _asset_view(a: AssetProfile, strats: list[Strategy]) -> dict:
 async def list_assets(request: Request, db: AsyncSession = Depends(get_db)) -> HTMLResponse:
     result = await db.execute(select(AssetProfile).order_by(AssetProfile.symbol))
     by_sym = await _strategies_by_symbol(db)
-    assets = [_asset_view(a, by_sym.get(a.symbol, [])) for a in result.scalars().all()]
+    profiles = await _profiles_by_strategy(db)
+    n2 = await _n2_blocks_by_strategy(db)
+    assets = [_asset_view(a, by_sym.get(a.symbol, []), profiles, n2)
+              for a in result.scalars().all()]
+    # ACT-1 — partir: activos EN USO (con estrategias) arriba, sin estrategias
+    # colapsados abajo. El ruido fuera de la vista principal, sin perder alta.
+    en_uso = [a for a in assets if a["strategies"]]
+    sin_uso = [a for a in assets if not a["strategies"]]
+    # Columnas TP ATR / ATR TF solo si algún activo EN USO tiene valor
+    # (columna siempre vacía = ruido). Sin activos en uso, decide el conjunto.
+    scope = en_uso or assets
+    show_tp = any(a["tp_atr_multiplier"] is not None for a in scope)
+    show_atr_tf = any(a["atr_timeframe"] for a in scope)
     return await render(request, "assets.html",
-                        {"assets": assets, "messages": flash_messages(request)}, db=db)
+                        {"en_uso": en_uso, "sin_uso": sin_uso,
+                         "show_tp": show_tp, "show_atr_tf": show_atr_tf,
+                         "n2_days": _N2_WINDOW_DAYS,
+                         "messages": flash_messages(request)}, db=db)
 
 
 @router.get("/ui/assets/{symbol}", response_class=HTMLResponse)
@@ -116,9 +209,12 @@ async def asset_detail(request: Request, symbol: str, db: AsyncSession = Depends
     if a is None:
         return redirect("/ui/assets", flash="Activo no encontrado", category="error")
     by_sym = await _strategies_by_symbol(db)
-    view = _asset_view(a, by_sym.get(symbol, []))
+    profiles = await _profiles_by_strategy(db)
+    n2 = await _n2_blocks_by_strategy(db)
+    view = _asset_view(a, by_sym.get(symbol, []), profiles, n2)
     return await render(request, "asset_detail.html",
                         {"asset": view, "valid_tf": sorted(VALID_TF), "day_names": _DAY_NAMES,
+                         "n2_days": _N2_WINDOW_DAYS,
                          "messages": flash_messages(request)}, db=db)
 
 

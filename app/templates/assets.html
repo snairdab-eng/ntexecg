@@ -1,57 +1,114 @@
 {% extends "base.html" %}
 {% block title %}Calibración por Activo — NTEXECG{% endblock %}
 
+{% macro herencia_cell(a) %}
+    {% set h = a.herencia %}
+    <div class="text-xs space-y-0.5">
+        <div><span class="{% if h.sl_orphan %}text-gray-600{% else %}text-gray-300{% endif %}">SL {{ h.sl_inherit }}/{{ h.n }} heredan</span>{% if h.sl_orphan %} <span class="text-gray-600">(bracket propio del estudio)</span>{% endif %}</div>
+        <div><span class="{% if h.tp_orphan %}text-gray-600{% else %}text-gray-300{% endif %}">TP {{ h.tp_inherit }}/{{ h.n }} heredan</span>{% if h.tp_orphan %} <span class="text-gray-600">(bracket propio del estudio)</span>{% endif %}</div>
+        <div><span class="{% if h.window_orphan %}text-gray-600{% else %}text-gray-300{% endif %}">ventana {{ h.window_inherit }}/{{ h.n }} heredan</span></div>
+    </div>
+{% endmacro %}
+
+{% macro status_badges(a) %}
+    {% for sc in a.status_counts %}<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-gray-800 text-gray-300 mr-1">{{ sc.status }}{% if sc.count > 1 %} ×{{ sc.count }}{% endif %}</span>{% endfor %}
+    {% if a.multi_strategy %}<span class="text-amber-400 text-xs">⚠ {{ a.strategies|length }} estrategias</span>{% endif %}
+{% endmacro %}
+
 {% block content %}
 <div class="space-y-4">
-    <div class="flex items-center justify-between">
+    <div class="flex items-center justify-between flex-wrap gap-2">
         <h1 class="text-xl font-bold text-white">Calibración por Activo</h1>
-        <span class="text-xs text-gray-500">Esquema real: <code>asset_profiles</code> · estado operativo en <code>Strategy.status</code></span>
+        <span class="text-xs text-gray-500">Capa media de herencia (ventana L2 + SL/TP/score de respaldo) · estado operativo en <code>Strategy.status</code> · contrato/ticks en <a href="/ui/symbol-map" class="text-blue-400 hover:text-blue-300">Symbol Mapper →</a></span>
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
-        <table class="w-full text-sm">
-            <thead>
-                <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
-                    <th class="px-3 py-2">Símbolo</th>
-                    <th class="px-3 py-2">Tipo contrato</th>
-                    <th class="px-3 py-2">Activo</th>
-                    <th class="px-3 py-2">Ventana</th>
-                    <th class="px-3 py-2">SL ATR</th>
-                    <th class="px-3 py-2">ATR TF</th>
-                    <th class="px-3 py-2">TP ATR</th>
-                    <th class="px-3 py-2">Estrategias (status)</th>
-                    <th class="px-3 py-2"></th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for a in assets %}
-                <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
-                    <td class="px-3 py-2 text-gray-200 font-mono">{{ a.symbol }}</td>
-                    <td class="px-3 py-2 text-gray-400">{{ a.contract_type or '—' }}</td>
-                    <td class="px-3 py-2">
-                        {% if a.active %}<span class="text-green-400">● activo</span>
-                        {% else %}<span class="text-gray-500">○ inactivo</span>{% endif %}
-                    </td>
-                    <td class="px-3 py-2 text-gray-400">{{ a.session }}</td>
-                    <td class="px-3 py-2 text-gray-300">{{ a.sl_atr_multiplier if a.sl_atr_multiplier is not none else '—' }}{% if a.sl_atr_multiplier is not none %}x{% endif %}
-                        {% if a.sl_atr_multiplier == 2.0 and a.symbol != 'M6E' %}<span title="2.0 genérico — revisar" class="text-amber-400">⚠</span>{% endif %}
-                    </td>
-                    <td class="px-3 py-2 text-gray-400">{{ a.atr_timeframe or '—' }}</td>
-                    <td class="px-3 py-2 text-gray-400">{{ a.tp_atr_multiplier if a.tp_atr_multiplier is not none else '—' }}</td>
-                    <td class="px-3 py-2">
-                        {% if a.strategies %}
-                            {% for s in a.strategies %}<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-gray-800 text-gray-300 mr-1">{{ s.status }}</span>{% endfor %}
-                            {% if a.multi_strategy %}<span class="text-amber-400 text-xs">⚠ {{ a.strategies|length }} estrategias</span>{% endif %}
-                        {% else %}<span class="text-gray-600 text-xs">sin estrategias</span>{% endif %}
-                    </td>
-                    <td class="px-3 py-2"><a href="/ui/assets/{{ a.symbol }}" class="text-blue-400 hover:text-blue-300">Editar</a></td>
-                </tr>
-                {% else %}
-                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="9">Sin activos configurados.</td></tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <!-- ACT-1 — Activos EN USO (con estrategias): la vista principal -->
+    <div>
+        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-2">Activos EN USO <span class="text-gray-600 normal-case">({{ en_uso|length }})</span></h2>
+        <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                        <th class="px-3 py-2">Símbolo</th>
+                        <th class="px-3 py-2">Activo</th>
+                        <th class="px-3 py-2">Ventana</th>
+                        <th class="px-3 py-2">Bloqueos N2 ({{ n2_days }}d)</th>
+                        <th class="px-3 py-2">Herencia efectiva</th>
+                        <th class="px-3 py-2">SL ATR</th>
+                        {% if show_atr_tf %}<th class="px-3 py-2">ATR TF</th>{% endif %}
+                        {% if show_tp %}<th class="px-3 py-2">TP ATR</th>{% endif %}
+                        <th class="px-3 py-2">Estrategias (status)</th>
+                        <th class="px-3 py-2"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in en_uso %}
+                    <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50 align-top">
+                        <td class="px-3 py-2 text-gray-200 font-mono">{{ a.symbol }}<div class="text-gray-600 text-xs">{{ a.contract_type or '—' }}</div></td>
+                        <td class="px-3 py-2">
+                            {% if a.active %}<span class="text-green-400">● activo</span>
+                            {% else %}<span class="text-gray-500">○ inactivo</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-2 text-gray-400">{{ a.session }}</td>
+                        <td class="px-3 py-2">
+                            {% if a.n2_blocks %}
+                            <a href="/ui/signals?outcome=BLOCK{% if a.single_strategy_id %}&strategy={{ a.single_strategy_id }}{% endif %}"
+                               class="text-amber-400 hover:text-amber-300" title="ver en Señales">⛔ {{ a.n2_blocks }} bloqueos</a>
+                            {% else %}<span class="text-gray-600 text-xs">0</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-2">{{ herencia_cell(a) }}</td>
+                        <td class="px-3 py-2 {% if a.herencia.sl_orphan %}text-gray-600{% else %}text-gray-300{% endif %}">
+                            {{ a.sl_atr_multiplier if a.sl_atr_multiplier is not none else '—' }}{% if a.sl_atr_multiplier is not none %}x{% endif %}{% if a.herencia.sl_orphan %} <span title="fallback sin herederos">·</span>{% endif %}
+                        </td>
+                        {% if show_atr_tf %}<td class="px-3 py-2 text-gray-400" title="{% if not a.atr_timeframe %}sin calibrar — hereda global{% endif %}">{{ a.atr_timeframe or '—' }}</td>{% endif %}
+                        {% if show_tp %}<td class="px-3 py-2 text-gray-400" title="{% if a.tp_atr_multiplier is none %}sin calibrar — hereda global{% endif %}">{{ a.tp_atr_multiplier if a.tp_atr_multiplier is not none else '—' }}</td>{% endif %}
+                        <td class="px-3 py-2">{{ status_badges(a) }}</td>
+                        <td class="px-3 py-2"><a href="/ui/assets/{{ a.symbol }}" class="text-blue-400 hover:text-blue-300">Editar</a></td>
+                    </tr>
+                    {% else %}
+                    <tr><td class="px-3 py-8 text-center text-gray-600" colspan="10">Ningún activo tiene estrategias asignadas todavía.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
-    <p class="text-xs text-gray-600">production/shadow se controla en cada estrategia (<code>Strategy.status</code>), no en el perfil del activo.</p>
+
+    <!-- ACT-1 — Sin estrategias: ruido colapsado, sin perder el alta/edición -->
+    <details class="bg-gray-900 border border-gray-800 rounded">
+        <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer select-none">Activos SIN estrategias <span class="text-gray-600">({{ sin_uso|length }})</span> — respaldo neutral del instrumento; se editan igual</summary>
+        <div class="overflow-x-auto border-t border-gray-800">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                        <th class="px-3 py-2">Símbolo</th>
+                        <th class="px-3 py-2">Tipo contrato</th>
+                        <th class="px-3 py-2">Activo</th>
+                        <th class="px-3 py-2">Ventana</th>
+                        <th class="px-3 py-2">SL ATR</th>
+                        <th class="px-3 py-2"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in sin_uso %}
+                    <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                        <td class="px-3 py-2 text-gray-200 font-mono">{{ a.symbol }}</td>
+                        <td class="px-3 py-2 text-gray-400">{{ a.contract_type or '—' }}</td>
+                        <td class="px-3 py-2">
+                            {% if a.active %}<span class="text-green-400">● activo</span>
+                            {% else %}<span class="text-gray-500">○ inactivo</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-2 text-gray-500">{{ a.session }}</td>
+                        <td class="px-3 py-2 text-gray-500">{{ a.sl_atr_multiplier if a.sl_atr_multiplier is not none else '—' }}{% if a.sl_atr_multiplier is not none %}x{% endif %}</td>
+                        <td class="px-3 py-2"><a href="/ui/assets/{{ a.symbol }}" class="text-blue-400 hover:text-blue-300">Editar</a></td>
+                    </tr>
+                    {% else %}
+                    <tr><td class="px-3 py-6 text-center text-gray-600" colspan="6">Todos los activos tienen estrategias.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <p class="text-xs text-gray-600">Herencia efectiva = cuántas estrategias del activo usan realmente su respaldo. Con bracket propio del estudio (backstop/TP nominal en la config de la estrategia) el default del activo queda como fallback sin herederos (gris). La herencia la resuelve el <code>ConfigResolver</code>; esta vista solo la refleja.</p>
 </div>
 {% endblock %}
