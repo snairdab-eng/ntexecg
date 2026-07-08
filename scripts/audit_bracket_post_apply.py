@@ -53,10 +53,31 @@ from app.services.sl_tp_calculator import (
     tp_nominal_config,
 )
 
-# Tolerancia de comparación de precios (unidad de precio; los brackets son
-# precios absolutos de futuros — 1e-6 cubre el redondeo de float sin dar
-# falsos PASS).
+# Tolerancia de comparación de precios cuando el catálogo no trae tick_size.
+# En general se usa MEDIA TICK del instrumento (ver _tol): el broker redondea
+# el bracket a tick, así que una diferencia sub-tick no es discrepancia real.
 EPS = 1e-6
+
+# Roles/acciones que representan una SALIDA (cierran posición, NO abren): por
+# contrato (payload_builder) NUNCA llevan bracket. No se auditan como entrada
+# — se cuentan aparte y jamás son FAIL. La auditoría del bracket es solo para
+# ENTRADAS aprobadas.
+_EXIT_ROLES = {"exit_long", "exit_short"}
+_EXIT_ACTIONS = {"exit", "flatten", "close"}
+
+
+def _is_exit(action, signal_role) -> bool:
+    return (action in _EXIT_ACTIONS) or ((signal_role or "") in _EXIT_ROLES)
+
+
+def _tol(config: dict) -> float:
+    """Media tick del instrumento (Symbol Mapper tick_size). El broker redondea
+    el bracket a tick, luego una diferencia sub-tick no es discrepancia real.
+    Sin tick_size en el catálogo → cae a EPS absoluto."""
+    ts = config.get("tick_size")
+    if ts:
+        return max(EPS, float(ts) / 2.0)
+    return EPS
 
 
 def _decimals_of(x) -> int:
@@ -71,10 +92,10 @@ def _f(x):
     return None if x is None else float(x)
 
 
-def _eq(a, b) -> bool:
+def _eq(a, b, tol=EPS) -> bool:
     if a is None or b is None:
         return a is None and b is None
-    return abs(float(a) - float(b)) <= EPS
+    return abs(float(a) - float(b)) <= tol
 
 
 async def _apply_events(db) -> dict[str, dict]:
@@ -163,14 +184,27 @@ async def audit(db) -> None:
         return
 
     rows_summary: list[dict] = []
+    exit_rows: list[dict] = []
     total_post = 0
     total_pass = 0
     total_old = 0
+    total_exit = 0
 
     for sid, ev in applies.items():
         cutoff = ev["first"]
         decisions = await _approved_after(db, sid, cutoff)
         for decision, signal in decisions:
+            # SALIDA: cierra posición, no abre — por contrato NO lleva bracket.
+            # Se cuenta aparte ("exits (sin bracket — correcto)"), nunca se
+            # evalúa como entrada, nunca es FAIL.
+            if _is_exit(signal.action, signal.signal_role):
+                total_exit += 1
+                exit_rows.append({
+                    "sid": sid, "when": decision.decided_at,
+                    "action": signal.action, "role": signal.signal_role,
+                })
+                continue
+
             total_post += 1
             entry = _f(signal.price)
             side = "LONG" if signal.action == "buy" else (
@@ -180,13 +214,15 @@ async def audit(db) -> None:
             lvl5 = ((decision.pipeline_execution_json or {}).get("level_5") or {})
             sl_mode = lvl5.get("sl_mode")
             tp_mode = lvl5.get("tp_mode")
+            # ATR redondeado a Numeric(18,6) en decision.atr_value. Recomputar el
+            # TP con él difiere en el 5º decimal del ATR de plena precisión que
+            # usó el despacho (viaja en payload.extras.atr_value) → se prefiere
+            # ese por-delivery más abajo. Este queda como fallback.
             atr = _f(decision.atr_value)
 
-            # Config efectiva y recompute canónico (ConfigResolver + calc).
+            # Config efectiva y tolerancia por tick del instrumento.
             config = await resolver.resolve(db, sid, signal.ticker_received)
-            recompute = await calc.calculate(signal, atr, entry, config)
-            exp_sl_calc = recompute.get("sl_price")
-            exp_tp_calc = recompute.get("tp_price")
+            tol = _tol(config)
 
             # Aritmética EXACTA del bracket nuevo (independiente del calc).
             bp = backstop_config(config)
@@ -195,6 +231,7 @@ async def audit(db) -> None:
             if bp is not None and entry is not None:
                 raw = entry - bp if is_long else entry + bp
                 exp_stop_fixed = round(raw, _decimals_of(signal.price))
+            # Fallback (sin delivery): TP con el ATR redondeado de la decisión.
             exp_tp_nominal = None
             if nominal is not None and atr and entry is not None:
                 exp_tp_nominal = (entry + atr * nominal if is_long
@@ -216,6 +253,19 @@ async def audit(db) -> None:
             for d in deliveries:
                 sent_sl, sent_tp, act = _sent_bracket(d.payload_json)
 
+                # ATR REALMENTE DESPACHADO (plena precisión, en extras). El TP
+                # (y el stop cuando aplique) se recomputan con ESTE, no con el
+                # redondeado de la decisión, para no marcar una diferencia
+                # sub-tick del 5º decimal como discrepancia.
+                extras = (d.payload_json or {}).get("extras") or {}
+                dispatch_atr = (float(extras["atr_value"])
+                                if extras.get("atr_value") is not None else atr)
+                recompute = await calc.calculate(signal, dispatch_atr, entry, config)
+                exp_sl_calc = recompute.get("sl_price")
+                if nominal is not None and dispatch_atr and entry is not None:
+                    exp_tp_nominal = (entry + dispatch_atr * nominal if is_long
+                                      else entry - dispatch_atr * nominal)
+
                 # ¿Salió con bracket VIEJO?
                 old_flags = []
                 if sl_mode == "atr":
@@ -230,7 +280,7 @@ async def audit(db) -> None:
                 ok = True
                 # Stop enviado == señal ∓ backstop exacto (decimales de la entrada).
                 if exp_stop_fixed is not None:
-                    if not _eq(sent_sl, exp_stop_fixed):
+                    if not _eq(sent_sl, exp_stop_fixed, tol):
                         ok = False
                         checks.append(
                             f"stop enviado {sent_sl} != fijo esperado {exp_stop_fixed}")
@@ -242,13 +292,13 @@ async def audit(db) -> None:
                     checks.append("estrategia sin backstop_points en config efectiva "
                                   "(no puede haber stop fijo)")
                 # Coherencia con el recompute canónico del calculador.
-                if not _eq(sent_sl, exp_sl_calc):
+                if not _eq(sent_sl, exp_sl_calc, tol):
                     ok = False
                     checks.append(
                         f"stop enviado {sent_sl} != recompute {exp_sl_calc}")
                 # TP enviado == nominal ×ATR del lado.
                 if exp_tp_nominal is not None:
-                    if not _eq(sent_tp, exp_tp_nominal):
+                    if not _eq(sent_tp, exp_tp_nominal, tol):
                         ok = False
                         checks.append(
                             f"TP enviado {sent_tp} != nominal esperado "
@@ -281,17 +331,17 @@ async def audit(db) -> None:
                     "payload": d.payload_json if not ok else None,
                 })
 
-    _print_table(rows_summary)
-    _global_status(total_post, total_pass, total_old, applies, rows_summary)
+    _print_table(rows_summary, exit_rows)
+    _global_status(total_post, total_pass, total_old, total_exit,
+                   applies, rows_summary)
 
 
-def _print_table(rows: list[dict]) -> None:
+def _print_table(rows: list[dict], exit_rows: list[dict] | None = None) -> None:
     print("\n" + "-" * 100)
-    print("TABLA RESUMEN")
+    print("TABLA RESUMEN — ENTRADAS (auditadas por bracket)")
     print("-" * 100)
     if not rows:
         print("(sin filas — ninguna entrada aprobada post-aplicación)")
-        return
     for r in rows:
         print(f"\n[{r['verdict']}]{'  <BRACKET VIEJO>' if r['old'] else ''}  "
               f"estrategia={r['sid']}  {r['side']}  {r['when']}")
@@ -308,8 +358,21 @@ def _print_table(rows: list[dict]) -> None:
             print("    " + json.dumps(r["payload"], default=str,
                                       ensure_ascii=False))
 
+    # Salidas: cierran posición, no abren — sin bracket por contrato. Se
+    # listan aparte, NO se auditan como entrada (nunca FAIL).
+    exit_rows = exit_rows or []
+    print("\n" + "-" * 100)
+    print(f"SALIDAS post-aplicación (sin bracket — correcto): {len(exit_rows)}")
+    print("-" * 100)
+    if not exit_rows:
+        print("(ninguna salida aprobada post-aplicación)")
+    for r in exit_rows:
+        print(f"    [EXIT — OK sin bracket]  estrategia={r['sid']}  "
+              f"action={r['action']}  role={r['role']}  {r['when']}")
 
-def _global_status(total_post, total_pass, total_old, applies, rows=None) -> None:
+
+def _global_status(total_post, total_pass, total_old, total_exit,
+                   applies, rows=None) -> None:
     print("\n" + "=" * 100)
     print("ESTADO GLOBAL")
     print("=" * 100)
@@ -318,15 +381,19 @@ def _global_status(total_post, total_pass, total_old, applies, rows=None) -> Non
               "entorno; auditoría sin objeto aquí.")
         return
     if total_post == 0:
-        print("Aún NO hay ninguna entrada aprobada (APPROVE) posterior a la "
-              "aplicación de su estrategia. Nada que comparar todavía: el "
-              "bracket nuevo no ha llegado a producir una entrada aprobada.")
+        print("Aún NO hay ninguna ENTRADA aprobada (APPROVE) posterior a la "
+              "aplicación de su estrategia. Nada que auditar por bracket "
+              "todavía: el bracket nuevo no ha llegado a producir una entrada.")
+        print(f"Salidas aprobadas post-aplicación  : {total_exit}  "
+              f"(sin bracket — correcto, no se auditan)")
         return
     n_fail = sum(1 for r in (rows or []) if r["verdict"] == "FAIL")
     print(f"Entradas aprobadas post-aplicación : {total_post}")
     print(f"  PASS (bracket nuevo correcto)     : {total_pass}")
     print(f"  FAIL                              : {n_fail}")
     print(f"  con BRACKET VIEJO detectado       : {total_old}")
+    print(f"Salidas aprobadas post-aplicación  : {total_exit}  "
+          f"(sin bracket — correcto, contadas aparte, NO son FAIL)")
     if total_old:
         print("  >>> ALERTA: hay entradas con bracket VIEJO post-aplicación. "
               "Payloads capturados arriba para el arquitecto. NO se corrigió "
