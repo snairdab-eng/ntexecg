@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import secrets
+import time as _time
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -372,6 +374,72 @@ async def create_strategy_ui(
 # Detail
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# EST-1 — evidencia en vivo del Nivel 4 (visibilidad; CERO cambios de pipeline)
+# ---------------------------------------------------------------------------
+from app.services.hmm_service import HMMService
+from app.services.quality_scorer import (
+    QualityScorer,
+    active_filter_names,
+    filters_active as _quality_filters_active,
+)
+from app.services.symbol_mapper import SymbolMapper
+
+# Caché TTL del régimen: {(data_symbol, tf): (detail, monotonic_ts)}. Un render
+# no le pega al bridge más de una vez por minuto por activo (presupuesto acotado).
+_REGIME_TTL_S = 60
+_regime_cache: dict[tuple[str, str], tuple[dict, float]] = {}
+
+
+def _market_data(request: Request):
+    """MarketDataService cableada en app.state (lifespan) o None en tests sin
+    inyección — la evidencia degrada a un aviso suave, nunca revienta."""
+    return getattr(request.app.state, "market_data", None)
+
+
+def _hace(dt: datetime | None) -> str:
+    if dt is None:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    s = int((datetime.now(timezone.utc) - dt).total_seconds())
+    if s < 60:
+        return f"hace {s}s"
+    if s < 3600:
+        return f"hace {s // 60}m"
+    if s < 86400:
+        return f"hace {s // 3600}h"
+    return f"hace {s // 86400}d"
+
+
+async def _regime_now(request: Request, db: AsyncSession, tv_symbol: str,
+                      timeframe: str = "1h") -> dict | None:
+    """Régimen 1h ACTUAL del activo (baseline Kaufman ER) con caché TTL 60s.
+    None si no hay market data cableada."""
+    md = _market_data(request)
+    if md is None:
+        return None
+    data_symbol = await SymbolMapper().resolve_market_data_symbol(db, tv_symbol)
+    key = (data_symbol, timeframe)
+    now = _time.monotonic()
+    hit = _regime_cache.get(key)
+    if hit and now - hit[1] < _REGIME_TTL_S:
+        detail = hit[0]
+    else:
+        detail = await HMMService(md).get_regime_detail(data_symbol, timeframe)
+        _regime_cache[key] = (detail, now)
+    return {**detail, "data_symbol": data_symbol}
+
+
+# Etiquetas legibles del régimen (mismas del formulario de Régimen).
+_REGIME_LABEL = {
+    "trending_bull": "tendencia alcista",
+    "trending_bear": "tendencia bajista",
+    "ranging": "rango / lateral",
+    "unknown": "unknown",
+}
+
+
 @router.get("/ui/strategies/{strategy_id}", response_class=HTMLResponse)
 async def strategy_detail(
     request: Request, strategy_id: str, db: AsyncSession = Depends(get_db)
@@ -409,6 +477,44 @@ async def strategy_detail(
         for d, s in dec_res.all()
     ]
 
+    cfg_now = (profile.pipeline_config_json or {}) if profile else {}
+
+    # EST-1 — régimen 1h ACTUAL del activo (evidencia de que el toggle mide algo).
+    regime_tf = ((cfg_now.get("regime") or {}).get("timeframe")) or "1h"
+    try:
+        regime_now = await _regime_now(request, db, strategy.asset_symbol, regime_tf)
+    except Exception:
+        regime_now = None
+    if regime_now is not None:
+        regime_now["label"] = _REGIME_LABEL.get(regime_now.get("regime"),
+                                                regime_now.get("regime"))
+
+    # EST-1 — ÚLTIMA evaluación real que llegó a L4 (score persistido). El
+    # desglose por filtro no se guarda (score_breakdown_json no se escribe), así
+    # que se muestra score + umbral + calidad + motivo.
+    le = (await db.execute(
+        select(StrategyDecision)
+        .where(StrategyDecision.strategy_id == strategy_id,
+               StrategyDecision.score.isnot(None))
+        .order_by(StrategyDecision.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    ultima_eval = None
+    if le is not None:
+        l4 = ((le.pipeline_execution_json or {}).get("level_4") or {})
+        snap = le.config_snapshot_json or {}
+        umbral = snap.get("score_minimum")
+        if umbral is None:
+            umbral = cfg_now.get("score_minimum", 70)
+        ultima_eval = {
+            "score": le.score, "umbral": umbral,
+            "quality": l4.get("quality"),
+            "filters_active": l4.get("filters_active"),
+            "outcome": le.outcome, "block_reason": le.block_reason,
+            "hace": _hace(le.created_at),
+        }
+    filters_active_now = _quality_filters_active(cfg_now)
+
     base = str(request.base_url).rstrip("/")
     # NX-22: la URL completa solo puede mostrarse con token legacy en claro;
     # con hash el token ya no es recuperable (token_hashed → hint en la UI).
@@ -443,9 +549,75 @@ async def strategy_detail(
             "token_hashed": token_hashed,
             "tp_env_enabled": app_settings.TRADERSPOST_ENABLED,
             "deriva_riesgo": deriva_riesgo,
+            "regime_now": regime_now,
+            "ultima_eval": ultima_eval,
+            "filters_active_now": filters_active_now,
             "messages": flash_messages(request),
         }, db=db,
     )
+
+
+@router.get("/ui/strategies/{strategy_id}/probar-filtros")
+async def probar_filtros(
+    request: Request, strategy_id: str, db: AsyncSession = Depends(get_db),
+    f_volume_relative_enabled: bool = False, f_volume_relative_weight: float = 1.0,
+    f_atr_normalized_enabled: bool = False, f_atr_normalized_weight: float = 1.0,
+    f_vwap_position_enabled: bool = False, f_vwap_position_weight: float = 1.0,
+    f_time_of_day_enabled: bool = False, f_time_of_day_weight: float = 1.0,
+    score_minimum: int | None = None,
+) -> JSONResponse:
+    """EST-1 — 'probar ahora' READ-ONLY: corre el QualityScorer con los pesos/
+    checks del form SIN guardar, sobre las barras ACTUALES del bridge, con una
+    señal sintética (último cierre, ahora, compra). Muestra el score que daría
+    la config antes de activarla — NO emite señal, NO escribe, NO toca el
+    pipeline. Sin bridge o sin barras → 409 con aviso."""
+    strat = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if strat is None:
+        return JSONResponse({"error": "estrategia no encontrada"},
+                            status_code=404)
+    md = _market_data(request)
+    if md is None:
+        return JSONResponse(
+            {"error": "sin bridge de datos conectado — no se puede probar ahora"},
+            status_code=409)
+    data_symbol = await SymbolMapper().resolve_market_data_symbol(
+        db, strat.asset_symbol)
+    try:
+        bars = await md.get_bars(data_symbol, "5m", limit=100)
+    except Exception:
+        bars = []
+    if not bars:
+        return JSONResponse(
+            {"error": f"sin barras del bridge para {data_symbol} (5m) — "
+                      "¿NinjaTrader exportando?"},
+            status_code=409)
+
+    cfg = {"filters": {
+        "volume_relative": {"enabled": f_volume_relative_enabled,
+                            "weight": f_volume_relative_weight},
+        "atr_normalized": {"enabled": f_atr_normalized_enabled,
+                           "weight": f_atr_normalized_weight},
+        "vwap_position": {"enabled": f_vwap_position_enabled,
+                          "weight": f_vwap_position_weight},
+        "time_of_day": {"enabled": f_time_of_day_enabled,
+                        "weight": f_time_of_day_weight},
+    }}
+    # Señal SINTÉTICA de prueba (no persiste, no despacha): último cierre.
+    try:
+        last_close = float(bars[-1].get("close"))
+    except (TypeError, ValueError, AttributeError):
+        last_close = None
+    probe = SimpleNamespace(price=last_close, action="buy",
+                            signal_ts=datetime.now(timezone.utc))
+    breakdown = await QualityScorer().score_breakdown(probe, bars, cfg)
+
+    smin = score_minimum if (score_minimum and 1 <= score_minimum <= 100) else 70
+    breakdown["score_minimum"] = smin
+    breakdown["passed"] = breakdown["score"] >= smin
+    breakdown["data_symbol"] = data_symbol
+    breakdown["n_bars"] = len(bars)
+    return JSONResponse(breakdown)
 
 
 @router.post("/ui/strategies/{strategy_id}/dispatch")

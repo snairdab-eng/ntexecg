@@ -168,6 +168,18 @@ class QualityScorer:
     async def score(
         self, signal: NormalizedSignal, bars: list[dict], config: dict
     ) -> int:
+        """Weighted 0-100 score. Thin wrapper over score_breakdown (single
+        source; the number is byte-for-byte the same as before)."""
+        return (await self.score_breakdown(signal, bars, config))["score"]
+
+    async def score_breakdown(
+        self, signal: NormalizedSignal, bars: list[dict], config: dict
+    ) -> dict:
+        """Same weighted score PLUS the per-filter desglose, for the UI's
+        'probar ahora' (read-only). Returns {score, measured, weight_total,
+        filters:[{name, weight, subscore, points, contribution}]}. Sin filtros
+        activos → score 100, measured False, filters []. Pure over its inputs;
+        does NOT read/write the DB nor touch the pipeline."""
         filters = config.get("filters") or {}
         active: list[tuple[str, float]] = []
         for name in _NAMES:
@@ -180,10 +192,19 @@ class QualityScorer:
                 if w > 0:
                     active.append((name, w))
         if not active:
-            return 100
+            return {"score": 100, "measured": False, "weight_total": 0.0,
+                    "filters": []}
 
         total = sum(w for _, w in active)
         acc = 0.0
+        rows: list[dict] = []
         for name, w in active:
-            acc += w * _SUBSCORES[name](signal, bars, config)
-        return int(round(acc / total * 100.0))
+            sub = _SUBSCORES[name](signal, bars, config)      # unrounded → acc
+            acc += w * sub
+            rows.append({
+                "name": name, "weight": w,
+                "subscore": round(sub, 3), "points": int(round(sub * 100)),
+                "contribution": round(w / total * sub * 100, 1),
+            })
+        return {"score": int(round(acc / total * 100.0)), "measured": True,
+                "weight_total": total, "filters": rows}

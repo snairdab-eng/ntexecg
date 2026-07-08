@@ -84,14 +84,21 @@ async def db() -> AsyncSession:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client(db: AsyncSession) -> AsyncClient:
-    app = create_app()
+async def app(db: AsyncSession):
+    """The FastAPI app wired to the test DB. Exposed so tests can set app.state
+    (e.g. app.state.market_data) — the ASGITransport does not run the lifespan
+    that would normally populate it."""
+    application = create_app()
 
     async def _override_get_db() -> AsyncSession:
         yield db
 
-    app.dependency_overrides[get_db] = _override_get_db
+    application.dependency_overrides[get_db] = _override_get_db
+    return application
 
+
+@pytest_asyncio.fixture(scope="function")
+async def client(app) -> AsyncClient:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:

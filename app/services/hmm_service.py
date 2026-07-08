@@ -27,6 +27,43 @@ _DEFAULT_LOOKBACK = 30
 _DEFAULT_TREND_THRESHOLD = 0.30
 
 
+def classify_regime_detail(
+    closes: list[float],
+    lookback: int = _DEFAULT_LOOKBACK,
+    trend_threshold: float = _DEFAULT_TREND_THRESHOLD,
+) -> dict:
+    """Classify + EXPOSE the evidence (Kaufman ER, bars used) for the UI.
+
+    Returns {regime, er, n_bars, n_available, sufficient, min_bars}:
+      - regime: same label as classify_regime (this is its single source).
+      - er: efficiency ratio (rounded 2dp for display), None if insufficient.
+      - n_bars: bars in the ER window; n_available: bars fetched.
+      - sufficient: False when n_available < min_bars → regime 'unknown'.
+
+    Pure and deterministic. The regime DECISION uses the unrounded ER so it is
+    byte-for-byte identical to the previous classify_regime (no gate change).
+    """
+    n_available = len(closes) if closes else 0
+    base = {"n_available": n_available, "min_bars": _MIN_BARS}
+    if closes is None or n_available < _MIN_BARS:
+        return {"regime": "unknown", "er": None, "n_bars": n_available,
+                "sufficient": False, **base}
+    n = min(lookback, n_available - 1)
+    window = closes[-(n + 1):]
+    net = window[-1] - window[0]
+    path = sum(abs(window[i] - window[i - 1]) for i in range(1, len(window)))
+    if path <= 0:
+        return {"regime": "ranging", "er": 0.0, "n_bars": n,
+                "sufficient": True, **base}
+    er = abs(net) / path                          # unrounded → the decision
+    if er < trend_threshold:
+        regime = "ranging"
+    else:
+        regime = "trending_bull" if net > 0 else "trending_bear"
+    return {"regime": regime, "er": round(er, 2), "n_bars": n,
+            "sufficient": True, **base}
+
+
 def classify_regime(
     closes: list[float],
     lookback: int = _DEFAULT_LOOKBACK,
@@ -39,20 +76,9 @@ def classify_regime(
     ER → 1 means a clean directional move (trend); ER → 0 means choppy/ranging.
     Direction is the sign of the net move over the window.
 
-    Pure and deterministic — no ML dependency, fully unit-testable.
-    """
-    if closes is None or len(closes) < _MIN_BARS:
-        return "unknown"
-    n = min(lookback, len(closes) - 1)
-    window = closes[-(n + 1):]
-    net = window[-1] - window[0]
-    path = sum(abs(window[i] - window[i - 1]) for i in range(1, len(window)))
-    if path <= 0:
-        return "ranging"
-    er = abs(net) / path
-    if er < trend_threshold:
-        return "ranging"
-    return "trending_bull" if net > 0 else "trending_bear"
+    Pure and deterministic — no ML dependency, fully unit-testable. Thin wrapper
+    over classify_regime_detail (single source; the label is identical)."""
+    return classify_regime_detail(closes, lookback, trend_threshold)["regime"]
 
 
 class HMMService:
@@ -106,3 +132,33 @@ class HMMService:
 
         # 2) deterministic baseline (always available, no ML dependency)
         return classify_regime(closes, lookback, trend_threshold)
+
+    async def get_regime_detail(
+        self,
+        symbol: str,
+        timeframe: str = "1h",
+        lookback: int = _DEFAULT_LOOKBACK,
+        trend_threshold: float = _DEFAULT_TREND_THRESHOLD,
+    ) -> dict:
+        """Regime + evidence (ER, bars) for the UI — the deterministic 1h
+        baseline (Kaufman ER), the same engine the gate uses in paper/demo (no
+        trained model). Read-only, advisory: never raises; no market data or no
+        bars → 'unknown' insufficient. Does NOT touch the pipeline."""
+        base = {"regime": "unknown", "er": None, "n_bars": 0,
+                "n_available": 0, "sufficient": False, "min_bars": _MIN_BARS,
+                "timeframe": timeframe}
+        if self._market_data is None:
+            return base
+        try:
+            bars = await self._market_data.get_bars(symbol, timeframe, limit=250)
+        except Exception:
+            return base
+        closes: list[float] = []
+        for b in bars or []:
+            try:
+                closes.append(float(b.get("close", 0) or 0))
+            except (ValueError, TypeError):
+                continue
+        detail = classify_regime_detail(closes, lookback, trend_threshold)
+        detail["timeframe"] = timeframe
+        return detail
