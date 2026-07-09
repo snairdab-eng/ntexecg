@@ -35,6 +35,14 @@
         {% endif %}
     </div>
 
+    {% if unknown_strategy %}
+    <!-- LAB-2 §4 — llave inexistente: el Lab NO da altas; el CTA manda al Puente -->
+    <div class="bg-amber-900/30 border border-amber-700 rounded p-3 text-sm text-amber-200 flex items-center justify-between flex-wrap gap-2">
+        <span><b>«{{ unknown_strategy }}»</b> no está en el manifest. El Lab no crea estrategias — el alta pasa por el Puente.</span>
+        <a href="/ui/riesgo" class="px-2 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-emerald-100">➕ nueva estrategia → (pestaña Riesgo)</a>
+    </div>
+    {% endif %}
+
     <!-- LAB-1 — helper de "generar/recalcular caché" (dispara el MISMO job de
          2º plano de /ui/lab/recalc y pollea; recarga al terminar). Se carga
          siempre (fuera del condicional de meta) para servir a la ficha
@@ -194,6 +202,21 @@
         </table>
         </details>
     </div>
+
+    <!-- LAB-2 §4-bis — config VIVA vs selección what-if (informativo, read-only) -->
+    {% if live_config is not none %}
+    <div class="bg-gray-900 border border-gray-800 rounded p-3 text-xs flex items-start justify-between flex-wrap gap-2">
+        <div class="text-gray-400">
+            <span class="text-gray-500 uppercase tracking-wider">config VIVA de {{ key }}:</span>
+            filtros
+            {% if live_config.filters %}<span class="text-gray-200 font-mono">{{ live_config.filters | join(', ') }}</span>{% else %}<span class="text-gray-500">ninguno activo</span>{% endif %}
+            · régimen
+            {% if live_config.regime_enabled %}<span class="text-gray-200">{{ live_config.regime_tf }} → {{ live_config.regime_allowed | join(', ') or '(sin permitidos)' }}</span>{% else %}<span class="text-gray-500">off</span>{% endif %}
+            <span class="ml-1 text-amber-400/80">— informativo: aplicar filtros a producción requiere pasar por el gate del Motor</span>
+        </div>
+        {% if live_link %}<a href="{{ live_link }}" class="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 whitespace-nowrap">⚙ config viva →</a>{% endif %}
+    </div>
+    {% endif %}
 
     <!-- B2 — filtros interactivos (sustractivos): Alpine → POST /ui/lab/aggregate,
          que agrega con el MISMO núcleo del reporte. Nada de métricas en JS. -->
@@ -596,8 +619,12 @@
     {% if datos %}
     <!-- B6.2 — gestión de datos: CSV actual, subida y recálculo en 2º plano -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4" x-data="labData()">
-        <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-1">Datos por estrategia (CSV ↔ estudio)</h2>
-        <p class="text-xs text-gray-600 mb-3">Único punto de escritura del visor: subir un CSV nuevo (validado con el parser antes de aceptar) y <b>recalcular</b> en segundo plano (en el server con la cola cosida). No toca dispatch, config de producción ni TradersPost.</p>
+        <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500">Datos por estrategia (CSV ↔ estudio)</h2>
+            <!-- LAB-2 §4 — el Lab NO da altas: una sola puerta de identidad (el Puente) -->
+            <a href="/ui/riesgo" class="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-emerald-300">➕ nueva estrategia → (pestaña Riesgo)</a>
+        </div>
+        <p class="text-xs text-gray-600 mb-3">Subir/descargar/eliminar el listado y <b>recalcular</b> en 2º plano. Eliminar jamás toca la estrategia viva de Estrategias ni un export original del operador (solo los <code>upload_*</code>). El alta de estrategias vive en Riesgo (el Puente).</p>
         <table class="w-full text-xs mb-3">
             <thead><tr class="text-gray-500 border-b border-gray-800">
                 <th class="text-left px-2 py-1">estrategia</th><th class="text-left px-2 py-1">instr</th>
@@ -615,9 +642,24 @@
                 <td class="px-2 py-1">{{ d.cache_date[:16] if d.cache_date else '⚠ sin caché' }}</td>
                 <td class="px-2 py-1">{{ '✓' if d.confirmed else 'no (editar manifest)' }}</td>
                 <td class="px-2 py-1">
-                    <button @click="recalc('{{ d.key }}')"
-                            class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">recalcular</button>
-                    <span class="ml-1 text-gray-400" x-text="jobs['{{ d.key }}'] || ''"></span>
+                    <div class="flex items-center gap-1 flex-wrap">
+                        <button @click="recalc('{{ d.key }}')"
+                                class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">recalcular</button>
+                        {% if d.has_csv %}
+                        <a href="/ui/lab/csv?strategy={{ d.key }}" class="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-blue-300" title="descargar el CSV vigente">⬇ CSV</a>
+                        {% endif %}
+                        {% if d.enriched %}
+                        <a href="/ui/lab/csv?strategy={{ d.key }}&kind=enriched" class="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-sky-300" title="descargar el enriched del motor">⬇ enriched</a>
+                        {% endif %}
+                        {% if d.key in vivas_manifest %}
+                        <a href="/ui/strategies/{{ d.key }}" class="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="ver la config viva de la estrategia">⚙ config viva →</a>
+                        {% endif %}
+                        <button @click="delDatos('{{ d.key }}', {{ 'true' if d.is_upload else 'false' }})"
+                                class="px-2 py-0.5 rounded bg-amber-900/60 hover:bg-amber-800 text-amber-200" title="borrar caché + listado (conserva la estrategia)">🗑 datos</button>
+                        <button @click="delEstrategia('{{ d.key }}')"
+                                class="px-2 py-0.5 rounded bg-red-900/60 hover:bg-red-800 text-red-200" title="eliminar la estrategia del estudio (no toca la viva)">🗑 estrategia</button>
+                    </div>
+                    <span class="text-gray-400" x-text="jobs['{{ d.key }}'] || ''"></span>
                 </td>
             </tr>
             {% endfor %}
@@ -776,6 +818,35 @@
                     } else {
                         this.jobs[key] = '❌ error (ver cola del job)';
                     }
+                } catch (e) { this.jobs[key] = '❌ ' + e; }
+            },
+            // LAB-2 — eliminar el LISTADO (caché + upload_*); conserva la
+            // estrategia en el manifest. Confirm explícito de qué borra.
+            async delDatos(key, isUpload) {
+                const txt = isUpload
+                    ? 'Borra la caché del Lab y el CSV subido (upload_*) de ' + key + '. La estrategia se conserva. ¿Seguir?'
+                    : 'Borra la caché del Lab de ' + key + '. El CSV es un export ORIGINAL y NO se borra. La estrategia se conserva. ¿Seguir?';
+                if (!confirm(txt)) return;
+                this.jobs[key] = '⏳ borrando…';
+                try {
+                    const r = await fetch('/ui/lab/datos?strategy=' + encodeURIComponent(key), { method: 'DELETE' });
+                    const j = await r.json();
+                    if (!r.ok) { this.jobs[key] = '❌ ' + (j.error || r.status); return; }
+                    this.jobs[key] = '✅ datos borrados — recargando';
+                    setTimeout(() => location.reload(), 700);
+                } catch (e) { this.jobs[key] = '❌ ' + e; }
+            },
+            // LAB-2 — eliminar la ESTRATEGIA del estudio: REUSA el endpoint
+            // v2-D de Riesgo (no duplica lógica), que ya limpia la caché del Lab.
+            async delEstrategia(key) {
+                if (!confirm('Elimina la estrategia ' + key + ' del ESTUDIO (manifest + carpeta del motor + caché del Lab). NO toca la estrategia viva de la DB. ¿Seguir?')) return;
+                this.jobs[key] = '⏳ eliminando…';
+                try {
+                    const r = await fetch('/ui/riesgo/estrategia?strategy=' + encodeURIComponent(key), { method: 'DELETE' });
+                    const j = await r.json();
+                    if (!r.ok) { this.jobs[key] = '❌ ' + (j.error || r.status); return; }
+                    this.jobs[key] = '✅ eliminada — recargando';
+                    setTimeout(() => location.reload(), 700);
                 } catch (e) { this.jobs[key] = '❌ ' + e; }
             },
             async upload(ev) {

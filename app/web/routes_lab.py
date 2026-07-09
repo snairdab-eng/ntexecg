@@ -18,9 +18,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
 
 from app.services.lab_metrics import (
     LEG_SHAPES,
@@ -84,6 +88,30 @@ def _cache_path(key: str) -> Path:
     return LAB_DIR / f"lab_features_{key}.json"
 
 
+def delete_lab_cache(key: str) -> bool:
+    """Borra la caché del Lab de una estrategia. True si existía. El Lab es el
+    dueño del archivo lab_features_<key>.json; Riesgo (v2-D) llama a esto para
+    no dejarla huérfana al eliminar la estrategia. Nunca lanza por ausencia."""
+    p = _cache_path(key)
+    if p.exists():
+        p.unlink(missing_ok=True)
+        return True
+    return False
+
+
+def rename_lab_cache(old_key: str, new_key: str) -> bool:
+    """Mueve la caché del Lab al renombrar la estrategia (v2-D). True si movió.
+    Sin caché de origen → no-op. No pisa un destino existente."""
+    src = _cache_path(old_key)
+    if not src.exists():
+        return False
+    dst = _cache_path(new_key)
+    if dst.exists():
+        return False
+    src.rename(dst)
+    return True
+
+
 def _csv_mtime(key: str) -> float | None:
     entry = load_manifest().get(key)
     if entry:                                   # B6.1: el CSV de la estrategia
@@ -130,6 +158,17 @@ def load_cache(key: str) -> tuple[list[dict], dict] | None:
     return rows, meta
 
 
+def _enriched_exists(key: str, instrument: str) -> bool:
+    """¿El motor generó el enriched.csv de esta estrategia? (para ofrecer la
+    descarga). Import diferido de routes_riesgo (evita el ciclo)."""
+    try:
+        import app.web.routes_riesgo as rr
+        clave = rr.clave_de(key, instrument)
+        return (rr.MOTOR_DIR / clave / "enriched.csv").exists()
+    except Exception:
+        return False
+
+
 def _datos_ctx(manifest: dict) -> list[dict]:
     """B6.2 — estado de datos por estrategia: CSV actual + fechas + job."""
     out = []
@@ -139,9 +178,14 @@ def _datos_ctx(manifest: dict) -> list[dict]:
         if not csv_p.is_absolute():
             csv_p = TRADES_DIR.parent / csv_p
         cache_p = _cache_path(key)
+        csv_name = Path(e["csv"]).name
         out.append({
             "key": key, "instrument": e["instrument"],
-            "csv": Path(e["csv"]).name,
+            "csv": csv_name,
+            # LAB-2 — un export ORIGINAL (no upload_*) nunca se borra desde la UI.
+            "is_upload": csv_name.startswith("upload_"),
+            "has_csv": csv_p.exists(),
+            "enriched": _enriched_exists(key, e["instrument"]),
             "csv_date": (datetime.fromtimestamp(csv_p.stat().st_mtime)
                          .isoformat(timespec="seconds")
                          if csv_p.exists() else None),
@@ -154,11 +198,44 @@ def _datos_ctx(manifest: dict) -> list[dict]:
     return out
 
 
+async def _live_context(db: AsyncSession, manifest: dict,
+                        key: str) -> tuple[list[str], str | None, dict | None]:
+    """LAB-2 §4-bis — topología §E, SOLO LECTURA: qué estrategias del manifest
+    tienen ficha viva en Estrategias (para el link '⚙ config viva →') y los
+    filtros/régimen VIVOS de la actual (pipeline_config_json). El Lab JAMÁS
+    escribe a Estrategias — esto es informativo."""
+    from app.models.strategy import Strategy
+    from app.models.strategy_profile import StrategyProfile
+    from app.services.quality_scorer import active_filter_names
+
+    vivas = set((await db.execute(select(Strategy.strategy_id))).scalars().all())
+    vivas_manifest = [k for k in manifest if k in vivas]
+    if key not in vivas:
+        return vivas_manifest, None, None
+    prow = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == key))).scalar_one_or_none()
+    pcfg = (prow.pipeline_config_json or {}) if prow else {}
+    regime = pcfg.get("regime") or {}
+    live_config = {
+        "filters": active_filter_names(pcfg),
+        "regime_enabled": bool(regime.get("enabled")),
+        "regime_tf": regime.get("timeframe") or "1h",
+        "regime_allowed": (regime.get("allowed_regimes")
+                           or regime.get("allowed") or []),
+    }
+    return vivas_manifest, f"/ui/strategies/{key}", live_config
+
+
 @router.get("/ui/lab", response_class=HTMLResponse)
 async def lab_page(request: Request, instrument: str = "ES",
-                   strategy: str | None = None) -> HTMLResponse:
+                   strategy: str | None = None,
+                   db: AsyncSession = Depends(get_db)) -> HTMLResponse:
     key = resolve_key(strategy, instrument) or "ES"
     manifest = load_manifest()
+    # LAB-2 §4 — el Lab NO da altas: una sola puerta de identidad (el Puente).
+    # Si pidieron una estrategia que no está en el manifest, se avisa y el CTA
+    # manda a Riesgo.
+    unknown_strategy = strategy if (strategy and strategy not in manifest) else None
     # B6.1 — selector por ESTRATEGIA agrupada por símbolo (con manifest);
     # sin manifest, los 8 instrumentos (retrocompat).
     groups: dict[str, list[str]] = {}
@@ -171,10 +248,15 @@ async def lab_page(request: Request, instrument: str = "ES",
     # "MASTER EN USO" del motor): CSV del manifest + fechas. None si la llave es
     # un instrumento sin manifest (retrocompat).
     ficha = next((d for d in (datos or []) if d["key"] == key), None)
+    # §4-bis — links a config viva + comparación informativa (read-only).
+    vivas_manifest, live_link, live_config = await _live_context(db, manifest, key)
     ctx: dict = {"instruments": INSTRUMENTS, "instrument": instrument,
                  "key": key, "groups": groups,
                  "datos": datos, "ficha": ficha,
                  "export_name": (ficha["csv"] if ficha else None),
+                 "unknown_strategy": unknown_strategy,
+                 "vivas_manifest": vivas_manifest,
+                 "live_link": live_link, "live_config": live_config,
                  "regen_cmd": REGEN_CMD, "meta": None, "base": None,
                  "hours": None, "low_n_bucket": LOW_N_BUCKET}
     if cached is not None:
@@ -584,3 +666,93 @@ async def lab_recalc_status(instrument: str = "ES",
     if job is None:
         return JSONResponse({"status": "idle"})
     return JSONResponse({k: v for k, v in job.items() if k != "task"})
+
+
+# ---------------------------------------------------------------------------
+# LAB-2 — compartir/descargar el listado y eliminar los datos (espejo v2-D).
+# Read-only sobre los artefactos; eliminar jamás toca la estrategia viva de la
+# DB ni un export ORIGINAL del operador (solo los upload_* que subió la pestaña).
+# ---------------------------------------------------------------------------
+
+def _manifest_csv_path(entry: dict) -> Path:
+    """Path ABSOLUTO del CSV vigente del manifest (relativo a la raíz del repo,
+    la carpeta padre de ListaDeOperaciones)."""
+    p = Path(entry.get("csv") or "")
+    return p if p.is_absolute() else (TRADES_DIR.parent / p)
+
+
+def _inside(path: Path, base: Path) -> Path | None:
+    """Anti-traversal ESTRICTO: resuelve `path` y exige que quede DENTRO de
+    `base`. None si escapa (symlink/.. incluidos) — nunca sirve fuera del árbol."""
+    try:
+        rp = path.resolve()
+        if rp.is_relative_to(base.resolve()):
+            return rp
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+@router.get("/ui/lab/csv")
+async def lab_csv(strategy: str, kind: str = "listado"):
+    """Descarga el CSV vigente del manifest (kind=listado) o el enriched del
+    motor (kind=enriched). Anti-traversal estricto: el path resuelto debe
+    quedar dentro de ListaDeOperaciones/ (o MotorRiesgo/). READ-ONLY."""
+    key = resolve_key(strategy, None)          # exige estar en el manifest
+    if key is None:
+        return JSONResponse({"error": "estrategia fuera del manifest "
+                                      "(o llave inválida)"}, status_code=400)
+    entry = load_manifest().get(key) or {}
+
+    if kind == "enriched":
+        import app.web.routes_riesgo as rr
+        clave = rr.clave_de(key, entry.get("instrument") or key)
+        rp = _inside(rr.MOTOR_DIR / clave / "enriched.csv", rr.MOTOR_DIR)
+        if rp is None or not rp.exists():
+            return JSONResponse(
+                {"error": "sin enriched — corre Calcular en la pestaña Riesgo"},
+                status_code=404)
+        return FileResponse(rp, media_type="text/csv",
+                            filename=f"{key}_enriched.csv")
+
+    rp = _inside(_manifest_csv_path(entry), TRADES_DIR)
+    if rp is None:
+        return JSONResponse({"error": "ruta de CSV fuera de "
+                                      "ListaDeOperaciones (rechazado)"},
+                            status_code=400)
+    if not rp.exists():
+        return JSONResponse({"error": "sin CSV para esta estrategia "
+                                      "(subí uno o revisá el manifest)"},
+                            status_code=404)
+    fecha = datetime.fromtimestamp(rp.stat().st_mtime).strftime("%Y-%m-%d")
+    return FileResponse(rp, media_type="text/csv",
+                        filename=f"{key}_{fecha}.csv")
+
+
+@router.delete("/ui/lab/datos")
+async def lab_datos_eliminar(strategy: str) -> JSONResponse:
+    """Elimina los DATOS del Lab: la caché lab_features_<key>.json y el CSV
+    SOLO si es un upload_* (jamás un export original del operador — regla
+    v2-D). La entrada del manifest se CONSERVA (queda "sin datos", lista para
+    subir otro). No toca el motor ni la estrategia viva."""
+    key = resolve_key(strategy, None)
+    if key is None:
+        return JSONResponse({"error": "estrategia fuera del manifest"},
+                            status_code=400)
+    if (JOBS.get(key) or {}).get("status") == "running":
+        return JSONResponse({"error": "hay un recálculo corriendo — "
+                                      "espera a que termine"}, status_code=409)
+    async with lock_integrar(key):
+        entry = load_manifest().get(key) or {}
+        cache_borrada = delete_lab_cache(key)
+        csv_p = Path(entry.get("csv") or "")
+        abs_csv = _manifest_csv_path(entry)
+        csv_borrado = csv_p.name.startswith("upload_") and abs_csv.exists()
+        if csv_borrado:
+            abs_csv.unlink(missing_ok=True)
+        JOBS.pop(key, None)
+    return JSONResponse({"ok": True, "strategy": key,
+                         "cache_borrada": cache_borrada,
+                         "csv_borrado": csv_borrado,
+                         "nota": "el manifest conserva la estrategia — "
+                                 "subí un CSV nuevo para regenerar"})

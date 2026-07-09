@@ -11,6 +11,7 @@ Candados verificados:
     (asyncio.gather) — ninguna pisa a la otra.
 """
 import asyncio
+import json
 import os
 import sys
 import time
@@ -18,14 +19,22 @@ from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.web.routes_lab as routes_lab
 import app.web.routes_riesgo as rr
 from app.core.auth import SESSION_COOKIE_NAME, create_session_token
 from app.core.config import settings
+from app.models.strategy import Strategy
+from app.models.strategy_profile import StrategyProfile
 from app.web import manifest_store
 from scripts.lab_analyze import feature_rows
-from tests.test_lab_b6 import _CSV_OK, _seed_es_manifest, _write_manifest
+from tests.test_lab_b6 import (
+    _CSV_OK,
+    _seed_es_manifest,
+    _write_cache,
+    _write_manifest,
+)
 from tests.test_lab_ui import _mk_trades
 
 # recalc instantáneo (sin subproceso real de scripts.lab_analyze): el job se
@@ -178,3 +187,137 @@ async def test_manifest_store_lock_serializa(dirs: Path):
     await asyncio.gather(añade("A"), añade("B"))
     final = manifest_store.load_manifest()
     assert set(final) == {"A", "B"}            # con lock: ninguna se pierde
+
+
+# ===========================================================================
+# LOTE LAB-2 — compartir/descargar + eliminar (espejo v2-D)
+# ===========================================================================
+
+def _rows() -> list[dict]:
+    return feature_rows(_mk_trades(20))
+
+
+@pytest.mark.asyncio
+async def test_csv_download_y_traversal(client: AsyncClient, dirs: Path):
+    """Descarga el CSV vigente; un strategy con traversal → 400 (nunca sirve
+    fuera de ListaDeOperaciones)."""
+    _seed_es_manifest(dirs)                       # Lux_ES1!_x.csv en el manifest
+    r = await client.get("/ui/lab/csv", params={"strategy": "ES5m_ConfStrong"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "ES5m_ConfStrong" in r.headers.get("content-disposition", "")
+    assert "Trade number" in r.text               # el contenido real del CSV
+
+    bad = await client.get("/ui/lab/csv",
+                           params={"strategy": "../../etc/passwd"})
+    assert bad.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_enriched_download(client: AsyncClient, dirs: Path):
+    _seed_es_manifest(dirs)
+    # sin enriched → 404
+    r0 = await client.get("/ui/lab/csv",
+                          params={"strategy": "ES5m_ConfStrong", "kind": "enriched"})
+    assert r0.status_code == 404
+    # el motor generó enriched.csv en su carpeta <clave>
+    clave = rr.clave_de("ES5m_ConfStrong", "ES")
+    mdir = dirs / "MotorRiesgo" / clave
+    mdir.mkdir(parents=True)
+    (mdir / "enriched.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    r = await client.get("/ui/lab/csv",
+                         params={"strategy": "ES5m_ConfStrong", "kind": "enriched"})
+    assert r.status_code == 200
+    assert "enriched" in r.headers.get("content-disposition", "")
+
+
+@pytest.mark.asyncio
+async def test_delete_datos_upload_conserva_manifest(client: AsyncClient, dirs: Path):
+    """Elimina caché + CSV upload_*, PERO conserva la entrada del manifest."""
+    csv = dirs / "ListaDeOperaciones" / "upload_ES5m_X_1.csv"
+    csv.write_text(_CSV_OK, encoding="utf-8")
+    _write_manifest(dirs, {"ES5m_X": {
+        "instrument": "ES", "csv": "ListaDeOperaciones/upload_ES5m_X_1.csv",
+        "confirmed": True}})
+    _write_cache(dirs, _rows(), "ES5m_X")
+    r = await client.delete("/ui/lab/datos", params={"strategy": "ES5m_X"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["cache_borrada"] is True and j["csv_borrado"] is True
+    assert not (dirs / "REPORTES" / "lab_features_ES5m_X.json").exists()
+    assert not csv.exists()
+    entries = json.loads((dirs / "REPORTES" / "lab_manifest.json")
+                         .read_text(encoding="utf-8"))["entries"]
+    assert "ES5m_X" in entries                     # la estrategia se conserva
+
+
+@pytest.mark.asyncio
+async def test_delete_datos_no_toca_export_original(client: AsyncClient, dirs: Path):
+    """Un export ORIGINAL del operador (no upload_*) jamás se borra; la caché sí."""
+    csv = dirs / "ListaDeOperaciones" / "Lux_ES1!_orig.csv"
+    csv.write_text(_CSV_OK, encoding="utf-8")
+    _write_manifest(dirs, {"ES5m_O": {
+        "instrument": "ES", "csv": "ListaDeOperaciones/Lux_ES1!_orig.csv",
+        "confirmed": True}})
+    _write_cache(dirs, _rows(), "ES5m_O")
+    r = await client.delete("/ui/lab/datos", params={"strategy": "ES5m_O"})
+    j = r.json()
+    assert j["cache_borrada"] is True and j["csv_borrado"] is False
+    assert csv.exists()                            # export original intacto
+    assert not (dirs / "REPORTES" / "lab_features_ES5m_O.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_riesgo_delete_limpia_cache_lab(client: AsyncClient, dirs: Path):
+    """Eliminar la estrategia desde Riesgo (v2-D) también limpia la caché del
+    Lab (ya no queda huérfana)."""
+    _write_manifest(dirs, {"ES5m_D": {
+        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv", "confirmed": True}})
+    _write_cache(dirs, _rows(), "ES5m_D")
+    r = await client.delete("/ui/riesgo/estrategia", params={"strategy": "ES5m_D"})
+    assert r.status_code == 200, r.text
+    assert r.json()["lab_cache_borrada"] is True
+    assert not (dirs / "REPORTES" / "lab_features_ES5m_D.json").exists()
+    entries = json.loads((dirs / "REPORTES" / "lab_manifest.json")
+                         .read_text(encoding="utf-8"))["entries"]
+    assert "ES5m_D" not in entries
+
+
+@pytest.mark.asyncio
+async def test_riesgo_rename_mueve_cache_lab(client: AsyncClient, dirs: Path):
+    """Renombrar en Riesgo mueve también la caché del Lab."""
+    _write_manifest(dirs, {"ES5m_A": {
+        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv", "confirmed": True}})
+    _write_cache(dirs, _rows(), "ES5m_A")
+    r = await client.post("/ui/riesgo/estrategia/renombrar",
+                          json={"strategy": "ES5m_A", "nuevo_id": "ES5m_B"})
+    assert r.status_code == 200, r.text
+    assert r.json()["lab_cache_movida"] is True
+    assert not (dirs / "REPORTES" / "lab_features_ES5m_A.json").exists()
+    assert (dirs / "REPORTES" / "lab_features_ES5m_B.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_cta_nueva_estrategia_render(client: AsyncClient, dirs: Path):
+    _seed_es_manifest(dirs)
+    html = (await client.get("/ui/lab?strategy=ES5m_ConfStrong")).text
+    assert "nueva estrategia" in html and "/ui/riesgo" in html
+
+
+@pytest.mark.asyncio
+async def test_live_config_read_only_render(client: AsyncClient, dirs: Path,
+                                            db: AsyncSession):
+    """§4-bis — la config VIVA (filtros/régimen) + link, rotulada informativo."""
+    _seed_es_manifest(dirs)
+    db.add(Strategy(strategy_id="ES5m_ConfStrong", name="x", asset_symbol="ES",
+                    status="paper", enabled=True))
+    db.add(StrategyProfile(strategy_id="ES5m_ConfStrong", pipeline_config_json={
+        "filters": {"volume_relative": {"enabled": True, "weight": 30}},
+        "regime": {"enabled": True, "timeframe": "1h",
+                   "allowed_regimes": ["trending_bull"]}}))
+    await db.commit()
+    html = (await client.get("/ui/lab?strategy=ES5m_ConfStrong")).text
+    assert "config VIVA" in html
+    assert "volume_relative" in html
+    assert "informativo" in html
+    assert "/ui/strategies/ES5m_ConfStrong" in html   # link ⚙ config viva →

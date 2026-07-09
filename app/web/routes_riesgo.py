@@ -1214,7 +1214,11 @@ async def riesgo_renombrar(req: RenombrarReq) -> JSONResponse:
         manifest[a] = manifest.pop(de)
         _guardar_manifest(manifest)
         JOBS.pop(clave_old, None)
+        # LAB-2 — mover también la caché del Lab (llaveada por strategy_id) si
+        # existe; si no, no-op. Que el renombre no la deje huérfana.
+        lab_cache_movida = routes_lab.rename_lab_cache(de, a)
     return JSONResponse({"ok": True, "strategy": a, "clave": clave_new,
+                         "lab_cache_movida": lab_cache_movida,
                          "nota": "solo el ESTUDIO se renombró — la "
                                  "estrategia viva de la DB no se toca"})
 
@@ -1240,7 +1244,11 @@ async def riesgo_estrategia_eliminar(strategy: str) -> JSONResponse:
         manifest.pop(strategy)
         _guardar_manifest(manifest)
         JOBS.pop(clave, None)
-    return JSONResponse({"ok": True, "eliminada": strategy, **borrado})
+        # LAB-2 — borrar también la caché del Lab (REPORTES/lab_features_<key>)
+        # para no dejarla huérfana. El key del Lab = strategy_id del manifest.
+        lab_cache_borrada = routes_lab.delete_lab_cache(strategy)
+    return JSONResponse({"ok": True, "eliminada": strategy,
+                         "lab_cache_borrada": lab_cache_borrada, **borrado})
 
 
 @router.delete("/ui/riesgo/datos")
