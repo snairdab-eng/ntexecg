@@ -527,6 +527,23 @@
                        } }">
             <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Filtros de calidad — Nivel 4 (Fase 5)</div>
             <p class="text-xs text-gray-500 mb-3">Opt-in. Sin filtros activos, el score es <b>100</b> (pasa). Con uno o más activos, el score es el promedio ponderado (0–100) y se compara contra el <b>score mínimo</b>. El peso es relativo (cualquier escala).</p>
+
+            <!-- EST-2 — evidencia informativa del Lab (SOLO LECTURA); activar un
+                 filtro en producción es decisión del operador. -->
+            {% if lab_evidence %}
+            <div class="text-xs mb-3 rounded px-2 py-1.5 bg-gray-800/40 border border-gray-800 text-gray-500">
+                <span class="text-gray-400">Evidencia informativa del Lab</span> — activar un filtro en producción es
+                decisión del operador; el edge base viene de LuxAlgo (pivote).
+                {% if lab_evidence.lab_link %}
+                <a href="{{ lab_evidence.lab_link }}" class="text-blue-400 hover:text-blue-300 whitespace-nowrap">ver estudio en el Lab →</a>
+                {% endif %}
+                {% if not lab_evidence.available %}
+                <span class="text-amber-500">· sin caché — recalcula en el Lab</span>
+                {% elif lab_evidence.stale %}
+                <span class="text-amber-500">· ⚠ caché vieja vs CSV — recalcula (evidencia de {{ lab_evidence.cache_date }})</span>
+                {% endif %}
+            </div>
+            {% endif %}
             <!-- EST-1 — última evaluación real que llegó a L4 (evidencia de que el filtro mide) -->
             <div class="text-xs mb-3 rounded px-2 py-1 bg-gray-800/60 border border-gray-700 text-gray-300">
                 {% if ultima_eval %}
@@ -554,6 +571,21 @@
                                class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-sm">
                     </div>
                 </div>
+                {% if lab_evidence and lab_evidence.available %}
+                {% set v = lab_evidence.verdicts.get(name) %}
+                {% if v %}
+                <div class="text-xs text-gray-500 ml-6 -mt-1 mb-1">
+                    {% if v.state == 'sin_datos' %}
+                    Lab: sin OOS suficiente para veredicto
+                    {% else %}
+                    Lab:{% if v.d_net_out is not none %} Δnet OOS {{ '+' if v.d_net_out >= 0 else '−' }}${{ (v.d_net_out|abs)|round|int }}{% endif %}{% if v.pf_base_out is not none and v.pf_kept_out is not none %}{% if v.d_net_out is not none %},{% endif %} PF {{ v.pf_base_out }}→{{ v.pf_kept_out }}{% endif %}
+                    {% if v.state == 'candidato' %}<span class="text-emerald-500">(candidato — valida antes de activar)</span>{% else %}<span class="text-gray-600">(no aporta)</span>{% endif %}
+                    {% if v.low_n_out %}<span class="text-gray-600">· muestra OOS chica</span>{% endif %}
+                    {% if lab_evidence.stale %}<span class="text-amber-600">· caché vieja</span>{% endif %}
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% endif %}
                 {% endfor %}
                 {% set pc_smin = (profile.pipeline_config_json or {}).get('score_minimum') if profile else None %}
                 <div class="flex items-center gap-3 pt-2 border-t border-gray-800">

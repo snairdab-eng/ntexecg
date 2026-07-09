@@ -58,6 +58,121 @@ def _parse_ints(raw: str) -> list:
 
 router = APIRouter()
 
+# ---------------------------------------------------------------------------
+# EST-2 — veredicto del Lab por filtro en la ficha (SOLO LECTURA).
+#
+# Topología VINCULANTE: Lab→Estrategias es informativo; aquí NUNCA se aplica ni
+# se escribe nada. Se lee la caché del camino A (REPORTES/lab_features_<key>.json
+# vía routes_lab.load_cache) y se re-agrega con las MISMAS funciones de
+# lab_metrics que usa el visor/reporte (paridad exacta): selection_mask + aggregate
+# sobre el universo con cobertura de barras, in/out-of-sample. El criterio de
+# "candidato" es el MISMO de los supervivientes OOS del Lab (ΔPF>0 dentro Y fuera).
+#
+# Mapeo EXPLÍCITO nombre de filtro de producción (checkbox de la ficha /
+# quality_scorer._NAMES) ↔ sub-score del Lab (lab_metrics.selection_mask). Hoy es
+# 1:1, pero el mapeo es explícito y testeado: si un nombre divergiera, el veredicto
+# seguiría leyendo la evidencia correcta.
+FILTER_TO_LAB_SUB = {
+    "volume_relative": "volume_relative",
+    "atr_normalized": "atr_normalized",
+    "vwap_position": "vwap_position",
+    "time_of_day": "time_of_day",
+}
+
+# Recompute barato pero NO por request: memoizado por (key, mtime de la caché).
+# Un mtime nuevo (regeneró el Lab) invalida; el TTL acota memoria/tiempo sin
+# acoplar nada a lab_analyze (no se precomputa al regenerar — topología limpia).
+_LAB_VERDICT_TTL = 300.0
+_LAB_VERDICT_CACHE: dict = {}   # strategy_id -> (cache_mtime, monotonic_ts, verdicts)
+
+
+def _lab_filter_verdicts(rows: list[dict]) -> dict[str, dict]:
+    """Veredicto OOS por filtro de producción, en paridad con el Lab.
+
+    Para cada filtro barre la grilla de umbrales del Lab (lab_metrics.SUB_THRESHOLDS),
+    re-agrega in/out con selection_mask + aggregate (net_usd y PF), y clasifica:
+      - candidato: existe umbral con ΔPF>0 DENTRO y FUERA (criterio superviviente
+        OOS del Lab) — se reporta el de mayor ΔPF out.
+      - no_aporta: ningún umbral sobrevive — se reporta el de mayor ΔPF out (el
+        "menos malo") para mostrar la evidencia honesta.
+      - sin_datos: sin OOS comparable (PF/net None).
+    """
+    from app.services import lab_metrics as lm
+
+    universe = [r for r in rows if r.get("atr_pct") is not None]
+    base_in = [r for r in universe if r["in_sample"]]
+    base_out = [r for r in universe if not r["in_sample"]]
+
+    def agg(sel: list[dict]) -> dict:
+        return lm.aggregate([r["pnl_pct"] for r in sel],
+                            [r.get("pnl_usd") or 0.0 for r in sel])
+
+    b_in, b_out = agg(base_in), agg(base_out)
+
+    def _d(a, b):
+        return round(a - b, 2) if a is not None and b is not None else None
+
+    verdicts: dict[str, dict] = {}
+    for fname, sub in FILTER_TO_LAB_SUB.items():
+        cands: list[dict] = []
+        for thr in lm.SUB_THRESHOLDS:
+            sel = {"subs": {sub: thr}}
+            a_in = agg([r for r in base_in if lm.selection_mask(r, sel)])
+            a_out = agg([r for r in base_out if lm.selection_mask(r, sel)])
+            d_pf_in, d_pf_out = _d(a_in["pf"], b_in["pf"]), _d(a_out["pf"], b_out["pf"])
+            cands.append({
+                "thr": thr,
+                "d_net_out": _d(a_out["net_usd"], b_out["net_usd"]),
+                "pf_base_out": b_out["pf"], "pf_kept_out": a_out["pf"],
+                "d_pf_in": d_pf_in, "d_pf_out": d_pf_out, "n_out": a_out["n"],
+                "survivor": (d_pf_in is not None and d_pf_out is not None
+                             and d_pf_in > 0 and d_pf_out > 0),
+            })
+        survs = [c for c in cands if c["survivor"]]
+        comparables = [c for c in cands if c["d_pf_out"] is not None]
+        if survs:
+            best, state = max(survs, key=lambda c: c["d_pf_out"]), "candidato"
+        elif comparables:
+            best, state = max(comparables, key=lambda c: c["d_pf_out"]), "no_aporta"
+        else:
+            best, state = {}, "sin_datos"
+        verdicts[fname] = {
+            "state": state,
+            "d_net_out": best.get("d_net_out"),
+            "pf_base_out": best.get("pf_base_out"),
+            "pf_kept_out": best.get("pf_kept_out"),
+            "n_out": best.get("n_out", 0),
+            "low_n_out": bool(best) and best.get("n_out", 0) < lm.LOW_N_OUT,
+        }
+    return verdicts
+
+
+def lab_evidence_for(strategy_id: str) -> dict | None:
+    """Bloque de evidencia del Lab para la ficha (o None si la estrategia no
+    está en el manifest del Lab). SOLO LECTURA: load_manifest + load_cache;
+    ni una escritura. Memoiza el veredicto por (key, mtime de caché)."""
+    import app.web.routes_lab as rl
+
+    if strategy_id not in rl.load_manifest():
+        return None
+    lab_link = f"/ui/lab?strategy={strategy_id}"
+    cached = rl.load_cache(strategy_id)
+    if cached is None:                      # en el manifest pero sin caché aún
+        return {"available": False, "stale": False, "cache_date": None,
+                "n_out": 0, "lab_link": lab_link, "verdicts": {}}
+    rows, meta = cached
+    mtime = meta.get("cache_mtime")
+    now = _time.monotonic()
+    hit = _LAB_VERDICT_CACHE.get(strategy_id)
+    if hit and hit[0] == mtime and now - hit[1] < _LAB_VERDICT_TTL:
+        verdicts = hit[2]
+    else:
+        verdicts = _lab_filter_verdicts(rows)
+        _LAB_VERDICT_CACHE[strategy_id] = (mtime, now, verdicts)
+    return {"available": True, "stale": bool(meta.get("stale")),
+            "cache_date": meta.get("cache_mtime"), "n_out": meta.get("n_out", 0),
+            "lab_link": lab_link, "verdicts": verdicts}
+
 _VALID_STATUSES = {
     "candidate", "shadow", "paper", "micro", "limited_live", "live",
     "paused", "quarantined", "retired",
@@ -515,6 +630,13 @@ async def strategy_detail(
         }
     filters_active_now = _quality_filters_active(cfg_now)
 
+    # EST-2 — evidencia informativa del Lab por filtro (read-only, a prueba de
+    # todo: sin manifest/caché → None → el bloque no aparece).
+    try:
+        lab_evidence = lab_evidence_for(strategy_id)
+    except Exception:
+        lab_evidence = None
+
     base = str(request.base_url).rstrip("/")
     # NX-22: la URL completa solo puede mostrarse con token legacy en claro;
     # con hash el token ya no es recuperable (token_hashed → hint en la UI).
@@ -552,6 +674,7 @@ async def strategy_detail(
             "regime_now": regime_now,
             "ultima_eval": ultima_eval,
             "filters_active_now": filters_active_now,
+            "lab_evidence": lab_evidence,
             "messages": flash_messages(request),
         }, db=db,
     )
