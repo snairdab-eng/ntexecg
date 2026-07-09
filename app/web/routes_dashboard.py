@@ -13,6 +13,7 @@ partials NO se tocan, solo se fusionó la página principal.
 """
 from __future__ import annotations
 
+import time as _time
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, Request
@@ -20,13 +21,17 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.decision import StrategyDecision
 from app.models.normalized_signal import NormalizedSignal
+from app.models.position_state import PositionState
 from app.models.raw_signal import RawSignal
 from app.models.strategy import Strategy
+from app.models.strategy_profile import StrategyProfile
 from app.models.market_data_status import MarketDataStatus
 from app.models.webhook_delivery import WebhookDelivery
+from app.services.repositories import get_global_profile
 from app.services.strategy_aliases import canonical_id, get_alias_map
 from app.web.common import render, flash_messages
 
@@ -34,6 +39,67 @@ router = APIRouter()
 
 # Rangos del selector: 0 = hoy (desde medianoche UTC), el resto en días.
 RANGOS_DIAS = (0, 7, 14, 30, 90)
+
+# "Abierta" = cualquier estado que NO sea FLAT (algo vivo o pendiente que
+# vigilar). Mismo universo que la pestaña Posiciones, solo que sin las FLAT.
+_OPEN_STATES = ("LONG", "SHORT", "PENDING_LONG", "PENDING_SHORT",
+                "EXITING", "REVERSING", "LOCKED", "UNKNOWN")
+
+
+# ── Badge de deriva GLOBAL: caché en memoria (TTL corto) ─────────────────
+# Barrer el manifest + leer el último estudio de cada clave del disco es caro
+# para hacerlo por request. Se computa una vez y se sirve cacheado durante
+# _DERIVA_TTL segundos (el estado de deriva cambia lento — es config vs
+# estudio, no un tick de mercado).
+_DERIVA_TTL = 60.0
+_DERIVA_CACHE: dict = {"ts": 0.0, "value": None}
+
+
+async def _deriva_global(db: AsyncSession) -> dict:
+    """Cuenta las estrategias del manifest por estado de deriva
+    (aplicada / difiere / sin_aplicar / sin_estrategia_viva) reusando el
+    MISMO par routes_riesgo.deriva_estudio + _activacion_json que el badge
+    por estrategia del Puente. Solo mira claves CON recomendación validada;
+    resultado cacheado (_DERIVA_TTL s)."""
+    now = _time.monotonic()
+    cached = _DERIVA_CACHE["value"]
+    if cached is not None and now - _DERIVA_CACHE["ts"] < _DERIVA_TTL:
+        return cached
+
+    from app.web.manifest_store import load_manifest
+    from app.web.routes_riesgo import (
+        clave_de, _latest_estudio, _activacion_json, deriva_estudio,
+    )
+
+    counts = {"aplicada": 0, "difiere": 0,
+              "sin_aplicar": 0, "sin_estrategia_viva": 0}
+    manifest = load_manifest()
+    if manifest:
+        # Dos queries acotadas (no una por estrategia): pcfg viva por id y el
+        # set de ids con estrategia dada de alta (hay_viva).
+        prows = (await db.execute(select(StrategyProfile))).scalars().all()
+        pcfg_by_id = {p.strategy_id: (p.pipeline_config_json or {})
+                      for p in prows}
+        vivas = set(
+            (await db.execute(select(Strategy.strategy_id))).scalars().all()
+        )
+        for sid, entry in manifest.items():
+            instrument = (entry or {}).get("instrument")
+            if not instrument:
+                continue
+            res = _latest_estudio(clave_de(sid, instrument))
+            reco = (res or {}).get("recomendacion")
+            if not reco:                      # sin gate OOS → sin badge
+                continue
+            der = deriva_estudio(
+                pcfg_by_id.get(sid), _activacion_json(reco),
+                (res or {}).get("_fecha"), hay_viva=sid in vivas,
+            )
+            if der and der["estado"] in counts:
+                counts[der["estado"]] += 1
+
+    _DERIVA_CACHE.update(ts=now, value=counts)
+    return counts
 
 
 def _today_start() -> datetime:
@@ -238,6 +304,64 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db),
         for d, s in recent.all()
     ]
 
+    # ── Posiciones abiertas (estado ACTUAL — mismo universo que /ui/positions,
+    # solo las no-FLAT) ───────────────────────────────────────────────────
+    pos_rows = await db.execute(
+        select(PositionState)
+        .where(PositionState.state.in_(_OPEN_STATES))
+        .order_by(PositionState.updated_at.desc())
+    )
+    open_positions = [
+        {
+            "symbol": p.symbol,
+            "side": p.direction or ("long" if "LONG" in p.state
+                                    else "short" if "SHORT" in p.state else "—"),
+            "qty": p.quantity,
+            "state": p.state,
+            "since": p.updated_at,
+        }
+        for p in pos_rows.scalars().all()
+    ]
+
+    # ── Últimas entregas con bracket (SENT/FAILED del rango, 5) — del payload
+    # persistido saco stopLoss.stopPrice y takeProfit.limitPrice si existen;
+    # si no viajan (p. ej. salidas o escalonadas), muestro '—', no invento ──
+    deliv_rows = await db.execute(
+        select(WebhookDelivery)
+        .where(
+            WebhookDelivery.created_at >= since,
+            WebhookDelivery.status.in_(("SENT", "FAILED")),
+        )
+        .order_by(WebhookDelivery.created_at.desc())
+        .limit(5)
+    )
+    recent_deliveries = []
+    for d in deliv_rows.scalars().all():
+        payload = d.payload_json or {}
+        recent_deliveries.append({
+            "time": d.created_at,
+            "strategy_id": canonical_id(d.strategy_id, alias_map),
+            "action": payload.get("action"),
+            "status": d.status,
+            "stop_price": (payload.get("stopLoss") or {}).get("stopPrice"),
+            "limit_price": (payload.get("takeProfit") or {}).get("limitPrice"),
+        })
+
+    # ── Badge de deriva global (cacheado) ────────────────────────────────
+    deriva_global = await _deriva_global(db)
+
+    # ── Kill-switch por capas (SOLO lectura — armar sigue en su flujo con
+    # CONFIRMAR): env (settings) · global (GlobalProfile) · armadas X/Y ────
+    gp = await get_global_profile(db)
+    profiles = (await db.execute(select(StrategyProfile))).scalars().all()
+    kill_switch = {
+        "env": bool(settings.TRADERSPOST_ENABLED),
+        "global": bool(gp and gp.traderspost_enabled and not gp.dry_run),
+        "armadas": sum(1 for p in profiles
+                       if p.traderspost_enabled and not p.dry_run),
+        "total": len(profiles),
+    }
+
     total_dec = sum(outcomes.values())
     approve_n = outcomes.get("APPROVE", 0)
     ctx = {
@@ -262,6 +386,10 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db),
         "by_strategy": by_strategy,
         "strategy_counts": strategy_counts,
         "recent_decisions": recent_decisions,
+        "open_positions": open_positions,
+        "recent_deliveries": recent_deliveries,
+        "deriva_global": deriva_global,
+        "kill_switch": kill_switch,
         "messages": flash_messages(request),
     }
     return await render(request, "dashboard.html", ctx, db=db)

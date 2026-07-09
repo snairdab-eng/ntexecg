@@ -91,6 +91,88 @@
         </div>
     </section>
 
+    <!-- Vigilancia operacional: kill-switch por capas + deriva de estudios -->
+    <section class="flex items-center flex-wrap gap-2 text-xs">
+        {% set k = kill_switch %}
+        <span class="text-gray-500 uppercase tracking-wider mr-1">Kill-switch:</span>
+        <span class="px-2 py-1 rounded font-mono {% if k.env %}bg-green-900/50 text-green-300 border border-green-800{% else %}bg-gray-800 text-gray-400 border border-gray-700{% endif %}"
+              title="env TRADERSPOST_ENABLED — interruptor maestro del sistema">
+            env {{ '✓' if k.env else '✗' }}</span>
+        <span class="px-2 py-1 rounded font-mono {% if k['global'] %}bg-green-900/50 text-green-300 border border-green-800{% else %}bg-gray-800 text-gray-400 border border-gray-700{% endif %}"
+              title="GlobalProfile: traderspost_enabled y NO dry_run">
+            global {{ '✓' if k['global'] else '✗' }}</span>
+        <span class="px-2 py-1 rounded font-mono {% if k.armadas %}bg-green-900/50 text-green-300 border border-green-800{% else %}bg-gray-800 text-gray-400 border border-gray-700{% endif %}"
+              title="Estrategias con traderspost_enabled y NO dry_run">
+            armadas {{ k.armadas }}/{{ k.total }}</span>
+
+        {% set g = deriva_global %}
+        <span class="text-gray-500 uppercase tracking-wider ml-4 mr-1">Estudios:</span>
+        <a href="/ui/riesgo" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 hover:border-gray-600 text-gray-300">
+            <span class="text-green-400">{{ g.aplicada }}</span> aplicadas ·
+            <span class="text-amber-400">{{ g.difiere }}</span> difieren ·
+            <span class="text-red-400">{{ g.sin_aplicar }}</span> sin aplicar{% if g.sin_estrategia_viva %} ·
+            <span class="text-gray-400">{{ g.sin_estrategia_viva }}</span> sin estrategia viva{% endif %}
+        </a>
+    </section>
+
+    <!-- Posiciones abiertas + últimas entregas con bracket -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+            <div class="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+                <h2 class="text-sm uppercase tracking-wider text-gray-500">
+                    Posiciones abiertas
+                    <span class="ml-1 text-white font-bold">{{ open_positions | length }}</span>
+                </h2>
+                <a href="/ui/positions" class="text-xs text-blue-400 hover:text-blue-300">ver todas →</a>
+            </div>
+            <table class="w-full text-sm">
+                <tbody>
+                    {% for p in open_positions %}
+                    <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                        <td class="px-3 py-2 font-mono text-gray-200">{{ p.symbol }}</td>
+                        <td class="px-3 py-2 {% if p.side == 'long' %}text-green-400{% elif p.side == 'short' %}text-red-400{% else %}text-gray-400{% endif %}">{{ p.side }}</td>
+                        <td class="px-3 py-2 text-right text-gray-300">{{ p.qty }}</td>
+                        <td class="px-3 py-2 text-gray-500 text-xs">{{ p.state }}</td>
+                        <td class="px-3 py-2 text-gray-500 font-mono text-xs whitespace-nowrap text-right">{{ p.since.strftime('%m-%d %H:%M') if p.since else '—' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" class="px-3 py-6 text-center text-gray-600">Sin posiciones abiertas.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+            <h2 class="text-sm uppercase tracking-wider text-gray-500 px-4 py-2 border-b border-gray-800">
+                Últimas entregas <span class="text-gray-600 normal-case tracking-normal">— con bracket</span>
+            </h2>
+            <table class="w-full text-sm">
+                <thead class="text-[10px] text-gray-600 uppercase">
+                    <tr class="border-b border-gray-800">
+                        <th class="text-left px-3 py-1">Hora</th>
+                        <th class="text-left px-3 py-1">Estrategia</th>
+                        <th class="text-left px-3 py-1">Acción</th>
+                        <th class="text-right px-3 py-1">Stop</th>
+                        <th class="text-right px-3 py-1">TP</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for d in recent_deliveries %}
+                    <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50 {% if d.status == 'FAILED' %}bg-red-900/10{% endif %}">
+                        <td class="px-3 py-2 text-gray-500 font-mono text-xs whitespace-nowrap">{{ d.time.strftime('%H:%M:%S') }}</td>
+                        <td class="px-3 py-2 font-mono text-gray-300">{{ d.strategy_id }}</td>
+                        <td class="px-3 py-2 text-gray-400">{{ d.action or '—' }}{% if d.status == 'FAILED' %} <span class="text-red-400 text-xs">✗</span>{% endif %}</td>
+                        <td class="px-3 py-2 text-right font-mono text-xs {% if d.stop_price is not none %}text-orange-300{% else %}text-gray-600{% endif %}">{{ d.stop_price if d.stop_price is not none else '—' }}</td>
+                        <td class="px-3 py-2 text-right font-mono text-xs {% if d.limit_price is not none %}text-green-300{% else %}text-gray-600{% endif %}">{{ d.limit_price if d.limit_price is not none else '—' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" class="px-3 py-6 text-center text-gray-600">Sin entregas en el rango.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+
     <!-- Bridge status (HTMX polling 30s) -->
     <section>
         <h2 class="text-sm uppercase tracking-wider text-gray-500 mb-2">
