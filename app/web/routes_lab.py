@@ -277,7 +277,31 @@ async def lab_page(request: Request, instrument: str = "ES",
                              for name, legs in LEG_SHAPES]
         # B5.2 — brackets nominales por estrategia (TP = MFE p99, SL = MAE p99)
         ctx["nominal"] = nominal_brackets(rows)
+        # LAB-3 — reconciliación del listado crudo contra el master del Motor
+        # (read-only, sin recompute: lee un JSON pequeño). None si no hay master.
+        key_instrument = (manifest.get(key) or {}).get("instrument") or (
+            key if key in INSTRUMENTS else None)
+        ctx["reconciliation"] = (
+            _reconciliation_for(key, key_instrument, rows)
+            if key_instrument else None)
     return await render(request, "lab.html", ctx)
+
+
+def _reconciliation_for(key: str, instrument: str,
+                        rows: list[dict]) -> dict | None:
+    """LAB-3 — estado de la llave frente al master del Motor (mismo espíritu
+    que el badge de deriva del Puente). None si no hay filas o no hay master.
+    A prueba de todo: cualquier fallo → None (sin línea)."""
+    if not rows:
+        return None
+    try:
+        import app.web.routes_riesgo as rr
+        from scripts.lab_motor_reconcile import reconcile_one
+
+        motor = rr._motor_manifest(rr.clave_de(key, instrument))
+        return reconcile_one(rows, motor) if motor else None
+    except Exception:
+        return None
 
 
 @router.get("/ui/lab/data")
@@ -325,7 +349,6 @@ async def lab_aggregate(sel: Selection) -> JSONResponse:
     result = lift_from_rows(rows, selection)
     deltas = deltas_vs_base(result, base)
     return JSONResponse({
-        "instrument": sel.instrument,
         "selection": selection,
         "base": base,
         "result": result,
@@ -359,7 +382,6 @@ async def lab_best(instrument: str = "ES",
     rows, meta = cached
     survivors = oos_survivors_from_rows(rows)
     return JSONResponse({
-        "instrument": instrument,
         "survivors": survivors,
         "winner": survivors[0] if survivors else None,
         "none_robust": not survivors,
@@ -430,9 +452,6 @@ async def lab_combined(sel: CombinedSel) -> JSONResponse:
     split_idx = sum(1 for row in universe if row["in_sample"])
     deltas = deltas_vs_base(result, base)
     return JSONResponse({
-        "instrument": sel.instrument,
-        "config": {"selection": selection, "sl_k": sel.sl_k, "tp": sel.tp,
-                   "legs": legs},
         "base": base,
         "result": {"in": result["in"], "out": result["out"]},
         "deltas": deltas,
@@ -442,8 +461,10 @@ async def lab_combined(sel: CombinedSel) -> JSONResponse:
         "curves": {"base": equity_curve(native),
                    "combined": equity_curve(outcomes),
                    "split_idx": split_idx},
+        # LAB-3 — la señal de fills aproximados que la UI muestra vive en
+        # `scaling.approx_fills`; el top-level `approx_fills` era un duplicado
+        # que nadie leía (quitado). El eco `config` tampoco se renderizaba.
         "scaling": scaling,
-        "approx_fills": result["approx_fills"],
         "low_n_out": result["low_n_out"],
         "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
     })
@@ -469,7 +490,6 @@ async def lab_default(instrument: str = "ES",
     rows, meta = cached
     study = default_config_study(rows)
     return JSONResponse({
-        "instrument": instrument,
         **study,
         "meta": {"stale": meta["stale"], "n_trades": meta["n_trades"]},
     })
@@ -520,8 +540,6 @@ async def lab_resim(sel: ResimSel) -> JSONResponse:
               and not any(row.get("t_sl_touch") for row in universe))
     deltas = deltas_vs_base(r, base)
     return JSONResponse({
-        "instrument": sel.instrument,
-        "sl_k": sel.sl_k, "tp": sel.tp,
         "base": base,
         "result": {"in": r["in"], "out": r["out"]},
         "deltas": deltas,

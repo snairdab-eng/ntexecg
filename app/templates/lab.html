@@ -144,6 +144,23 @@
         </div>
     </div>
 
+    {% if reconciliation %}
+    <!-- LAB-3 — reconciliación del listado crudo contra el MASTER del Motor
+         (mismo espíritu que el badge de deriva del Puente): solo aparece cuando
+         hay master con qué comparar. -->
+    <div class="text-xs rounded px-2 py-1.5 border {% if reconciliation.coincide %}border-gray-800 bg-gray-950 text-gray-400{% else %}border-amber-700 bg-amber-900/20 text-amber-200{% endif %}">
+        {% if reconciliation.coincide %}
+        coincide con el master del Motor ✓
+        <span class="text-gray-600">— n={{ reconciliation.lab_n }} · net ${{ '{:,.0f}'.format(reconciliation.lab_net) }} · {{ reconciliation.lab_cov[0] }}…{{ reconciliation.lab_cov[1] }}</span>
+        {% else %}
+        ⚠ difiere del master del Motor: {{ reconciliation.detail | join('; ') }}
+        {% endif %}
+        {% if reconciliation.atr_filtered %}
+        <span class="text-gray-600">· {{ reconciliation.atr_filtered }} trades sin cobertura ATR (excluidos del análisis, esperado)</span>
+        {% endif %}
+    </div>
+    {% endif %}
+
     {% if meta.stale %}
     <!-- LAB-1 — banner ÁMBAR FUERTE + botón (no solo texto): el operador jamás
          debe leer un estudio viejo sin darse cuenta. -->
@@ -218,8 +235,10 @@
     </div>
     {% endif %}
 
-    <!-- B2 — filtros interactivos (sustractivos): Alpine → POST /ui/lab/aggregate,
-         que agrega con el MISMO núcleo del reporte. Nada de métricas en JS. -->
+    <!-- B2 — filtros interactivos (sustractivos): Alpine → POST /ui/lab/combined
+         (un solo estado: filtros + SL/TP + piernas), que agrega con el MISMO
+         núcleo del reporte. Nada de métricas en JS. El endpoint /ui/lab/aggregate
+         queda para el efecto AISLADO vía API (no lo usa este panel). -->
     <div class="bg-gray-900 border border-gray-800 rounded p-4"
          x-data="labSel('{{ key }}')" x-init="refresh()">
         <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
