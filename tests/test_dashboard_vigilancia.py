@@ -48,12 +48,14 @@ def _reset_deriva_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.web.manifest_store.load_manifest", dict)
 
 
-def _position(state="LONG", symbol="MESU2026", qty=1) -> PositionState:
+def _position(state="LONG", symbol="MESU2026", qty=1,
+              risk_plan_json=None) -> PositionState:
     direction = ("long" if "LONG" in state else
                  "short" if "SHORT" in state else None)
     return PositionState(
         strategy_id="fx", account_id="paper_default", symbol=symbol,
         state=state, state_source="estimated", direction=direction, quantity=qty,
+        risk_plan_json=risk_plan_json,
     )
 
 
@@ -101,6 +103,47 @@ async def test_posiciones_abiertas_vacio(client: AsyncClient, db: AsyncSession) 
     await db.commit()
     html = (await client.get("/ui")).text
     assert "Sin posiciones abiertas." in html
+
+
+@pytest.mark.asyncio
+async def test_posicion_since_usa_opened_at(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """'Abierta desde' FIEL: con opened_at en risk_plan_json se muestra ESE
+    timestamp (no updated_at) y se rotula 'desde'."""
+    opened = datetime(2026, 7, 1, 13, 37, tzinfo=UTC)
+    db.add(_position("LONG", symbol="MESU2026", qty=1,
+                     risk_plan_json={"opened_at": opened.isoformat()}))
+    await db.commit()
+
+    html = (await client.get("/ui")).text
+    # el opened_at real (07-01 13:37), NO la fecha de hoy (updated_at)
+    assert "07-01 13:37" in html
+    assert "desde" in html
+
+
+@pytest.mark.asyncio
+async def test_posicion_since_fallback_updated_at(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Sin opened_at → cae a updated_at, rotulado honestamente 'actualizado'
+    (no 'desde')."""
+    db.add(_position("LONG", symbol="MESU2026", qty=1, risk_plan_json=None))
+    await db.commit()
+
+    html = (await client.get("/ui")).text
+    assert "actualizado" in html
+
+
+@pytest.mark.asyncio
+async def test_live_card_rotula_solo_paper(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """La tarjeta 'Live' (invariante 0 — solo paper/demo) se rotula como
+    confirmación de seguridad, no como un cero ambiguo."""
+    await db.commit()
+    html = (await client.get("/ui")).text
+    assert "solo paper" in html
 
 
 # ── Últimas entregas con bracket ─────────────────────────────────────────

@@ -306,22 +306,33 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db),
 
     # ── Posiciones abiertas (estado ACTUAL — mismo universo que /ui/positions,
     # solo las no-FLAT) ───────────────────────────────────────────────────
+    # "Abierta desde" FIEL: opened_at vive en risk_plan_json (lo escribe
+    # PositionService al entrar), no en updated_at (que cambia con cada
+    # fill/precio). Se reusa ExitManager._opened_at para calcar su parseo de
+    # tz. Sin opened_at → cae a updated_at, rotulado honestamente ("actualizado",
+    # no "desde"). El orden de la query sigue por updated_at (opened_at no es
+    # columna; mismo presupuesto de queries, mismo universo).
+    from app.services.exit_manager import ExitManager
     pos_rows = await db.execute(
         select(PositionState)
         .where(PositionState.state.in_(_OPEN_STATES))
         .order_by(PositionState.updated_at.desc())
     )
-    open_positions = [
-        {
+    open_positions = []
+    for p in pos_rows.scalars().all():
+        opened = ExitManager._opened_at(p)
+        open_positions.append({
             "symbol": p.symbol,
             "side": p.direction or ("long" if "LONG" in p.state
                                     else "short" if "SHORT" in p.state else "—"),
             "qty": p.quantity,
             "state": p.state,
-            "since": p.updated_at,
-        }
-        for p in pos_rows.scalars().all()
-    ]
+            "since": opened or p.updated_at,
+            # True → el timestamp es el opened_at real (rótulo "desde");
+            # False → fallback a updated_at (rótulo "actualizado").
+            "since_from_open": opened is not None,
+            "since_label": "desde" if opened is not None else "actualizado",
+        })
 
     # ── Últimas entregas con bracket (SENT/FAILED del rango, 5) — del payload
     # persistido saco stopLoss.stopPrice y takeProfit.limitPrice si existen;
