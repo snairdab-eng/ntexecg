@@ -669,6 +669,80 @@ async def luxy_status(
     return JSONResponse({k: v for k, v in job.items() if k != "task"})
 
 
+# L3 — RECALCULAR del dashboard: evalúa las palancas movidas con el evaluador
+# de L2 (subproceso `mr_luxy --evaluar`), JOB+polling. Read-only hacia
+# producción (aplicar llega en L5).
+LUXY_EVAL_JOBS: dict[str, dict] = {}
+
+
+async def _run_luxy_eval(clave: str, cmd: list[str]) -> None:
+    import json as _json
+    import app.web.routes_riesgo as rr
+    try:
+        rc, tail = await rr._run_motor(cmd)
+        result = None
+        for line in (tail or "").splitlines():
+            if line.startswith("LUXY_EVAL_JSON "):
+                result = _json.loads(line[len("LUXY_EVAL_JSON "):])
+        if rc == 0 and result is not None:
+            LUXY_EVAL_JOBS[clave].update({"status": "done", "result": result})
+        else:
+            LUXY_EVAL_JOBS[clave].update({"status": "error",
+                                          "tail": (tail or "")[-400:]})
+    except Exception as exc:
+        LUXY_EVAL_JOBS[clave].update({"status": "error", "tail": repr(exc)})
+
+
+@router.post("/ui/strategies/{strategy_id}/luxy/evaluar", status_code=202)
+async def luxy_evaluar(
+    strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import json as _json
+    import app.web.routes_riesgo as rr
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return JSONResponse({"error": "estrategia no encontrada"},
+                            status_code=404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    if not instrument:
+        return JSONResponse({"error": "la estrategia no tiene activo"},
+                            status_code=400)
+    clave = rr.clave_de(strategy_id, instrument)
+    if rr._motor_manifest(clave) is None:
+        return JSONResponse({"error": "sin master integrado"}, status_code=409)
+    try:
+        overrides = await request.json()
+    except Exception:
+        overrides = {}
+    if not isinstance(overrides, dict):
+        overrides = {}
+    LUXY_EVAL_JOBS[clave] = {"status": "running"}
+    cmd = [_sys.executable, "-m", "scripts.mr_luxy", clave,
+           "--evaluar", _json.dumps(overrides)]
+    LUXY_EVAL_JOBS[clave]["task"] = _asyncio.create_task(
+        _run_luxy_eval(clave, cmd))
+    return JSONResponse({"ok": True, "status": "running"}, status_code=202)
+
+
+@router.get("/ui/strategies/{strategy_id}/luxy/evaluar/status")
+async def luxy_evaluar_status(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return JSONResponse({"error": "estrategia no encontrada"},
+                            status_code=404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    clave = rr.clave_de(strategy_id, instrument) if instrument else None
+    job = LUXY_EVAL_JOBS.get(clave) if clave else None
+    if job is None:
+        return JSONResponse({"status": "idle"})
+    return JSONResponse({k: v for k, v in job.items() if k != "task"})
+
+
 @router.post("/ui/strategies/{strategy_id}/integrar")
 async def integrar_estrategia(
     strategy_id: str, file: UploadFile = File(...),

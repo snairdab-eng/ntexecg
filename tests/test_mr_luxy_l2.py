@@ -304,6 +304,86 @@ def test_reproducibilidad_json_identico():
 # 8a. Reconciliación (unidad): luxy_outcome sin BE ≡ mr_sims.ladder_outcome
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# L3 — partición ÚNICA de sesiones (R-T7), unidades FX, payload dashboard
+# ---------------------------------------------------------------------------
+
+def test_zones_particion_unica_rt7():
+    # cobertura total 0..23 sin solapes
+    covered = [h for _n, _e, hrs in mrl.LUXY_ZONES for h in hrs]
+    assert sorted(covered) == list(range(24))
+    assert len(covered) == 24                      # sin duplicados
+    assert mrl.zone_of_hour(9) == "Apertura US"
+    assert mrl.zone_of_hour(3) == "Europa/Londres"
+    assert mrl.zone_of_hour(None) is None
+
+
+class _DT:
+    def __init__(self, hour, dow, dur_min):
+        from datetime import datetime as _d, timedelta as _td
+        base = _d(2026, 1, 5, 0, 0, tzinfo=UTC) + timedelta(days=dow, hours=hour)
+        self.entry_ts = base
+        self.exit_ts = base + _td(minutes=dur_min)
+        self.hour = hour
+
+
+def _payload_fixture(ppt=50.0):
+    sts = []
+    fakes = {}
+    for i in range(1, 25):
+        side = "long" if i % 2 else "short"
+        win = i % 3 != 0
+        st = _st(i, side=side, pnl=120.0 if win else -90.0,
+                 mae_atr=0.4 if win else 1.6, mfe_atr=1.5 if win else 0.4)
+        sts.append(st)
+        fakes[i] = _DT(hour=(i % 24), dow=(i % 5), dur_min=45 if win else 200)
+    levers = mrl.derive_levers(sts, ppt, cancel_after_s=3600.0, touches=None,
+                               has_intrabar=False)
+    crudo = metrics_usd([s.native_pnl_usd for s in sts])
+    return mrl._dashboard_payload(sts, fakes, levers, ppt, crudo, crudo)
+
+
+def test_dashboard_payload_zonas_front_igual_motor():
+    d = _payload_fixture()
+    # el front renderiza reco.zones y zones_partition — AMBOS de LUXY_ZONES
+    names_motor = [z[0] for z in mrl.LUXY_ZONES]
+    assert [z["name"] for z in d["reco"]["zones"]] == names_motor
+    assert [z["name"] for z in d["zones_partition"]] == names_motor
+    assert [z["hours"] for z in d["zones_partition"]] == [z[2] for z in mrl.LUXY_ZONES]
+    # el rango ET viaja junto al nombre (R-T7)
+    assert all("ET" in z["et"] for z in d["reco"]["zones"])
+
+
+def test_dashboard_units_fx_sin_pts():
+    assert _payload_fixture(ppt=50.0)["units"]["show_pts"] is True       # índice
+    assert _payload_fixture(ppt=1250.0)["units"]["show_pts"] is False    # FX: solo USD
+
+
+def test_dashboard_payload_estructura():
+    d = _payload_fixture()
+    assert d["n"] == 24 and len(d["trades"]) == 24
+    assert set(d["trades"][0]) >= {"i", "mfe", "mae", "pnl", "long", "hr", "dow", "in"}
+    assert "net" in d["base"] and "net" in d["config"]
+    assert d["timestop"]["verdict"] == "descartado"
+    assert len(d["timestop"]["buckets"]) == 5
+
+
+def test_be_honesty_client_estimate_en_template():
+    """La estimación client-side NUNCA acredita el BE (excepción obligatoria):
+    la nota está y el crédito optimista del prototipo (e=0 si pnl<0) NO está."""
+    html = Path("app/templates/strategy_detail.html").read_text(encoding="utf-8")
+    assert "BE: requiere recálculo del motor" in html
+    assert "no acredita su beneficio" in html       # nota de la excepción
+    # el crédito optimista del prototipo (§3) quedó FUERA de estimate()
+    assert "d.pnl<0) e=0" not in html
+    assert "d.mfe>=S.beV && d.pnl<0" not in html
+
+
+def test_session_toggles_no_persist_note_en_template():
+    html = Path("app/templates/strategy_detail.html").read_text(encoding="utf-8")
+    assert "no persiste" in html            # bloqueo de sesiones = solo explorar
+
+
 def test_reconciliacion_unidad_vs_v1():
     sts = [_st(i, side=("long" if i % 2 else "short"),
                pnl=(80.0 if i % 3 else -120.0),

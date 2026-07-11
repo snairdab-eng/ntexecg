@@ -855,6 +855,239 @@
         {% endif %}
         <div class="text-xs text-gray-500">Corte del split (viejo=derivar · reciente=probar): <span class="font-mono">{{ luxy.split.cutoff_ts or '—' }}</span> · in-sample {{ luxy.split.n_in_sample }} · OOS {{ luxy.split.n_oos }} · $/punto {{ luxy.usd_por_punto }} (del master).</div>
 
+        {% if luxy.dashboard %}
+        <!-- ═══ Dashboard portado (dark) — panel_palancas_multi.html sobre el estudio real ═══ -->
+        <script>
+          window.LUXY = {{ luxy.dashboard | tojson }};
+          window.LUXY_SID = {{ strategy.strategy_id | tojson }};
+        </script>
+        <div id="lx-root" class="space-y-4"
+             style="--lx-paper:#0d1117;--lx-panel:#161b22;--lx-ink:#e6edf3;--lx-muted:#8b949e;--lx-line:#30363d;--lx-tp:#3fb950;--lx-be:#a371f7;--lx-scin:#58a6ff;--lx-sl:#d29922;--lx-green:#3fb950;--lx-red:#f85149;">
+
+          <!-- Cabecera + chips -->
+          <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div class="flex items-center gap-2 flex-wrap text-xs">
+                <span id="lx-mode" class="px-2 py-0.5 rounded-full" style="background:rgba(63,185,80,.16);color:#3fb950">validado · motor</span>
+                <span id="lx-recon" class="px-2 py-0.5 rounded-full" style="background:#21262d;color:var(--lx-muted)"></span>
+                <span id="lx-frag" class="px-2 py-0.5 rounded-full" style="background:rgba(210,153,34,.18);color:#d29922"></span>
+                <span id="lx-hint" class="text-amber-400/80" style="display:none">cambios sin aplicar — pulsa Recalcular</span>
+              </div>
+              <div class="flex gap-2">
+                <button id="lx-recalc" disabled class="text-white px-3 py-1.5 rounded text-sm disabled:opacity-40" style="background:var(--lx-scin)">Recalcular (motor)</button>
+                <button id="lx-reset" class="text-gray-200 px-3 py-1.5 rounded text-sm" style="background:#21262d">Restablecer</button>
+              </div>
+            </div>
+            <div id="lx-notes" class="text-xs mt-2" style="color:var(--lx-muted)"></div>
+          </div>
+
+          <!-- Teselas comparativas base → config -->
+          <div id="lx-tiles" class="grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+
+          <!-- Dos gráficas de recorrido (in-sample / OOS) -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs mb-1" style="color:var(--lx-muted)">Recorrido — in-sample</div>
+              <canvas id="lx-chart-in" width="560" height="230" style="width:100%;height:auto"></canvas>
+            </div>
+            <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs mb-1" style="color:var(--lx-muted)">Recorrido — OOS <span class="text-amber-500">(espejo)</span></div>
+              <canvas id="lx-chart-oos" width="560" height="230" style="width:100%;height:auto"></canvas>
+            </div>
+          </div>
+          <div id="lx-legend" class="text-xs flex flex-wrap gap-3" style="color:var(--lx-muted)"></div>
+
+          <!-- Controles de palancas (USD) -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <!-- Vistas + dirección -->
+            <div class="rounded p-3 space-y-2" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs uppercase tracking-wide" style="color:var(--lx-muted)">Nube / dirección</div>
+              <label class="flex items-center gap-2 text-xs" style="color:var(--lx-ink)"><input type="checkbox" id="lx-t-mfe" checked> MFE</label>
+              <label class="flex items-center gap-2 text-xs" style="color:var(--lx-ink)"><input type="checkbox" id="lx-t-mae" checked> MAE</label>
+              <label class="flex items-center gap-2 text-xs" style="color:var(--lx-ink)"><input type="checkbox" id="lx-t-cls" checked> Cierre</label>
+              <div class="flex gap-1 pt-1" id="lx-dir"></div>
+              <div id="lx-readout" class="text-xs" style="color:var(--lx-muted)"></div>
+            </div>
+            <!-- Salida -->
+            <div class="rounded p-3 space-y-2" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs uppercase tracking-wide" style="color:var(--lx-muted)">Salida (USD)</div>
+              <label class="flex items-center justify-between gap-2 text-xs" style="color:var(--lx-ink)"><span><input type="checkbox" id="lx-t-tp" checked> <span style="color:var(--lx-tp)">■</span> TP techo</span><span id="lx-v-tp" class="font-mono"></span></label>
+              <input type="range" id="lx-r-tp" class="w-full" style="accent-color:var(--lx-tp)">
+              <label class="flex items-center justify-between gap-2 text-xs" style="color:var(--lx-ink)"><span><input type="checkbox" id="lx-t-be"> <span style="color:var(--lx-be)">■</span> Breakeven</span><span id="lx-v-be" class="font-mono"></span></label>
+              <input type="range" id="lx-r-be" class="w-full" style="accent-color:var(--lx-be)">
+              <div id="lx-be-note" class="text-xs text-amber-400/90" style="display:none">BE: requiere recálculo del motor (la estimación no acredita su beneficio).</div>
+            </div>
+            <!-- Entrada / stop -->
+            <div class="rounded p-3 space-y-2" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs uppercase tracking-wide" style="color:var(--lx-muted)">Entrada / stop (USD)</div>
+              <label class="flex items-center justify-between gap-2 text-xs" style="color:var(--lx-ink)"><span><input type="checkbox" id="lx-t-sc" checked> <span style="color:var(--lx-scin)">■</span> Escalonado <span id="lx-alloc" class="font-mono"></span></span></label>
+              <div id="lx-why" class="text-xs rounded p-2" style="background:#0d1117;color:var(--lx-muted)"></div>
+              <div class="text-xs flex justify-between" style="color:var(--lx-muted)"><span>C2 · C3 (adverso)</span><span class="font-mono"><span id="lx-v-l2"></span> · <span id="lx-v-l3"></span></span></div>
+              <input type="range" id="lx-r-l2" class="w-full" style="accent-color:var(--lx-scin)">
+              <input type="range" id="lx-r-l3" class="w-full" style="accent-color:var(--lx-scin)">
+              <label class="flex items-center justify-between gap-2 text-xs" style="color:var(--lx-ink)"><span><input type="checkbox" id="lx-t-sl" checked> <span style="color:var(--lx-sl)">■</span> SL backstop</span><span id="lx-v-sl" class="font-mono"></span></label>
+              <input type="range" id="lx-r-sl" class="w-full" style="accent-color:var(--lx-sl)">
+            </div>
+          </div>
+
+          <!-- Diagnósticos: sesiones (ET) · días · time-stop (default sin bloquear) -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Sesiones (ET)</div>
+              <div id="lx-zones" class="text-xs space-y-1"></div>
+              <div class="text-xs mt-1" style="color:var(--lx-muted)">bloquear solo con razón real — no persiste.</div>
+            </div>
+            <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Días</div>
+              <div id="lx-days" class="text-xs space-y-1"></div>
+            </div>
+            <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+              <div class="text-xs uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Time-stop <span class="text-gray-500">(descartado)</span></div>
+              <div id="lx-ts" class="text-xs space-y-1"></div>
+              <div id="lx-ts-why" class="text-xs mt-1" style="color:var(--lx-muted)"></div>
+            </div>
+          </div>
+        </div>
+        <script>
+        (function(){
+          const D = window.LUXY; if(!D || !document.getElementById('lx-root')) return;
+          const SID = window.LUXY_SID, PV = D.pv, R = D.reco, A = R.alloc || [10,0,0];
+          const el = id => document.getElementById(id);
+          const money = v => (v==null?'—':(v<0?'−$':'$')+Math.abs(Math.round(v)).toLocaleString('en-US'));
+          const dLbl = {both:'ambos',long:'largos',short:'cortos'};
+          // Estado de palancas (USD)
+          const S = { tp:R.tp_usd!=null, be:false, sc:(A[1]+A[2])>0, sl:R.sl_usd!=null,
+                      tpV:R.tp_usd||0, beV:R.be_usd||0, l2:R.l2_usd||0, l3:R.l3_usd||0,
+                      slV:R.sl_usd||0, dir:R.dir||'both' };
+          const RECO = {tp:S.tp,be:S.be,sc:S.sc,sl:S.sl,tpV:S.tpV,beV:S.beV,l2:S.l2,l3:S.l3,slV:S.slV,dir:S.dir};
+          // ---- estimación client-side (BE NUNCA acredita beneficio — honesto) ----
+          function estimate(){
+            const MES=PV/10, lv=[[0,A[0]],[S.l2,A[1]],[S.l3,A[2]]];
+            const lever=d=>{ let e=d.pnl;
+              if(S.sl && d.mae<=-S.slV) e=-S.slV;
+              else if(S.tp && d.mfe>=S.tpV) e=S.tpV;
+              // BREAKEVEN: excepción obligatoria — sin motor NO se acredita su
+              // beneficio (el orden intrabar no se conoce). Nunca un BE optimista.
+              if(!S.sc) return e;
+              const ep=e/PV; let t=0; for(const [L,q] of lv){ if(L===0||d.mae<=-L) t+=q*(ep+L/PV)*MES; } return t; };
+            const dok=d=> S.dir==='both'?true:S.dir==='long'?d.long:!d.long;
+            const kept=[]; for(const d of D.trades){ if(dok(d)) kept.push(lever(d)); }
+            return stats(kept);
+          }
+          function stats(a){ if(!a.length) return {net:0,pf:0,dd:0,worst:0,wr:0,part:0};
+            const gp=a.filter(x=>x>0).reduce((x,y)=>x+y,0), gl=a.filter(x=>x<0).reduce((x,y)=>x+y,0);
+            let eq=0,pk=0,dd=0; for(const p of a){eq+=p;pk=Math.max(pk,eq);dd=Math.min(dd,eq-pk);}
+            return {net:a.reduce((x,y)=>x+y,0), pf:gl!==0?gp/Math.abs(gl):Infinity, dd,
+                    worst:Math.min(...a), wr:a.filter(x=>x>0).length/a.length*100, part:a.length/D.n*100}; }
+          // ---- teselas base → col ----
+          function tiles(base, col){
+            const defs=[['Neto total','net','money',true],['Profit factor','pf','num',true],
+              ['Max drawdown','dd','money',false],['Peor trade','worst','money',true],
+              ['Participación','part','pct',null],['Win rate','wr','pct',true]];
+            el('lx-tiles').innerHTML = defs.map(([lab,k,fmt,hi])=>{
+              const b=base[k], c=col[k]; let bs,cs,dcol='var(--lx-muted)';
+              const f=v=> fmt==='money'?money(v): fmt==='pct'?(v==null?'—':v.toFixed(1)+'%'): (v==null?'—':(isFinite(v)?v.toFixed(2):'∞'));
+              bs=f(b); cs=f(c);
+              if(hi!=null && b!=null && c!=null){ const d=(fmt==='money'&&k==='dd')?(Math.abs(c)-Math.abs(b)):(c-b);
+                const good=(fmt==='money'&&k==='dd')? d<0 : (d>0)===hi; if(d!==0) dcol=good?'var(--lx-green)':'var(--lx-red)'; }
+              return `<div class="rounded p-2" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+                <div class="text-xs" style="color:var(--lx-muted)">${lab}</div>
+                <div class="text-xs" style="color:var(--lx-muted)">${bs} →</div>
+                <div class="font-mono text-sm" style="color:${dcol}">${cs}</div></div>`;
+            }).join('');
+          }
+          // ---- gráficas ----
+          function draw(cid, subset){
+            const cv=el(cid); if(!cv) return; const ctx=cv.getContext('2d');
+            const W=cv.width, H=cv.height, pad=8, midY=H*0.55;
+            ctx.clearRect(0,0,W,H); ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H);
+            const rows=D.trades.filter(subset); if(!rows.length){ ctx.fillStyle='#8b949e'; ctx.font='11px monospace'; ctx.fillText('sin operaciones en la ventana',10,20); return; }
+            const top=D.mfe_max||1, bot=Math.abs(D.mae_min)||1;
+            const yUp=v=> midY - (v/top)*(midY-pad);
+            const yDn=v=> midY + (Math.abs(v)/bot)*(H-midY-pad);
+            const bw=Math.max(1,(W-2*pad)/rows.length*0.7), step=(W-2*pad)/rows.length;
+            rows.forEach((d,i)=>{ const x=pad+i*step;
+              if(el('lx-t-mfe').checked && d.mfe>0){ ctx.fillStyle='rgba(63,185,80,.28)'; ctx.fillRect(x,yUp(d.mfe),bw,midY-yUp(d.mfe)); }
+              if(el('lx-t-mae').checked && d.mae<0){ ctx.fillStyle='rgba(248,81,73,.28)'; ctx.fillRect(x,midY,bw,yDn(d.mae)-midY); }
+              if(el('lx-t-cls').checked){ const c=d.pnl>=0?yUp(d.pnl):yDn(d.pnl); ctx.fillStyle=d.pnl>=0?'#3fb950':'#f85149'; ctx.fillRect(x,Math.min(midY,c),bw,Math.abs(c-midY)); }
+            });
+            // líneas de palanca
+            const line=(v,color,on)=>{ if(!on||v==null) return; const y=v>=0?yUp(v):yDn(v); ctx.strokeStyle=color; ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(W-pad,y); ctx.stroke(); ctx.setLineDash([]); };
+            line(S.tpV,'var(--lx-tp)',S.tp); line(S.beV,'#a371f7',S.be);
+            line(-S.slV,'#d29922',S.sl);
+            if(S.sc){ line(-S.l2,'#58a6ff',true); line(-S.l3,'#58a6ff',true); }
+            ctx.strokeStyle='#30363d'; ctx.beginPath(); ctx.moveTo(pad,midY); ctx.lineTo(W-pad,midY); ctx.stroke();
+          }
+          function redraw(){ draw('lx-chart-in', d=>d.in); draw('lx-chart-oos', d=>!d.in); }
+          // ---- leyenda + códigos (fuera del plot) ----
+          function legend(){
+            const showPts=D.units && D.units.show_pts;
+            const pts=v=> showPts&&PV? ' ('+Math.round(v/PV)+' pts)':'';
+            el('lx-legend').innerHTML=[
+              ['TP','var(--lx-tp)',S.tpV], ['BE','#a371f7',S.be?S.beV:null],
+              ['C2','#58a6ff',-S.l2], ['C3','#58a6ff',-S.l3], ['SL','#d29922',-S.slV]
+            ].filter(x=>x[2]!=null).map(([n,c,v])=>`<span><span style="color:${c}">■</span> ${n} ${money(v)}${pts(v)}</span>`).join('');
+          }
+          // ---- diagnósticos ----
+          function diag(){
+            el('lx-zones').innerHTML=(R.zones||[]).map(z=>`<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">${z.name} <span style="color:var(--lx-muted)">${z.et}</span></span><span class="font-mono ${z.net<0?'':''}" style="color:${z.losing?'#d29922':'var(--lx-muted)'}">${z.n}·${money(z.net)}${z.losing?' pierde':''}</span></div>`).join('');
+            el('lx-days').innerHTML=(R.days||[]).map(z=>`<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">${z.name}</span><span class="font-mono" style="color:${z.losing?'#d29922':'var(--lx-muted)'}">${z.n}·${money(z.net)}${z.losing?' pierde':''}</span></div>`).join('');
+            const ts=D.timestop||{}; const mx=Math.max(1,...(ts.buckets||[]).map(b=>Math.abs(b.net)));
+            el('lx-ts').innerHTML=(ts.buckets||[]).map(b=>`<div class="flex justify-between gap-2"><span style="color:var(--lx-muted)">${b.range}m</span><span class="font-mono" style="color:${b.net<0?'#f85149':'var(--lx-muted)'}">${b.n}·${money(b.net)}</span></div>`).join('');
+            el('lx-ts-why').textContent=ts.why||'';
+          }
+          // ---- chips / estado ----
+          function dirty(){ return JSON.stringify(S)!==JSON.stringify(RECO); }
+          function setChips(mode){
+            const m=el('lx-mode'); if(mode==='val'){ m.textContent='validado · motor'; m.style.background='rgba(63,185,80,.16)'; m.style.color='#3fb950'; }
+            else { m.textContent='estimación · aprox'; m.style.background='rgba(210,153,34,.18)'; m.style.color='#d29922'; }
+            el('lx-recon').textContent='recon '+D.recon_ok+'/'+D.n;
+            const fr=el('lx-frag'); if(D.fragile){ fr.style.display=''; fr.textContent='⚠ '+(D.notes||[]).slice(0,1).join(''); } else fr.style.display='none';
+            el('lx-notes').textContent=(D.notes||[]).join(' · ');
+          }
+          function showValidated(){ tiles(D.base, D.config); setChips('val'); }
+          function showEstimate(){ tiles(D.base, estimate()); setChips('est'); }
+          function refresh(){
+            el('lx-v-tp').textContent=money(S.tpV); el('lx-v-sl').textContent=money(-S.slV);
+            el('lx-v-be').textContent=S.be?money(S.beV):'—'; el('lx-v-l2').textContent=money(-S.l2); el('lx-v-l3').textContent=money(-S.l3);
+            el('lx-alloc').textContent=A.join('/'); el('lx-why').textContent=R.why_alloc||'';
+            el('lx-be-note').style.display=S.be?'':'none';
+            const d=dirty(); el('lx-recalc').disabled=!d; el('lx-hint').style.display=d?'':'none';
+            legend(); redraw();
+            if(d) showEstimate(); else showValidated();
+          }
+          // ---- sliders / toggles ----
+          function rng(id, max, get, set){ const e=el(id); e.min=0; e.max=Math.round(max); e.step=Math.max(1,Math.round(max/200)); e.value=Math.round(get());
+            e.addEventListener('input',()=>{ set(+e.value); refresh(); }); }
+          function initControls(){
+            const mfeMax=Math.max(1,D.mfe_max), maeMax=Math.max(1,Math.abs(D.mae_min));
+            rng('lx-r-tp',mfeMax,()=>S.tpV,v=>S.tpV=v); rng('lx-r-be',mfeMax,()=>S.beV,v=>S.beV=v);
+            rng('lx-r-l2',maeMax,()=>S.l2,v=>S.l2=v); rng('lx-r-l3',maeMax,()=>S.l3,v=>S.l3=v);
+            rng('lx-r-sl',maeMax,()=>S.slV,v=>S.slV=v);
+            [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(([id,k])=>{
+              const e=el(id); e.checked=S[k]; e.addEventListener('change',()=>{ S[k]=e.checked; refresh(); }); });
+            ['lx-t-mfe','lx-t-mae','lx-t-cls'].forEach(id=>el(id).addEventListener('change',redraw));
+            el('lx-dir').innerHTML=['both','long','short'].map(x=>`<button data-d="${x}" class="px-2 py-1 rounded text-xs" style="background:${S.dir===x?'var(--lx-scin)':'#21262d'};color:${S.dir===x?'#fff':'var(--lx-muted)'}">${dLbl[x]}</button>`).join(' ');
+            el('lx-dir').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ S.dir=b.dataset.d;
+              el('lx-dir').querySelectorAll('button').forEach(x=>{x.style.background=x.dataset.d===S.dir?'var(--lx-scin)':'#21262d';x.style.color=x.dataset.d===S.dir?'#fff':'var(--lx-muted)';}); refresh(); }));
+          }
+          el('lx-reset').addEventListener('click',()=>{ Object.assign(S,RECO); initControls(); refresh(); });
+          // ---- RECALCULAR = JOB del motor (números validados) ----
+          function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(r=>r.json()).then(j=>{
+              if(j.status==='running'){ setTimeout(pollEval,2000); return; }
+              el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false;
+              if(j.status==='done' && j.result){ D.base=j.result.base; D.config=j.result.config; Object.assign(RECO,S); tiles(D.base,D.config); setChips('val'); el('lx-hint').style.display='none'; el('lx-recalc').disabled=true; redraw(); }
+            }); }
+          el('lx-recalc').addEventListener('click',()=>{ el('lx-recalc').textContent='Calculando…'; el('lx-recalc').disabled=true;
+            const ov={sl_usd:S.sl?S.slV:0, tp_usd:S.tp?S.tpV:null, dir:S.dir, l2_usd:S.l2, l3_usd:S.l3};
+            if(S.be) ov.be_usd=S.beV; else ov.be_off=true;
+            fetch('/ui/strategies/'+SID+'/luxy/evaluar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ov)})
+              .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s})=>{ if(s===202) pollEval(); else { el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false; } }); });
+          initControls(); diag(); refresh();
+        })();
+        </script>
+        {% endif %}
+
         <!-- Tabla A -->
         <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
             <div class="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">Tabla A — métricas</div>

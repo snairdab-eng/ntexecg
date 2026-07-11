@@ -339,11 +339,46 @@ async def test_luxy_e2e_real(
     assert study["levers_in_sample"]["breakeven"]["disponible"] is True
     assert len(study["tabla_a"]) == 3 and study["tabla_b"]["convergencia"]
 
-    # la sub-pestaña renderiza la Tabla A
+    # la sub-pestaña renderiza el DASHBOARD (L3) + la Tabla A
     r = await client.get("/ui/strategies/ES5m_LuxReal")
     assert r.status_code == 200
-    assert "Tabla A — métricas" in r.text
-    assert "espejo de robustez" in r.text.lower() or "espejo" in r.text.lower()
+    html = r.text
+    assert "Tabla A — métricas" in html
+    assert "espejo" in html.lower()
+    # dashboard portado (dark): raíz, payload inyectado, Recalcular motor,
+    # gráficas, sesiones ET y la honestidad del BE
+    assert 'id="lx-root"' in html and "window.LUXY" in html
+    assert "Recalcular (motor)" in html
+    assert 'id="lx-chart-in"' in html and 'id="lx-chart-oos"' in html
+    assert "BE: requiere recálculo del motor" in html
+    assert "ET" in html                              # rango horario ET (R-T7)
+
+
+@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.asyncio
+async def test_luxy_evaluar_parity_real(
+    client: AsyncClient, dirs: Path, db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RECALCULAR (/luxy/evaluar) usa el evaluador de L2 → mismos números que
+    el estudio: evaluar sin overrides reproduce la fila In-sample de la Tabla A
+    (BE no recomendado en ES → coinciden)."""
+    import scripts.mr_luxy as mrl
+    import app.web.routes_riesgo as rr
+    monkeypatch.setenv("HOLC_DIR", "NINJATRADER/HOLC")
+    await _mk_strategy(db, "ES5m_LuxPar", "ES")
+    csv_real = Path(sorted(_ES_CSV)[-1])
+    r = await client.post(
+        "/ui/strategies/ES5m_LuxPar/integrar",
+        files={"file": (csv_real.name, csv_real.read_bytes(), "text/csv")})
+    clave = r.json()["clave"]
+
+    study = mrl.run_for_clave(clave, rr.MOTOR_DIR)
+    ev = mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {})
+    fila_in = next(f for f in study["tabla_a"] if f["fila"] == "In-sample")
+    assert study["levers_in_sample"]["breakeven"]["be_atr"] is None   # BE no reco
+    assert round(ev["config"]["net"]) == round(fila_in["net_usd"]), \
+        (ev["config"]["net"], fila_in["net_usd"])
 
 
 # ---------------------------------------------------------------------------
