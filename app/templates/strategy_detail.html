@@ -1192,10 +1192,16 @@
         {% endif %}
     </div>
 
-    <!-- ══════════ Sub-tab: LAB (placeholder — migra en L6) ══════════ -->
-    <div x-show="stab === 'lab'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400 space-y-2">
-        <h2 class="text-white font-semibold">Lab — migra en L6</h2>
-        <p>El Lab (análisis técnico + HMM) se muda a esta pestaña en el lote <b>L6</b>, tal cual, sin rediseño. Hoy sigue en <a href="/ui/lab" class="text-indigo-400 hover:underline">Lab →</a>.</p>
+    <!-- ══════════ Sub-tab: LAB (L6 — mudanza: el Lab GLOBAL embebido, sin rediseño) ══════════ -->
+    <div x-show="stab === 'lab'" x-cloak class="space-y-2">
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+            <div class="text-sm text-gray-400">Lab (análisis técnico + HMM) — <span class="text-gray-500">visor read-only; herramienta global, apuntada a esta estrategia</span></div>
+            <a href="/ui/lab?strategy={{ strategy.strategy_id }}" target="_blank" rel="noopener"
+               class="text-indigo-400 hover:underline text-sm">abrir en pestaña completa ↗</a>
+        </div>
+        <iframe src="/ui/lab?strategy={{ strategy.strategy_id }}" title="Lab"
+                class="w-full rounded border border-gray-800 bg-gray-950"
+                style="height:78vh"></iframe>
     </div>
 
     <!-- ══════════ Sub-tab: PERFILES (la sección de perfiles, movida a su pestaña) ══════════ -->

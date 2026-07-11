@@ -35,6 +35,17 @@
         {% endif %}
     </div>
 
+    <!-- Parte C — banner informativo: filtros de calidad + régimen DORMIDOS en
+         producción (el edge viene de LuxAlgo; el pivote los descartó). Su lógica
+         VIVA se CONSERVA y el Lab la reusa para este análisis. -->
+    <div class="bg-slate-800/40 border border-slate-700 rounded p-3 text-xs text-slate-300">
+        <b class="text-slate-100">ℹ Filtros de calidad y régimen: dormidos en producción.</b>
+        El pivote los descartó (el edge es de LuxAlgo) — el pipeline no los aplica por default.
+        Su <b>lógica viva se conserva</b> en <code class="text-slate-200">app/services/quality_scorer.py</code>
+        y <code class="text-slate-200">app/services/hmm_service.py</code>, y <b>el Lab los importa</b>
+        para este análisis. Se retoma a mediano plazo.
+    </div>
+
     {% if unknown_strategy %}
     <!-- LAB-2 §4 — llave inexistente: el Lab NO da altas; el CTA manda al Puente -->
     <div class="bg-amber-900/30 border border-amber-700 rounded p-3 text-sm text-amber-200 flex items-center justify-between flex-wrap gap-2">
