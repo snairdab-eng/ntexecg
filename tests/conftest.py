@@ -119,6 +119,19 @@ def market_data_service(mock_market_data: MockMarketDataProvider):
 
 
 @pytest.fixture(autouse=True)
+def _reset_security_state() -> None:
+    """SEC-1 — el lockout del login y el watermark de revocación son estado
+    EN MEMORIA a nivel módulo; sin esto se filtrarían entre tests (un test con
+    10 fallos bloquearía el login de otro)."""
+    from app.core import auth as _auth, login_guard as _lg
+    _lg.reset()
+    _auth._reset_revocation()
+    yield
+    _lg.reset()
+    _auth._reset_revocation()
+
+
+@pytest.fixture(autouse=True)
 def _clear_symbol_mapper_cache() -> None:
     """Reset module-level SymbolMapper cache before every test.
 

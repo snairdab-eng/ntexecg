@@ -63,6 +63,25 @@ async def _redirect_to_login(request: Request, exc: NotAuthenticated) -> Redirec
     return RedirectResponse(url="/ui/login", status_code=303)
 
 
+# SEC-1 Tarea 4 — CSP HONESTA y funcional. Compromiso documentado:
+# 'unsafe-inline' en script/style es necesario porque el Tailwind CDN inyecta
+# estilos inline y las plantillas usan JS inline (Alpine/HTMX). Los 3 CDN van
+# explícitos. `frame-ancestors 'self'` (enmienda del arquitecto): L6 embebe
+# /ui/lab en un iframe SAME-ORIGIN — 'self' lo permite; nadie más puede
+# enmarcar el panel. Candidato futuro: self-host de Tailwind para quitar
+# 'unsafe-inline' y el CDN dinámico (sin SRI).
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
+    "https://unpkg.com https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
+    "https://fonts.googleapis.com; "
+    "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
+    "frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; "
+    "form-action 'self'; object-src 'none'"
+)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
@@ -70,6 +89,34 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.add_exception_handler(NotAuthenticated, _redirect_to_login)
+
+    @app.middleware("http")
+    async def _security(request: Request, call_next):
+        from fastapi.responses import PlainTextResponse
+        # SEC-1 Tarea 3 — fail-fast del SESSION_SECRET: en NO-test, un secreto
+        # < 32 bytes es forjable → las rutas /ui responden 503 (en test se
+        # permite corto para no romper la suite — gate por entorno).
+        if (request.url.path.startswith("/ui")
+                and settings.APP_ENV != "test"
+                and len(settings.SESSION_SECRET or "") < 32):
+            return PlainTextResponse(
+                "config insegura: SESSION_SECRET débil (< 32 bytes) — genera "
+                "uno fuerte y reinicia.", status_code=503)
+
+        resp = await call_next(request)
+        # SEC-1 Tarea 4 — headers de seguridad.
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        if "text/html" in resp.headers.get("content-type", ""):
+            resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+            resp.headers.setdefault("Referrer-Policy", "same-origin")
+            resp.headers.setdefault("Content-Security-Policy", _CSP)
+            proto = (request.headers.get("x-forwarded-proto")
+                     or request.url.scheme)
+            if proto == "https":
+                resp.headers.setdefault(
+                    "Strict-Transport-Security",
+                    "max-age=31536000; includeSubDomains")
+        return resp
 
     # Public / exempt routers (no auth)
     app.include_router(health_router)

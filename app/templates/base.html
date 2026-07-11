@@ -11,8 +11,12 @@
          el hash anterior tenía la cola corrupta → el navegador BLOQUEABA
          htmx en silencio (bridge-badge congelado, partials muertos). -->
     <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
-    <!-- Alpine.js CDN -->
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Alpine.js CDN — SEC-1 Tarea 4: versión PINEADA + SRI real (sha384 del
+         archivo servido, verificado como se hizo con htmx el 07-06 — jamás un
+         hash inventado). El '@3.x.x' flotante no admite SRI (el hash cambiaría). -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
+            integrity="sha384-l8f0VcPi/M1iHPv8egOnY/15TDwqgbOR1anMIJWvU6nLRgZVLTLSaNqi/TOoT5Fh"
+            crossorigin="anonymous"></script>
 
     <style>
         [x-cloak] { display: none !important; }
@@ -80,6 +84,11 @@
             <!-- Logout -->
             <form method="post" action="/ui/logout" class="inline">
                 <button type="submit" class="text-gray-400 hover:text-white px-2 py-0.5 rounded hover:bg-gray-700 transition">Salir</button>
+            </form>
+            <!-- SEC-1 — revoca todas las sesiones (token robado deja de valer) -->
+            <form method="post" action="/ui/logout-all" class="inline"
+                  onsubmit="return confirm('¿Cerrar TODAS las sesiones? Tendrás que volver a entrar.');">
+                <button type="submit" class="text-gray-600 hover:text-red-300 px-2 py-0.5 rounded hover:bg-gray-700 transition" title="Revocar todas las sesiones activas">Salir de todas</button>
             </form>
         </div>
     </nav>

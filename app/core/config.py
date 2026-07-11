@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     UI_USERNAME: str = "admin"
     UI_PASSWORD: str = ""          # bcrypt hash of the admin password
     SESSION_SECRET: str = ""       # HS256 signing key for session JWTs
+    # SEC-1 Tarea 2 — 2FA TOTP opcional. Vacío = apagado (comportamiento actual).
+    # Provisioning: `python -m scripts.setup_totp`.
+    UI_TOTP_SECRET: str = ""
 
     TRADERSPOST_ENABLED: bool = False
     DRY_RUN: bool = True
