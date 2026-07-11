@@ -360,6 +360,16 @@ async def test_luxy_e2e_real(
     assert "Perfiles — sizing y peor-caso" in html
     assert "Peor-caso/op" in html
     assert "lo que Estrategias enviaría" in html     # R-T8
+    # L5 — botón Aplicar supervisado + diff correcto con ES real (gated)
+    assert "Aplicar a la config viva" in html
+    pv = await client.get("/ui/strategies/ES5m_LuxReal/luxy/aplicar/preview")
+    assert pv.status_code == 200, pv.text
+    pj = pv.json()
+    assert pj["fuente"] == "luxy" and pj["filas"]
+    assert any("R-T10" in a for a in pj["avisos"])   # fila in-sample, no OOS
+    # el diff propone el TP nominal + la escalera derivada del estudio
+    campos = " ".join(f["campo"] for f in pj["filas"])
+    assert "TP nominal" in campos and "Escalera" in campos
 
 
 @pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")

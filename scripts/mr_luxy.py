@@ -710,6 +710,53 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
 # debe reproducir mr_sims.ladder_outcome trade a trade.
 # ---------------------------------------------------------------------------
 
+def activacion_from_study(study: dict) -> dict:
+    """Config APLICABLE del estudio Luxy → las MISMAS llaves del Puente
+    (`routes_riesgo._activacion_json`), para reusar diff/merge/deriva sin
+    duplicar. **R-T10: SOLO la fila IN-SAMPLE** (`levers_in_sample`) — la fila
+    OOS es espejo de robustez y JAMÁS se aplica.
+
+    Mapea: backstop_points (b_pts), tp_nominal_long/short (×ATR p99),
+    scale_entry (quantities=alloc derivado, levels=profundidades ×ATR — el
+    `mode` lo PRESERVA el merge, NX-11), entry_reserve_timeout_seconds si el
+    estudio trae cancel_after. El BREAKEVEN NO se mapea (no hay palanca de BE en
+    el despacho — L5 lo trata como informativo)."""
+    lev = (study or {}).get("levers_in_sample") or {}
+    out: dict = {}
+    b_pts = lev.get("b_pts")
+    if lev.get("backstop_usd") and b_pts:
+        out["backstop_points"] = round(float(b_pts), 2)
+    tp = lev.get("tp_por_lado_atr") or {}
+    if tp.get("long"):
+        out["tp_nominal_long"] = tp["long"]
+    if tp.get("short"):
+        out["tp_nominal_short"] = tp["short"]
+    ca = study.get("cancel_after_s")
+    if ca:
+        out["entry_reserve_timeout_seconds"] = int(ca)
+    ld = lev.get("ladder") or {}
+    alloc = ld.get("alloc") or []
+    levels = ld.get("levels") or [0.0]
+    if alloc and any(a > 0 for a in alloc[1:]):        # hay escalera (C2/C3)
+        out["scale_entry"] = {
+            "mode": "execute",                          # el merge preserva el vivo
+            "quantities": list(alloc),
+            "levels": [round(float(x), 2) for x in levels[1:]],
+            "max_micro_contracts": sum(alloc) or 10,
+        }
+    return out
+
+
+def breakeven_informativo(study: dict) -> dict | None:
+    """Si el estudio recomienda BE (in-sample), devuelve la info para MOSTRARLA
+    como 'palanca no aplicable aún — informativa'. NO se escribe en producción
+    (no hay palanca de BE en el despacho)."""
+    be = ((study or {}).get("levers_in_sample") or {}).get("breakeven") or {}
+    if be.get("be_atr"):
+        return {"be_atr": be["be_atr"], "mejora_usd": be.get("mejora_usd")}
+    return None
+
+
 def reconcile_trade_vs_v1(st: SimTrade, legs: tuple, b_pts: float | None,
                           tp_by_side: dict | None, ppt: float,
                           cancel_after_s: float | None) -> tuple[float, float]:

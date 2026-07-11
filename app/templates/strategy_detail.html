@@ -841,6 +841,60 @@
         </div>
         <p x-show="err" x-text="err" x-cloak class="text-red-400 text-xs"></p>
 
+        {% if luxy and not luxy.degradado %}
+        <!-- L5 — Aplicar supervisado (reusa el Puente): diff → confirmar → merge -->
+        <div class="flex items-center gap-2 flex-wrap"
+             x-data="{ open:false, loading:false, aerr:null, prev:null,
+               load(){ this.loading=true; this.aerr=null; this.prev=null; this.open=true;
+                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar/preview')
+                  .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200) this.prev=j; else this.aerr=j.error||('error '+s); })
+                  .catch(e=>{this.loading=false;this.aerr=String(e);}); },
+               apply(){ this.loading=true;
+                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar',{method:'POST'})
+                  .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200){ this.open=false; location.reload(); } else this.aerr=j.error||('error '+s); }); } }">
+          {% if luxy_deriva %}
+          <span class="text-xs px-2 py-0.5 rounded {% if luxy_deriva.estado=='aplicada' %}bg-emerald-900 text-emerald-300{% elif luxy_deriva.estado=='sin_estrategia_viva' %}bg-gray-800 text-gray-400{% else %}bg-amber-900 text-amber-300{% endif %}">deriva: {{ luxy_deriva.texto }}</span>
+          {% endif %}
+          <button @click="load()" class="bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-1.5 rounded text-sm">Aplicar a la config viva…</button>
+          <span class="text-xs text-gray-500">reusa el Puente · fila in-sample (R-T10) · read-only hasta confirmar</span>
+
+          <div x-show="open" x-cloak class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" @click.self="open=false">
+            <div class="bg-gray-900 border border-emerald-800 rounded-lg p-5 max-w-2xl w-full max-h-[85vh] overflow-y-auto space-y-3">
+              <h3 class="text-white font-bold">Aplicar reco de Luxy (fila in-sample) a la config viva</h3>
+              <p x-show="loading" class="text-gray-400 text-sm">cargando…</p>
+              <p x-show="aerr" x-text="aerr" class="text-red-400 text-sm"></p>
+              <template x-if="prev">
+                <div class="space-y-2 text-sm">
+                  <div class="text-xs text-gray-500">Estudio <span x-text="prev.fecha_estudio"></span> · fuente <b class="text-gray-300" x-text="prev.fuente"></b></div>
+                  <table class="w-full text-xs">
+                    <thead><tr class="text-left text-gray-500"><th class="py-1">Campo</th><th>Vivo</th><th>Recomendado</th><th></th></tr></thead>
+                    <tbody>
+                      <template x-for="f in prev.filas" :key="f.campo">
+                        <tr class="border-t border-gray-800"><td class="py-1 text-gray-300" x-text="f.campo"></td><td class="text-gray-400" x-text="f.vivo"></td><td class="text-gray-200" x-text="f.recomendado"></td><td><span x-show="f.cambia" class="text-amber-400">Δ</span></td></tr>
+                      </template>
+                    </tbody>
+                  </table>
+                  <template x-if="prev.informativos && prev.informativos.length">
+                    <div class="bg-gray-800/50 border border-gray-700 rounded p-2 text-xs">
+                      <template x-for="inf in prev.informativos" :key="inf.campo">
+                        <div><b class="text-gray-300" x-text="inf.campo"></b>: <span x-text="inf.valor"></span> — <span class="text-amber-400/80" x-text="inf.nota"></span></div>
+                      </template>
+                    </div>
+                  </template>
+                  <ul class="text-xs text-gray-500 list-disc pl-4">
+                    <template x-for="a in prev.avisos" :key="a"><li x-text="a"></li></template>
+                  </ul>
+                  <div class="flex gap-2 justify-end pt-2">
+                    <button @click="open=false" class="bg-gray-800 text-gray-300 px-4 py-2 rounded text-sm">Cancelar</button>
+                    <button @click="apply()" :disabled="loading" class="bg-emerald-700 text-white px-4 py-2 rounded text-sm disabled:opacity-40">Confirmar y aplicar</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+
         {% if not luxy %}
         <div class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400">
             Sin estudio Luxy aún. Integra la lista (pestaña Config → Datos) y pulsa <b>Calcular estudio</b>.

@@ -743,6 +743,118 @@ async def luxy_evaluar_status(
     return JSONResponse({k: v for k, v in job.items() if k != "task"})
 
 
+# L5 — Aplicar supervisado: REUSA el Puente (diff/merge/deriva de routes_riesgo)
+# con la config aplicable de la fila IN-SAMPLE del estudio Luxy (R-T10). El BE
+# NO se aplica (informativo). Read-only salvo el merge confirmado + AuditLog.
+
+async def _luxy_act_ctx(db: AsyncSession, strategy_id: str):
+    """(ctx, error_response). ctx = {strategy, profile, act, fecha, be_info}."""
+    import app.web.routes_riesgo as rr
+    import scripts.mr_luxy as mrl
+
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return None, JSONResponse({"error": "estrategia no encontrada"},
+                                  status_code=404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    clave = rr.clave_de(strategy_id, instrument) if instrument else None
+    study = _luxy_latest(clave) if clave else None
+    if not study:
+        return None, JSONResponse(
+            {"error": "sin estudio Luxy — córrelo (pestaña Luxy) primero"},
+            status_code=409)
+    if study.get("degradado"):
+        return None, JSONResponse(
+            {"error": "estudio degradado (sin HOLC/intrabar) — provee el HOLC "
+                      "y recalcula antes de aplicar"}, status_code=409)
+    act = mrl.activacion_from_study(study)          # R-T10: SOLO in-sample
+    if not act:
+        return None, JSONResponse(
+            {"error": "el estudio no derivó palancas aplicables"},
+            status_code=409)
+    prof = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == strategy_id))).scalar_one_or_none()
+    return {"strategy": srow, "profile": prof, "act": act,
+            "fecha": study.get("fecha"),
+            "be_info": mrl.breakeven_informativo(study)}, None
+
+
+@router.get("/ui/strategies/{strategy_id}/luxy/aplicar/preview")
+async def luxy_aplicar_preview(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    ctx, err = await _luxy_act_ctx(db, strategy_id)
+    if err:
+        return err
+    prof, act = ctx["profile"], ctx["act"]
+    pcfg = (prof.pipeline_config_json or {}) if prof else {}
+    sl_vivo = (float(prof.sl_atr_multiplier)
+               if prof and prof.sl_atr_multiplier is not None else None)
+    tp_vivo = (float(prof.tp_atr_multiplier)
+               if prof and prof.tp_atr_multiplier is not None else None)
+    informativos = []
+    if ctx["be_info"]:
+        informativos.append({
+            "campo": "Breakeven (×ATR)",
+            "valor": f"{ctx['be_info']['be_atr']}×ATR",
+            "nota": "palanca no aplicable aún — informativa (no hay BE en el "
+                    "despacho; sería un cambio de motor a auditar aparte)"})
+    return JSONResponse({
+        "strategy": strategy_id, "fecha_estudio": ctx["fecha"], "fuente": "luxy",
+        "filas": rr._diff_aplicar(pcfg, act, ctx["fecha"], sl_vivo, tp_vivo),
+        "deriva": rr.deriva_estudio(pcfg, act, ctx["fecha"]),
+        "informativos": informativos,
+        "avisos": [
+            "Config de la fila IN-SAMPLE de la Tabla B (la OOS es espejo de "
+            "robustez, no aplicable — R-T10).",
+            "No toca mode/dry_run/traderspost_enabled/status (kill-switch).",
+            "scale_entry conserva su mode vigente (NX-11).",
+            "⚠ cancel_after: fijar el mismo valor A MANO en TradersPost.",
+        ],
+    })
+
+
+@router.post("/ui/strategies/{strategy_id}/luxy/aplicar")
+async def luxy_aplicar(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    from app.services.audit_service import AuditService
+
+    ctx, err = await _luxy_act_ctx(db, strategy_id)
+    if err:
+        return err
+    act = ctx["act"]
+    prof = ctx["profile"]
+    if prof is None:
+        prof = StrategyProfile(strategy_id=strategy_id)
+        db.add(prof)
+    before = dict(prof.pipeline_config_json or {})
+    cfg = rr._merge_activacion(before, act)         # NX-11 + no toca kill-switch
+    prof.pipeline_config_json = cfg
+    llaves = [k for k in ("backstop_points", "tp_nominal_long",
+                          "tp_nominal_short", "entry_reserve_timeout_seconds",
+                          "scale_entry") if k in act]
+    await AuditService().log_strategy_change(
+        db, actor="luxy_aplicar", strategy_id=strategy_id,
+        old_data={k: before.get(k) for k in llaves},
+        new_data={k: cfg.get(k) for k in llaves},
+        action="APPLY_LUXY_RECO",
+        reason=f"config in-sample del estudio Luxy {ctx['fecha']} aplicada por "
+               f"el operador (preview confirmado)")
+    await db.commit()
+    return JSONResponse({
+        "ok": True, "strategy": strategy_id, "fecha_estudio": ctx["fecha"],
+        "aplicado": {k: cfg.get(k) for k in llaves},
+        "deriva": rr.deriva_estudio(cfg, act, ctx["fecha"]),
+        "recordatorio": "⚠ cancel_after: fijar el mismo valor a mano en "
+                        "TradersPost; el BE (si el estudio lo recomienda) NO se "
+                        "aplicó (informativo).",
+    })
+
+
 @router.post("/ui/strategies/{strategy_id}/integrar")
 async def integrar_estrategia(
     strategy_id: str, file: UploadFile = File(...),
@@ -1106,6 +1218,21 @@ async def strategy_detail(
     except Exception:
         perfiles_panel = None
 
+    # L5 — badge de deriva de la config viva frente a la reco IN-SAMPLE de Luxy
+    # (refleja también la aplicación hecha desde Luxy).
+    luxy_deriva = None
+    try:
+        import scripts.mr_luxy as mrl
+        if luxy_study_data and not luxy_study_data.get("degradado"):
+            _act = mrl.activacion_from_study(luxy_study_data)
+            if _act:
+                import app.web.routes_riesgo as rr
+                _pcfg = (profile.pipeline_config_json or {}) if profile else {}
+                luxy_deriva = rr.deriva_estudio(
+                    _pcfg, _act, luxy_study_data.get("fecha"))
+    except Exception:
+        luxy_deriva = None
+
     return await render(
         request, "strategy_detail.html",
         {
@@ -1124,6 +1251,7 @@ async def strategy_detail(
             "l1_holc_ok": l1_holc_ok,
             "luxy": luxy_study_data,
             "perfiles_panel": perfiles_panel,
+            "luxy_deriva": luxy_deriva,
             "messages": flash_messages(request),
         }, db=db,
     )
