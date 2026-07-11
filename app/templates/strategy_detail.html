@@ -823,10 +823,86 @@
 
     </div><!-- ══════════ /Sub-tab CONFIG ══════════ -->
 
-    <!-- ══════════ Sub-tab: LUXY (placeholder — estudio Luxy en L2/L3) ══════════ -->
-    <div x-show="stab === 'luxy'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400 space-y-2">
-        <h2 class="text-white font-semibold">Estudio Luxy — L2/L3</h2>
-        <p>El analizador de riesgo por palancas (Tablas A/B, gráficos in-sample/OOS) se integra aquí en los lotes <b>L2/L3</b>. Hoy el estudio del Motor de Riesgo vive en <a href="/ui/riesgo?strategy={{ strategy.strategy_id }}" class="text-indigo-400 hover:underline">📊 Estudio de riesgo →</a>.</p>
+    <!-- ══════════ Sub-tab: LUXY (estudio L2 — Tablas A/B; gráficos = L3) ══════════ -->
+    <div x-show="stab === 'luxy'" x-cloak class="space-y-4"
+         x-data="{ sid: '{{ strategy.strategy_id }}', busy:false, err:null,
+                   poll(){ fetch('/ui/strategies/'+this.sid+'/luxy/status')
+                     .then(r=>r.json()).then(j=>{ if(j.status==='running'){ setTimeout(()=>this.poll(),2000);} else if(j.status==='done'){ location.reload();} else { this.busy=false; this.err=(j.tail||'error').slice(-300);} }); },
+                   calcular(){ this.busy=true; this.err=null;
+                     fetch('/ui/strategies/'+this.sid+'/luxy/calcular',{method:'POST'})
+                       .then(r=>r.json().then(j=>({s:r.status,j})))
+                       .then(({s,j})=>{ if(s===202){ this.poll();} else { this.busy=false; this.err=j.error||('error '+s);} })
+                       .catch(e=>{this.busy=false;this.err=String(e);}); } }">
+        <div class="flex items-center justify-between gap-3">
+            <h2 class="text-white font-semibold text-lg">Estudio Luxy <span class="text-xs text-gray-500 font-normal">Riesgo v2 · sobre el motor</span></h2>
+            <button @click="calcular()" :disabled="busy"
+                    class="bg-indigo-700 hover:bg-indigo-600 disabled:opacity-40 text-white px-4 py-2 rounded text-sm"
+                    x-text="busy ? 'Calculando…' : (' Calcular estudio')"></button>
+        </div>
+        <p x-show="err" x-text="err" x-cloak class="text-red-400 text-xs"></p>
+
+        {% if not luxy %}
+        <div class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400">
+            Sin estudio Luxy aún. Integra la lista (pestaña Config → Datos) y pulsa <b>Calcular estudio</b>.
+            Los gráficos reactivos in-sample/OOS llegan en <b>L3</b>.
+        </div>
+        {% else %}
+        {% set A = luxy.tabla_a %}{% set B = luxy.tabla_b %}
+        {% if luxy.degradado %}
+        <div class="bg-amber-900/30 border border-amber-800 text-amber-200 text-xs rounded px-3 py-2">
+            ⚠ Estudio <b>DEGRADADO</b> (sin HOLC/intrabar): solo crudo. Fills con corte y BREAKEVEN no disponibles — provee el HOLC y reintegra.
+        </div>
+        {% endif %}
+        <div class="text-xs text-gray-500">Corte del split (viejo=derivar · reciente=probar): <span class="font-mono">{{ luxy.split.cutoff_ts or '—' }}</span> · in-sample {{ luxy.split.n_in_sample }} · OOS {{ luxy.split.n_oos }} · $/punto {{ luxy.usd_por_punto }} (del master).</div>
+
+        <!-- Tabla A -->
+        <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+            <div class="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">Tabla A — métricas</div>
+            <table class="w-full text-sm">
+                <thead><tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                    <th class="px-3 py-2">Fila</th><th class="px-3 py-2">Neto</th><th class="px-3 py-2">PF</th><th class="px-3 py-2">Max DD</th><th class="px-3 py-2">Peor</th><th class="px-3 py-2">Particip.</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">n</th>
+                </tr></thead>
+                <tbody>
+                {% for r in A %}
+                <tr class="border-b border-gray-800 last:border-0">
+                    <td class="px-3 py-2 font-medium {% if r.fila=='OOS' %}text-amber-300{% elif r.fila=='In-sample' %}text-emerald-300{% else %}text-gray-300{% endif %}">{{ r.fila }}</td>
+                    <td class="px-3 py-2 font-mono">{% if r.net_usd is not none %}${{ '{:,.0f}'.format(r.net_usd) }}{% else %}—{% endif %}</td>
+                    <td class="px-3 py-2 font-mono">{{ r.pf if r.pf is not none else '—' }}</td>
+                    <td class="px-3 py-2 font-mono">{% if r.max_dd_usd is not none %}${{ '{:,.0f}'.format(r.max_dd_usd) }}{% else %}—{% endif %}</td>
+                    <td class="px-3 py-2 font-mono">{% if r.peor_trade_usd is not none %}${{ '{:,.0f}'.format(r.peor_trade_usd) }}{% else %}—{% endif %}</td>
+                    <td class="px-3 py-2 font-mono">{{ r.participacion_pct if r.participacion_pct is not none else '—' }}%</td>
+                    <td class="px-3 py-2 font-mono">{{ r.wr_pct if r.wr_pct is not none else '—' }}</td>
+                    <td class="px-3 py-2 font-mono text-gray-500">{{ r.n }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Tabla B -->
+        <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+            <div class="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">Tabla B — palancas derivadas por ventana</div>
+            <table class="w-full text-sm">
+                <thead><tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                    <th class="px-3 py-2">Palanca</th><th class="px-3 py-2">In-sample-óptimo</th><th class="px-3 py-2">OOS-óptimo <span class="text-amber-500">(espejo)</span></th><th class="px-3 py-2">Converge</th>
+                </tr></thead>
+                <tbody>
+                {% for key, label in [('SL_suelo_atr','SL suelo ×ATR'),('backstop_usd','Backstop $'),('TP_long_atr','TP long ×ATR'),('TP_short_atr','TP short ×ATR'),('C1','C1'),('C2','C2'),('C3','C3'),('BE_atr','Breakeven ×ATR'),('lado','Lado')] %}
+                <tr class="border-b border-gray-800 last:border-0">
+                    <td class="px-3 py-2 text-gray-400">{{ label }}</td>
+                    <td class="px-3 py-2 font-mono text-gray-200">{{ B.in_sample_optimo.get(key) if B.in_sample_optimo.get(key) is not none else '—' }}</td>
+                    <td class="px-3 py-2 font-mono text-gray-400">{{ B.oos_optimo.get(key) if B.oos_optimo.get(key) is not none else '—' }}</td>
+                    <td class="px-3 py-2 text-xs">{% set c = B.convergencia.get(key) %}{% if c=='coinciden' %}<span class="text-emerald-400">✓ coinciden</span>{% elif c=='divergen' %}<span class="text-amber-400">⚠ divergen</span>{% else %}<span class="text-gray-600">—</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <div class="px-3 py-2 text-xs text-amber-400/80 border-t border-gray-800">{{ B.nota_oos }}</div>
+        </div>
+        {% if luxy.levers_in_sample and luxy.levers_in_sample.ladder %}
+        <div class="text-xs text-gray-500">Reparto in-sample: {{ luxy.levers_in_sample.ladder.why_alloc }}</div>
+        {% endif %}
+        {% endif %}
     </div>
 
     <!-- ══════════ Sub-tab: LAB (placeholder — migra en L6) ══════════ -->

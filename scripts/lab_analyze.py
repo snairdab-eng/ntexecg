@@ -618,6 +618,66 @@ def touch_minutes(
     return adv, fav
 
 
+def be_return_minutes(
+    t: Trade, keys5: list[datetime], idx5: dict, bars5: dict,
+    triggers: tuple,
+) -> dict:
+    """Extensión ADITIVA del walk B4.0 (mismo intrabar sancionado que
+    `touch_minutes`, misma referencia y misma exclusión de la barra alineada;
+    NO cambia el enriched ni reconstruye ruta nueva) — resuelve lo que las
+    cachés de PRIMER TOQUE no pueden: el retorno a BREAKEVEN *después* de armar.
+
+    Para cada `trigger`×ATR de la grilla de BE devuelve
+    {str(trigger): (minuto, tipo) | None}:
+      · ("clean")     retorno a breakeven en una barra ESTRICTAMENTE POSTERIOR
+                      a la del armado — el disparo limpio del stop de breakeven.
+      · ("same_bar")  la MISMA barra del armado además vuelve a la entrada
+                      (subió al trigger y bajó a breakeven): AMBIGUO — dentro de
+                      la barra no se conoce el orden. El evaluador lo resuelve
+                      pesimista PARA LA PALANCA (ganadora ambigua → recortada a
+                      0; perdedora ambigua → conserva su desenlace, no se
+                      rescata). Ver `mr_luxy._luxy_exit_atr`.
+      · None          nunca arma, o arma y nunca retorna.
+
+    Retorno a 0 = precio de vuelta a la entrada (low ≤ ref en largos / high ≥
+    ref en cortos). El toque de 0 ANTES del armado NO cuenta (el precio ondula
+    alrededor de la entrada al inicio; solo el retorno post-armado es el disparo
+    real del BE) — este es el hueco que las cachés de primer-toque no resuelven.
+    """
+    out = {str(float(g)): None for g in triggers}
+    armed = {str(float(g)): None for g in triggers}
+    if (t.aligned_ts is None or t.bar_close is None
+            or not t.entry_price or not t.atr_pct):
+        return out
+    end_ts = (t.exit_ts + (t.aligned_ts - t.entry_ts)) if t.exit_ts else None
+    i = idx5[t.aligned_ts] + 1          # la barra alineada es pre-entrada
+    ref = t.bar_close
+    for k5 in keys5[i:]:
+        if end_ts is not None and k5 > end_ts:
+            break
+        _o, high, low, _c, _v = bars5[k5]
+        if t.side == "long":
+            favor = (high - ref) / t.entry_price * 100.0
+            back_to_be = low <= ref             # volvió (o cruzó) la entrada
+        else:
+            favor = (ref - low) / t.entry_price * 100.0
+            back_to_be = high >= ref
+        mins = (k5 - t.aligned_ts).total_seconds() / 60.0
+        for g in triggers:
+            key = str(float(g))
+            if out[key] is not None:
+                continue
+            if armed[key] is None:
+                if favor >= float(g) * t.atr_pct:
+                    armed[key] = mins
+                    if back_to_be:              # arma y vuelve en la MISMA barra
+                        out[key] = (mins, "same_bar")
+                continue
+            if back_to_be:                       # retorno LIMPIO (barra posterior)
+                out[key] = (mins, "clean")
+    return out
+
+
 def compute_touch_times(
     trades: list[Trade], keys5: list[datetime], idx5: dict, bars5: dict,
 ) -> None:

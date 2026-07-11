@@ -591,6 +591,84 @@ async def upload_holc(
                          "rows_sampled": nrows, "archivo": dest.name})
 
 
+# L2 — estudio Luxy como JOB (patrón Calcular): subproceso `python -m
+# scripts.mr_luxy <clave>` que persiste runs/luxy_<fecha>.json; polling.
+import asyncio as _asyncio
+import sys as _sys
+
+LUXY_JOBS: dict[str, dict] = {}
+
+
+def _luxy_latest(clave: str) -> dict | None:
+    """Última corrida Luxy persistida (runs/luxy_*.json) — solo lectura."""
+    import json as _json
+    import app.web.routes_riesgo as rr
+    hits = sorted((rr.MOTOR_DIR / clave / "runs").glob("luxy_*.json"))
+    if not hits:
+        return None
+    try:
+        return _json.loads(hits[-1].read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+async def _run_luxy(clave: str, cmd: list[str]) -> None:
+    import app.web.routes_riesgo as rr
+    try:
+        rc, tail = await rr._run_motor(cmd)
+        LUXY_JOBS[clave].update({"status": "done" if rc == 0 else "error",
+                                 "rc": rc, "tail": tail})
+    except Exception as exc:                       # el job NUNCA muere mudo
+        LUXY_JOBS[clave].update({"status": "error", "tail": repr(exc)})
+
+
+@router.post("/ui/strategies/{strategy_id}/luxy/calcular", status_code=202)
+async def luxy_calcular(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return JSONResponse({"error": "estrategia no encontrada"},
+                            status_code=404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    if not instrument:
+        return JSONResponse({"error": "la estrategia no tiene activo"},
+                            status_code=400)
+    clave = rr.clave_de(strategy_id, instrument)
+    if rr._motor_manifest(clave) is None:
+        return JSONResponse({"error": "sin master integrado — sube la lista "
+                                      "primero"}, status_code=409)
+    if (LUXY_JOBS.get(clave) or {}).get("status") == "running":
+        return JSONResponse({"error": "ya hay un estudio Luxy corriendo"},
+                            status_code=409)
+    LUXY_JOBS[clave] = {"status": "running",
+                        "started": datetime.now(timezone.utc).isoformat()}
+    cmd = [_sys.executable, "-m", "scripts.mr_luxy", clave]
+    LUXY_JOBS[clave]["task"] = _asyncio.create_task(_run_luxy(clave, cmd))
+    return JSONResponse({"ok": True, "status": "running", "clave": clave},
+                        status_code=202)
+
+
+@router.get("/ui/strategies/{strategy_id}/luxy/status")
+async def luxy_status(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return JSONResponse({"error": "estrategia no encontrada"},
+                            status_code=404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    clave = rr.clave_de(strategy_id, instrument) if instrument else None
+    job = LUXY_JOBS.get(clave) if clave else None
+    if job is None:
+        return JSONResponse({"status": "idle"})
+    return JSONResponse({k: v for k, v in job.items() if k != "task"})
+
+
 @router.post("/ui/strategies/{strategy_id}/integrar")
 async def integrar_estrategia(
     strategy_id: str, file: UploadFile = File(...),
@@ -822,12 +900,14 @@ async def strategy_detail(
     l1_instrument = _lab_instrument(strategy.asset_symbol)
     l1_master = None
     l1_holc_ok = False
+    luxy_study_data = None
     if l1_instrument:
         try:
             import app.web.routes_riesgo as rr
-            l1_master = rr._motor_manifest(
-                rr.clave_de(strategy_id, l1_instrument))
+            _clave = rr.clave_de(strategy_id, l1_instrument)
+            l1_master = rr._motor_manifest(_clave)
             l1_holc_ok = rr.holc_disponible(l1_instrument)
+            luxy_study_data = _luxy_latest(_clave)
         except Exception:
             l1_master = None
 
@@ -847,6 +927,7 @@ async def strategy_detail(
             "l1_instrument": l1_instrument,
             "l1_master": l1_master,
             "l1_holc_ok": l1_holc_ok,
+            "luxy": luxy_study_data,
             "messages": flash_messages(request),
         }, db=db,
     )

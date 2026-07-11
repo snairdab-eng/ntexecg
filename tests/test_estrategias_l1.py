@@ -10,6 +10,7 @@ Cubre:
 - Detalle con sub-pestañas Config·Luxy·Lab·Perfiles + selector desplegable.
 - Riesgo v1 intacta (regresión).
 """
+import asyncio
 import glob
 import json
 from pathlib import Path
@@ -225,8 +226,8 @@ async def test_detalle_subpestanas_y_selector(
     assert "stab: 'config'" in html
     for label in ("Config", "Luxy", "Lab", "Perfiles"):
         assert f">{label}<" in html
-    # placeholders honestos
-    assert "L2/L3" in html and "L6" in html
+    # Luxy funcional (botón) + Lab placeholder honesto (migra en L6)
+    assert "Calcular estudio" in html and "L6" in html
     # selector con ambas estrategias, navega al cambiar
     assert "window.location.href='/ui/strategies/'+this.value" in html
     assert 'value="ES5m_A"' in html and 'value="NQ5m_B"' in html
@@ -283,6 +284,66 @@ async def test_calcular_sobre_normal_202(
     r = await client.post("/ui/riesgo/calcular", json={"strategy": "ES5m_Norm"})
     assert r.status_code == 202
     assert r.json()["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# L2 — sub-pestaña Luxy: sin estudio muestra el botón; e2e real con JOB
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_luxy_tab_sin_estudio(
+    client: AsyncClient, dirs: Path, db: AsyncSession
+) -> None:
+    await _mk_strategy(db, "ES5m_LuxA", "ES")
+    r = await client.get("/ui/strategies/ES5m_LuxA")
+    assert r.status_code == 200
+    html = r.text
+    assert "Calcular estudio" in html
+    assert "Sin estudio Luxy" in html            # aún no corrió
+
+
+@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.asyncio
+async def test_luxy_e2e_real(
+    client: AsyncClient, dirs: Path, db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """e2e: integrar ES real → Calcular estudio Luxy (JOB+polling) → la
+    sub-pestaña Luxy renderiza la Tabla A con el crudo; el JSON persiste con
+    intrabar (BE evaluado)."""
+    import json as _json
+    monkeypatch.setenv("HOLC_DIR", "NINJATRADER/HOLC")
+    await _mk_strategy(db, "ES5m_LuxReal", "ES")
+    csv_real = Path(sorted(_ES_CSV)[-1])
+    r = await client.post(
+        "/ui/strategies/ES5m_LuxReal/integrar",
+        files={"file": (csv_real.name, csv_real.read_bytes(), "text/csv")})
+    assert r.status_code == 200, r.text
+    clave = r.json()["clave"]
+
+    r = await client.post("/ui/strategies/ES5m_LuxReal/luxy/calcular")
+    assert r.status_code == 202, r.text
+    for _ in range(240):
+        s = await client.get("/ui/strategies/ES5m_LuxReal/luxy/status")
+        if s.json().get("status") != "running":
+            break
+        await asyncio.sleep(1.0)
+    assert s.json().get("status") == "done", s.json().get("tail", "")[-400:]
+
+    # JSON persistido: intrabar (no degradado), BE evaluado, tabla A/B
+    study = _json.loads(
+        (dirs / "MotorRiesgo" / clave / "runs" /
+         sorted((dirs / "MotorRiesgo" / clave / "runs").glob("luxy_*.json"))[-1].name)
+        .read_text(encoding="utf-8"))
+    assert study["degradado"] is False
+    assert study["levers_in_sample"]["breakeven"]["disponible"] is True
+    assert len(study["tabla_a"]) == 3 and study["tabla_b"]["convergencia"]
+
+    # la sub-pestaña renderiza la Tabla A
+    r = await client.get("/ui/strategies/ES5m_LuxReal")
+    assert r.status_code == 200
+    assert "Tabla A — métricas" in r.text
+    assert "espejo de robustez" in r.text.lower() or "espejo" in r.text.lower()
 
 
 # ---------------------------------------------------------------------------
