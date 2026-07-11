@@ -91,21 +91,10 @@ def zone_of_hour(hr: int | None) -> str | None:
 # Reparto de la escalera (WHAT del andamio; el CÓMO se construye sobre el motor)
 # ---------------------------------------------------------------------------
 
-def alloc_from(weights: list[float], total: int = TOTAL_MICROS) -> list[int]:
-    """Reparte `total` micros ∝ pesos, redondeo por MAYOR RESIDUO, C1≥1.
-    (Portado de LUXY/build_dashboard_data.alloc_from — misma semántica.)"""
-    s = sum(weights) or 1.0
-    raw = [w / s * total for w in weights]
-    base = [int(x) for x in raw]
-    rem = total - sum(base)
-    order = sorted(range(len(raw)), key=lambda i: raw[i] - base[i], reverse=True)
-    for i in range(rem):
-        base[order[i]] += 1
-    if base and base[0] == 0:                    # C1 SIEMPRE ≥ 1
-        base[0] = 1
-        j = max(range(1, len(base)), key=lambda i: base[i])
-        base[j] -= 1
-    return base
+# Reparto por MAYOR RESIDUO con C1≥1 — helper COMPARTIDO (no se duplica): vive
+# en app/services/position_sizing (lo reusan el panel de Perfiles L4 y la regla
+# 3 del Portafolio).
+from app.services.position_sizing import alloc_from  # noqa: E402
 
 
 def why_alloc(alloc: list[int], f2: float, f3: float) -> str:
@@ -560,9 +549,13 @@ def _dashboard_payload(sts: list[SimTrade], by_number: dict, levers_in: dict,
         notes.append("mejora >3× (revisar sobreajuste)")
     notes.append("régimen omitido (no disponible barato en este estudio)")
 
+    entries = sorted(getattr(by_number.get(s.number), "entry_price", None)
+                     for s in sts
+                     if getattr(by_number.get(s.number), "entry_price", None))
+    ref_price = entries[len(entries) // 2] if entries else None
     return {
         "pv": ppt, "n": len(sts), "recon_ok": recon_ok, "fragile": fragile,
-        "notes": notes,
+        "notes": notes, "ref_price": ref_price,
         "mfe_max": max((t["mfe"] for t in nube), default=0),
         "mae_min": min((t["mae"] for t in nube), default=0),
         "trades": nube, "base": _card(crudo), "config": _card(config_m),

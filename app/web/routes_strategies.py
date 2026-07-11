@@ -788,6 +788,117 @@ async def integrar_estrategia(
 
 
 # ---------------------------------------------------------------------------
+# L4 — Panel de Perfiles (READ-ONLY): micros escalados, peor-caso por operación,
+# caps, webhook enmascarado + Export (payload por perfil/lado del builder REAL,
+# R-T8). Los 5 perfiles son LOS DE NTEXECG (principal + 4 de config.profiles).
+# ---------------------------------------------------------------------------
+
+def _mask_webhook(url: str | None) -> str | None:
+    """Nunca el token completo en pantalla — solo la cola (P4/seguridad)."""
+    if not url:
+        return None
+    tail = url[-6:] if len(url) > 6 else url
+    return "…" + tail
+
+
+def _export_payloads(strategy, config: dict, dest: dict,
+                     ref_price, atr, is_long: bool) -> list:
+    """R-T8 — payload por perfil/lado del `payload_builder` REAL (precios
+    ABSOLUTOS + guarda P0), read-only. Los offsets/action:add del andamio NO se
+    portan. Vacío si el bracket no es computable (fail-closed honesto)."""
+    import uuid
+    from types import SimpleNamespace
+    from app.services import dispatch_profiles as dprof
+    from app.services.payload_builder import PayloadBuilder
+
+    if ref_price is None:
+        return []
+    sl, tp = dprof.recompute_bracket(ref_price, atr, is_long, dest)
+    if sl is None:
+        return []
+    dest_config = dprof.make_dest_config(config, dest)
+    qs = (dest.get("scale_entry") or {}).get("quantities") or []
+    qty = sum(q for q in qs if q > 0) or 1
+    sig = NormalizedSignal(
+        raw_signal_id=uuid.uuid4(), strategy_id=strategy.strategy_id,
+        ticker_received=strategy.asset_symbol,
+        mapped_symbol=strategy.asset_symbol,
+        action="buy" if is_long else "sell",
+        sentiment="long" if is_long else "short",
+        price=ref_price, quantity=qty,
+        signal_role="entry_long" if is_long else "entry_short",
+        dedupe_key=uuid.uuid4().hex)
+    res = SimpleNamespace(sl_price=sl, tp_price=tp, atr_value=atr, score=None,
+                          quality=None, filters_active=None,
+                          market_data_provider=None)
+    return PayloadBuilder().build_scaled(sig, strategy, dest_config, res)
+
+
+def _perfiles_panel(strategy, config: dict, luxy: dict | None) -> dict | None:
+    """Analítica READ-ONLY de los 5 perfiles sobre el reparto derivado del
+    estudio: micros escalados (size_for_caps), peor-caso por operación, caps,
+    webhook enmascarado, insight, y Export por perfil/lado (builder real)."""
+    from app.services import dispatch_profiles as dprof
+    from app.services.position_sizing import (
+        MICROS_PER_MINI, micros_that_fit, size_for_caps,
+    )
+    dash = ((luxy or {}).get("dashboard")) or {}
+    reco = dash.get("reco") or {}
+    pv = (luxy or {}).get("usd_por_punto") or dash.get("pv")
+    if not pv or not reco.get("alloc"):
+        return None
+    pv_micro = pv / MICROS_PER_MINI
+    base_alloc = reco["alloc"]
+    sl_pts = config.get("backstop_points") or reco.get("sl_pts")
+    levels_pts = [0.0, reco.get("l2_pts") or 0.0, reco.get("l3_pts") or 0.0]
+    ref_price = dash.get("ref_price")
+    atr = (dash.get("units") or {}).get("atr_med_pts")
+
+    dests = dprof.resolve_destinations(config)
+    profiles_cfg = config.get("profiles") or []
+    rows = []
+    for dest in dests:
+        is_main = dest["name"] is None
+        pcfg = {}
+        if not is_main:
+            for p in profiles_cfg:
+                if (p.get("name") or "perfil")[:30] == dest["name"]:
+                    pcfg = p
+                    break
+        q = (base_alloc if is_main
+             else ((dest.get("scale_entry") or {}).get("quantities")
+                   or base_alloc))
+        max_c = pcfg.get("max_contracts")
+        max_l = pcfg.get("max_loss_per_trade")
+        max_d = pcfg.get("max_daily_loss")
+        sized = size_for_caps(q, sl=sl_pts, levels=levels_pts,
+                              pv_micro=pv_micro, max_contracts=max_c,
+                              max_loss_per_trade=max_l)
+        fit = micros_that_fit(sl_pts, pv_micro, max_l)
+        insight = None
+        if fit is not None and sl_pts:
+            insight = (f"con SL de ${round(sl_pts * pv_micro):,}/micro, esta "
+                       f"cuenta con tope ${round(max_l):,}/op solo aguanta "
+                       f"{fit} micro(s)")
+        rows.append({
+            "name": "principal" if is_main else dest["name"],
+            "is_main": is_main,
+            "alloc": sized["alloc"], "total_micros": sized["total"],
+            "worst_case": sized["worst_case"], "limited_by": sized["limited_by"],
+            "caps": {"max_contracts": max_c, "max_loss_per_trade": max_l,
+                     "max_daily_loss": max_d},
+            "webhook_masked": _mask_webhook(dest.get("webhook_url")),
+            "insight": insight,
+            "export_long": _export_payloads(strategy, config, dest, ref_price,
+                                            atr, True),
+            "export_short": _export_payloads(strategy, config, dest, ref_price,
+                                             atr, False),
+        })
+    return {"rows": rows, "sl_pts": sl_pts, "pv": pv, "ref_price": ref_price,
+            "atr_med": atr, "n_perfiles": len(rows)}
+
+
+# ---------------------------------------------------------------------------
 # Detail
 # ---------------------------------------------------------------------------
 
@@ -985,6 +1096,16 @@ async def strategy_detail(
         except Exception:
             l1_master = None
 
+    # L4 — panel de Perfiles (read-only) sobre el reparto derivado del estudio.
+    perfiles_panel = None
+    try:
+        from app.services.config_resolver import ConfigResolver
+        _cfg = await ConfigResolver().resolve(
+            db, strategy_id, strategy.asset_symbol)
+        perfiles_panel = _perfiles_panel(strategy, _cfg, luxy_study_data)
+    except Exception:
+        perfiles_panel = None
+
     return await render(
         request, "strategy_detail.html",
         {
@@ -1002,6 +1123,7 @@ async def strategy_detail(
             "l1_master": l1_master,
             "l1_holc_ok": l1_holc_ok,
             "luxy": luxy_study_data,
+            "perfiles_panel": perfiles_panel,
             "messages": flash_messages(request),
         }, db=db,
     )

@@ -300,6 +300,10 @@ async def test_luxy_tab_sin_estudio(
     html = r.text
     assert "Calcular estudio" in html
     assert "Sin estudio Luxy" in html            # aún no corrió
+    # L4 — panel de Perfiles read-only: sin estudio muestra el CTA
+    assert "Perfiles — sizing y peor-caso" in html
+    assert "read-only · no edita · no despacha" in html
+    assert "Corre el" in html                    # CTA a Calcular
 
 
 @pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
@@ -352,6 +356,10 @@ async def test_luxy_e2e_real(
     assert 'id="lx-chart-in"' in html and 'id="lx-chart-oos"' in html
     assert "BE: requiere recálculo del motor" in html
     assert "ET" in html                              # rango horario ET (R-T7)
+    # L4 — el panel de Perfiles renderiza el sizing + Export (builder real)
+    assert "Perfiles — sizing y peor-caso" in html
+    assert "Peor-caso/op" in html
+    assert "lo que Estrategias enviaría" in html     # R-T8
 
 
 @pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
