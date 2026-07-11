@@ -16,6 +16,7 @@ from app.models.global_profile import GlobalProfile
 from app.models.asset_profile import AssetProfile
 from app.models.market_data_status import MarketDataStatus
 from app.models.position_state import PositionState
+from app.models.portfolio_config import PortfolioConfig
 from app.models.strategy import Strategy
 from app.models.symbol_map import SymbolMap
 
@@ -76,6 +77,17 @@ async def get_active_symbol_map(db: AsyncSession, tv_symbol: str) -> SymbolMap |
 async def get_global_profile(db: AsyncSession) -> GlobalProfile | None:
     result = await db.execute(
         select(GlobalProfile).where(GlobalProfile.active.is_(True)).limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Config (Módulo de Riesgo de Portafolio — global, single active row)
+# ---------------------------------------------------------------------------
+
+async def get_portfolio_config(db: AsyncSession) -> PortfolioConfig | None:
+    result = await db.execute(
+        select(PortfolioConfig).where(PortfolioConfig.active.is_(True)).limit(1)
     )
     return result.scalar_one_or_none()
 

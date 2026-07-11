@@ -476,5 +476,18 @@ class FilterPipeline:
                     "state": position.state,
                     "holder_strategy": position.strategy_id}
 
+        # 3.5 PortfolioGuard (Módulo de Riesgo de Portafolio, P-A) — riesgo
+        # AGREGADO entre estrategias, junto a symbol_busy y FAIL-CLOSED. Extiende
+        # el "una posición por símbolo" a "una posición por ACTIVO" (regla 1 ON;
+        # MES/ES→ES). Corre DESPUÉS de symbol_busy (mismo símbolo conserva su
+        # motivo) y solo mira OTROS símbolos del mismo activo; las legs de la
+        # escalera nunca llegan aquí (van en el despacho multi-leg de su señal).
+        # Con la regla apagada no escanea nada → decisión idéntica a antes.
+        from app.services.portfolio_guard import PortfolioGuard
+
+        portfolio = await PortfolioGuard().check_entry(db, signal, config)
+        if portfolio["failed"]:
+            return portfolio
+
         # 3.1 daily_loss_stop / 3.2 max_positions — Phase 1 stubs
         return {"failed": False}

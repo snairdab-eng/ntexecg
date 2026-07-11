@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Portafolio — NTEXECG{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div>
+        <h1 class="text-xl font-bold text-white">Riesgo de Portafolio</h1>
+        <p class="text-sm text-gray-400 mt-1">
+            Riesgo <strong>agregado</strong> entre todas las estrategias — la capa
+            que falta sobre el control por trade (backstop) y por estrategia
+            (protección). Marco de reglas con interruptor: al nacer solo la
+            <strong>regla 1</strong> está encendida. Se aplica en el guardarraíl
+            L3, junto a <code class="text-gray-300">symbol_busy</code>, y es
+            <strong>fail-closed</strong> (si el agregado no es computable, bloquea).
+        </p>
+    </div>
+
+    <!-- ───────────────── Reglas (interruptores) ───────────────── -->
+    <section class="space-y-3">
+        <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">
+            Reglas</h2>
+        <div class="bg-gray-900 border border-gray-800 rounded divide-y divide-gray-800">
+            {% for r in rules %}
+            <div class="flex items-start gap-4 px-4 py-3">
+                <div class="flex-1">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-mono text-gray-500">#{{ r.n }}</span>
+                        <span class="text-sm font-medium text-white">{{ r.label }}</span>
+                        {% if r.enabled %}
+                        <span class="bg-green-800 text-green-100 text-xs px-2 py-0.5 rounded uppercase tracking-wide">ON</span>
+                        {% else %}
+                        <span class="bg-gray-700 text-gray-300 text-xs px-2 py-0.5 rounded uppercase tracking-wide">OFF</span>
+                        {% endif %}
+                        {% if not r.implemented %}
+                        <span class="bg-gray-800 text-gray-500 text-xs px-2 py-0.5 rounded border border-gray-700"
+                              title="Codificada e inerte hasta P-B">inerte</span>
+                        {% endif %}
+                    </div>
+                    <p class="text-xs text-gray-400 mt-1">{{ r.desc }}</p>
+                    {% if not r.implemented and r.enabled %}
+                    <p class="text-xs text-yellow-400/80 mt-1">
+                        ⚠ encendida pero aún no codificada (P-B) — no altera decisiones.
+                    </p>
+                    {% endif %}
+                </div>
+                <form method="post" action="/ui/portfolio/rules" class="shrink-0">
+                    <input type="hidden" name="rule_key" value="{{ r.key }}" />
+                    <input type="hidden" name="enabled" value="{{ 'off' if r.enabled else 'on' }}" />
+                    {% if r.enabled %}
+                    <button class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs">Apagar</button>
+                    {% else %}
+                    <button class="bg-green-700 hover:bg-green-600 text-white px-3 py-1 rounded text-xs">Encender</button>
+                    {% endif %}
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <!-- ───────────────── Exposición en vivo ───────────────── -->
+    <section class="space-y-3">
+        <div class="flex items-center gap-3">
+            <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">
+                Exposición en vivo</h2>
+            <span class="text-xs text-gray-500">
+                {{ exposure.occupied_assets }} activo(s) ocupado(s) ·
+                {{ exposure.total_micros }} micros totales
+            </span>
+        </div>
+
+        <div class="bg-yellow-900/40 border border-yellow-700 text-yellow-200 px-4 py-2 rounded text-xs">
+            ⚠️ Estado <strong>estimado</strong> (señales enviadas), agrupado por
+            activo raíz (Symbol Mapper: MES/ES→ES). Peor-caso agregado en $
+            (regla 3): pendiente del helper compartido de L4.
+        </div>
+
+        {% if exposure.assets %}
+        <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                        <th class="px-3 py-2">Activo</th>
+                        <th class="px-3 py-2">Símbolo</th>
+                        <th class="px-3 py-2">Estrategia</th>
+                        <th class="px-3 py-2">Estado~</th>
+                        <th class="px-3 py-2">Dir</th>
+                        <th class="px-3 py-2">Micros</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in exposure.assets %}
+                    {% for p in a.positions %}
+                    <tr class="border-b border-gray-800 last:border-0 hover:bg-gray-800/50">
+                        {% if loop.first %}
+                        <td class="px-3 py-2 font-mono text-white font-semibold align-top"
+                            rowspan="{{ a.positions | length }}">
+                            {{ a.asset }}
+                            <div class="text-xs text-gray-500 font-normal">{{ a.micros }} micros</div>
+                        </td>
+                        {% endif %}
+                        <td class="px-3 py-2 text-gray-300 font-mono">{{ p.symbol }}</td>
+                        <td class="px-3 py-2 text-gray-400">{{ p.strategy_id or '—' }}</td>
+                        <td class="px-3 py-2 text-gray-300">{{ p.state }}</td>
+                        <td class="px-3 py-2 text-gray-400">{{ p.direction or '—' }}</td>
+                        <td class="px-3 py-2 text-gray-400">{{ p.quantity }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="bg-gray-900 border border-gray-800 rounded px-3 py-8 text-center text-gray-600 text-sm">
+            Sin posiciones abiertas — portafolio plano.
+        </div>
+        {% endif %}
+
+        {% if exposure.unknown %}
+        <div class="bg-red-900/40 border border-red-700 text-red-200 px-4 py-3 rounded text-xs">
+            <strong>⚠ Activo indeterminado</strong> — estas posiciones abiertas no
+            se pudieron mapear a un activo raíz. Con la regla 1 encendida, una
+            entrada nueva se bloquea (fail-closed) hasta resolverlas:
+            <span class="font-mono">
+                {% for p in exposure.unknown %}{{ p.symbol }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </span>
+        </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}
