@@ -119,8 +119,13 @@
             </div>
             <div class="bg-gray-950 rounded p-2 border border-gray-800">
                 <div class="text-gray-500">HOLC (al integrar)</div>
+                {% if motor.holc.ultima_barra %}
                 <div class="text-gray-200">{{ motor.holc.ultima_barra[:16] }}</div>
                 <div class="text-gray-500">{% if motor.holc.atr_estimado %}⚠ {{ motor.holc.atr_estimado }} ATR estimado{% else %}✓ completo{% endif %}</div>
+                {% else %}
+                <div class="text-amber-400">⚠ degradado (sin HOLC)</div>
+                <div class="text-gray-500">sube el HOLC y reintegra</div>
+                {% endif %}
             </div>
         </div>
         {% for a in avisos %}

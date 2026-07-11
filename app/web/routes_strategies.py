@@ -1,14 +1,17 @@
 """Strategy management UI routes."""
 from __future__ import annotations
 
+import csv as _csv
+import io
 import json
+import re
 import secrets
 import time as _time
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -486,6 +489,153 @@ async def create_strategy_ui(
 
 
 # ---------------------------------------------------------------------------
+# L1 — Datos DENTRO de Estrategias: subir la lista → integrar el master (reusa
+# el núcleo del Motor, `routes_riesgo.integrar_lista`; NO se muda el motor) +
+# provisión de HOLC (subir/validar/guardar) con anti-traversal estricto.
+# ---------------------------------------------------------------------------
+
+# Timeframes válidos para el nombre destino del HOLC (whitelist anti-traversal).
+_HOLC_TF_OK = {"5m", "15m", "1h", "4h"}
+_SYM_RE = re.compile(r"^[A-Z0-9]{1,6}$")
+
+
+def _lab_instrument(asset_symbol: str | None) -> str | None:
+    """Instrumento raíz del Lab/Motor desde el activo de la estrategia
+    (Symbol Mapper del estudio: MES→ES). None si no hay activo."""
+    from scripts.lab_manifest import MICRO_TO_LAB
+    a = (asset_symbol or "").strip().upper()
+    if not a:
+        return None
+    return MICRO_TO_LAB.get(a, a)
+
+
+def _validate_holc(raw: bytes) -> tuple[bool, int, str | None]:
+    """Valida en MEMORIA (sin tocar disco) que el CSV es un HOLC parseable:
+    columnas DateTime/Open/High/Low/Close + filas con DateTime YYYY-MM-DD
+    HH:MM:SS y OHLC numéricos. Devuelve (ok, filas_muestreadas, error)."""
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False, 0, "el archivo no es texto UTF-8"
+    reader = _csv.DictReader(io.StringIO(text))
+    cols = set(reader.fieldnames or [])
+    required = {"DateTime", "Open", "High", "Low", "Close"}
+    if not required.issubset(cols):
+        faltan = sorted(required - cols)
+        return False, 0, (f"faltan columnas {faltan} — se esperan "
+                          f"DateTime/Open/High/Low/Close")
+    n = 0
+    for r in reader:
+        try:
+            datetime.strptime((r["DateTime"] or "").strip(),
+                              "%Y-%m-%d %H:%M:%S")
+            float(r["Open"]); float(r["High"]); float(r["Low"]); float(r["Close"])
+            n += 1
+        except (KeyError, ValueError, TypeError):
+            continue
+        if n >= 20:                     # suficiente para confirmar el formato
+            break
+    if n < 5:
+        return False, n, ("sin filas OHLC parseables (DateTime "
+                          "YYYY-MM-DD HH:MM:SS + Open/High/Low/Close numéricos)")
+    return True, n, None
+
+
+@router.post("/ui/strategies/holc")
+async def upload_holc(
+    symbol: str = Form(...), timeframe: str = Form("5m"),
+    file: UploadFile = File(...),
+) -> JSONResponse:
+    """Provisión de HOLC: valida el formato y lo guarda como <SYM>_<tf>.csv en
+    NINJATRADER/HOLC (fuente única `lab_analyze._holc_dir`). SYM se normaliza a
+    la raíz del catálogo (MES→ES) y se valida contra whitelist + regex; tf de
+    una whitelist — imposible salir del directorio. HOLC inválido → rechazo sin
+    tocar disco."""
+    from scripts.lab_manifest import MICRO_TO_LAB
+    from scripts.lab_analyze import _holc_dir
+
+    raw_sym = (symbol or "").strip().upper()
+    tf = (timeframe or "").strip().lower()
+    if not _SYM_RE.match(raw_sym):
+        return JSONResponse({"error": "símbolo inválido (A-Z/0-9, máx 6)"},
+                            status_code=400)
+    if tf not in _HOLC_TF_OK:
+        return JSONResponse(
+            {"error": f"timeframe inválido (válidos: {sorted(_HOLC_TF_OK)})"},
+            status_code=400)
+    sym = MICRO_TO_LAB.get(raw_sym, raw_sym)      # micro → raíz del catálogo
+    catalogo = set(MICRO_TO_LAB.values())
+    if sym not in catalogo:
+        return JSONResponse(
+            {"error": f"símbolo {raw_sym} fuera del catálogo del motor "
+                      f"({sorted(catalogo)})"}, status_code=400)
+
+    raw = await file.read()
+    if len(raw) > 300_000_000:
+        return JSONResponse({"error": "archivo demasiado grande"},
+                            status_code=400)
+    ok, nrows, err = _validate_holc(raw)
+    if not ok:
+        return JSONResponse({"error": f"HOLC inválido — {err}"},
+                            status_code=400)
+
+    holc_dir = _holc_dir().resolve()
+    dest = (holc_dir / f"{sym}_{tf}.csv").resolve()
+    # Doble candado anti-traversal: el destino DEBE quedar directo bajo el dir.
+    if dest.parent != holc_dir:
+        return JSONResponse({"error": "ruta de destino inválida"},
+                            status_code=400)
+    holc_dir.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw)
+    return JSONResponse({"ok": True, "symbol": sym, "timeframe": tf,
+                         "rows_sampled": nrows, "archivo": dest.name})
+
+
+@router.post("/ui/strategies/{strategy_id}/integrar")
+async def integrar_estrategia(
+    strategy_id: str, file: UploadFile = File(...),
+    degradado: bool = Form(False),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """Alta de datos: sube la lista de operaciones de la estrategia e integra su
+    master vía el Motor (reusa `routes_riesgo.integrar_lista` — cuadre al dólar,
+    sha256, intrabar; el motor NO se muda). El instrumento sale del ACTIVO de la
+    estrategia (R-T9: usd_por_punto del master, no del CSV). Sin HOLC del activo
+    y sin `degradado`: 409 holc_missing (la UI ofrece subir HOLC o integrar
+    degradado)."""
+    import app.web.routes_riesgo as rr
+
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return JSONResponse({"error": "estrategia no encontrada"},
+                            status_code=404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    if not instrument:
+        return JSONResponse(
+            {"error": "la estrategia no tiene activo — edítalo primero"},
+            status_code=400)
+
+    if not degradado and not rr.holc_disponible(instrument):
+        return JSONResponse(
+            {"ok": False, "holc_missing": True, "instrument": instrument,
+             "error": f"no hay HOLC de {instrument} en NINJATRADER/HOLC — "
+                      f"súbelo (estudio completo) o integra en modo degradado "
+                      f"(sin intrabar)"},
+            status_code=409)
+
+    raw = await file.read()
+    result = await rr.integrar_lista(strategy_id, instrument, raw,
+                                     degradado=degradado, recalc_lab=False)
+    if not result["ok"]:
+        payload = {k: v for k, v in result.items()
+                   if k in ("error", "detalle")}
+        return JSONResponse(payload, status_code=result["status"])
+    result["instrument"] = instrument
+    return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
 # Detail
 # ---------------------------------------------------------------------------
 
@@ -663,6 +813,24 @@ async def strategy_detail(
     except Exception:
         deriva_riesgo = None
 
+    # L1 — selector de estrategia (cambiar sin volver a la lista) + estado de
+    # datos: instrumento raíz, master integrado (o no) y si hay HOLC del activo.
+    all_rows = (await db.execute(
+        select(Strategy.strategy_id, Strategy.name)
+        .order_by(Strategy.strategy_id))).all()
+    all_strategies = [{"strategy_id": r[0], "name": r[1]} for r in all_rows]
+    l1_instrument = _lab_instrument(strategy.asset_symbol)
+    l1_master = None
+    l1_holc_ok = False
+    if l1_instrument:
+        try:
+            import app.web.routes_riesgo as rr
+            l1_master = rr._motor_manifest(
+                rr.clave_de(strategy_id, l1_instrument))
+            l1_holc_ok = rr.holc_disponible(l1_instrument)
+        except Exception:
+            l1_master = None
+
     return await render(
         request, "strategy_detail.html",
         {
@@ -675,6 +843,10 @@ async def strategy_detail(
             "ultima_eval": ultima_eval,
             "filters_active_now": filters_active_now,
             "lab_evidence": lab_evidence,
+            "all_strategies": all_strategies,
+            "l1_instrument": l1_instrument,
+            "l1_master": l1_master,
+            "l1_holc_ok": l1_holc_ok,
             "messages": flash_messages(request),
         }, db=db,
     )

@@ -3,7 +3,7 @@
 {% block title %}{{ strategy.strategy_id }} — NTEXECG{% endblock %}
 
 {% block content %}
-<div class="space-y-4" x-data="{ tab: 'overview', confirmLive: false, liveText: '', confirmArm: false, armText: '' }">
+<div class="space-y-4" x-data="{ stab: 'config', tab: 'overview', confirmLive: false, liveText: '', confirmArm: false, armText: '' }">
 
     <!-- Header -->
     <div class="flex items-start justify-between">
@@ -15,6 +15,16 @@
             <p class="text-gray-400 text-sm mt-1">{{ strategy.name }}</p>
         </div>
         <div class="flex items-center gap-2">
+            <!-- L1 — selector: cambiar de estrategia sin volver a la lista -->
+            {% if all_strategies %}
+            <select onchange="if(this.value)window.location.href='/ui/strategies/'+this.value"
+                    class="bg-gray-800 border border-gray-700 rounded px-2 py-2 text-sm text-gray-200 max-w-[16rem]"
+                    title="Cambiar de estrategia">
+                {% for s in all_strategies %}
+                <option value="{{ s.strategy_id }}" {% if s.strategy_id == strategy.strategy_id %}selected{% endif %}>{{ s.strategy_id }}{% if s.name and s.name != s.strategy_id %} — {{ s.name }}{% endif %}</option>
+                {% endfor %}
+            </select>
+            {% endif %}
             <!-- Puente a la otra vista de la MISMA estrategia: el estudio de
                  riesgo (Motor de Riesgo) recomienda; aquí se afina/aplica -->
             <a href="/ui/riesgo?strategy={{ strategy.strategy_id }}"
@@ -22,6 +32,72 @@
             <a href="/ui/strategies/{{ strategy.strategy_id }}/clone"
                class="bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-2 rounded text-sm">📄 Clonar</a>
         </div>
+    </div>
+
+    <!-- L1 — sub-pestañas del detalle: Config · Luxy · Lab · Perfiles -->
+    <div class="border-b border-gray-800 flex gap-1 text-sm">
+        {% for skey, slabel in [('config','Config'),('luxy','Luxy'),('lab','Lab'),('perfiles','Perfiles')] %}
+        <button @click="stab = '{{ skey }}'"
+                :class="stab === '{{ skey }}' ? 'border-blue-500 text-white font-medium' : 'border-transparent text-gray-400 hover:text-gray-200'"
+                class="px-4 py-2 border-b-2 transition">{{ slabel }}</button>
+        {% endfor %}
+    </div>
+
+    <!-- ══════════ Sub-tab: CONFIG (el detalle actual, sin rediseñar) ══════════ -->
+    <div x-show="stab === 'config'" class="space-y-4">
+
+    <!-- L1 — Datos: subir lista de operaciones → integrar master (+ provisión HOLC) -->
+    <div class="bg-gray-900 border border-gray-800 rounded p-4 space-y-3"
+         x-data="{ sid: '{{ strategy.strategy_id }}', busy:false, out:null, err:null, holcErr:null, holcOut:null }">
+        <div class="flex items-center justify-between gap-2">
+            <div class="text-xs uppercase tracking-wider text-gray-500">Datos — lista de operaciones (master)</div>
+            <div class="text-xs">
+                {% if l1_master %}
+                    <span class="text-green-400">master integrado {{ l1_master.integrado }}</span>
+                    <span class="text-gray-500">· {{ (l1_master.trades or {}).get('n', '—') }} trades</span>
+                    {% if l1_master.degradado %}<span class="text-amber-400">· ⚠ degradado (sin intrabar)</span>{% endif %}
+                {% else %}
+                    <span class="text-gray-500">sin master integrado</span>
+                {% endif %}
+            </div>
+        </div>
+        <p class="text-xs text-gray-500">Activo <b class="text-gray-300">{{ strategy.asset_symbol or '—' }}</b> → instrumento del motor <b class="text-gray-300">{{ l1_instrument or '—' }}</b>. HOLC: {% if l1_holc_ok %}<span class="text-green-400">disponible</span>{% else %}<span class="text-amber-400">no disponible</span>{% endif %}. Integra vía el Motor de Riesgo (cuadre al dólar, sha256, intrabar).</p>
+
+        {% if not l1_holc_ok %}
+        <div class="bg-amber-900/30 border border-amber-800 text-amber-200 text-xs rounded px-3 py-2">
+            ⚠ Sin HOLC de <b>{{ l1_instrument }}</b> el estudio integra en modo <b>degradado</b> (sin reconstrucción intrabar; nada finge).
+            <button type="button" @click="$refs.holcbox.classList.toggle('hidden')" class="underline ml-1">proveer HOLC</button>
+        </div>
+        <div x-ref="holcbox" class="hidden border border-gray-800 rounded p-3 space-y-2">
+            <div class="text-xs text-gray-400">Sube el HOLC de <b>{{ l1_instrument }}</b> (CSV con columnas <code>DateTime, Open, High, Low, Close</code>). Se guarda como <code>{{ l1_instrument }}_5m.csv</code>.</div>
+            <form class="flex flex-wrap items-center gap-2"
+                  @submit.prevent="holcErr=null;holcOut=null;
+                      fetch('/ui/strategies/holc',{method:'POST',body:new FormData($event.target)})
+                        .then(r=>r.json().then(j=>({s:r.status,j})))
+                        .then(({s,j})=>{ if(j.ok){ holcOut='HOLC guardado ('+j.archivo+', '+j.rows_sampled+'+ filas) — reintegra la lista.'; setTimeout(()=>location.reload(),1200);} else { holcErr=j.error||('error '+s);} })
+                        .catch(e=>{holcErr=String(e);})">
+                <input type="hidden" name="symbol" value="{{ l1_instrument }}">
+                <input type="hidden" name="timeframe" value="5m">
+                <input type="file" name="file" accept=".csv" required class="text-xs text-gray-300">
+                <button class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-xs">Subir HOLC</button>
+            </form>
+            <p x-show="holcErr" x-text="holcErr" x-cloak class="text-red-400 text-xs"></p>
+            <p x-show="holcOut" x-text="holcOut" x-cloak class="text-green-400 text-xs"></p>
+        </div>
+        {% endif %}
+
+        <form class="flex flex-wrap items-center gap-2"
+              @submit.prevent="busy=true;err=null;out=null;
+                  fetch('/ui/strategies/'+sid+'/integrar',{method:'POST',body:new FormData($event.target)})
+                    .then(r=>r.json().then(j=>({s:r.status,j})))
+                    .then(({s,j})=>{ busy=false; if(j.ok){ out='Integrado '+(j.integrado||'ok')+(j.degradado?' (degradado)':'')+' — recargando…'; setTimeout(()=>location.reload(),900);} else if(j.holc_missing){ err='Sin HOLC — sube el HOLC arriba o marca «integrar degradado».';} else { err=j.error||('error '+s);} })
+                    .catch(e=>{busy=false;err=String(e);})">
+            <input type="file" name="file" accept=".csv" required class="text-xs text-gray-300">
+            <label class="flex items-center gap-1 text-xs text-gray-400"><input type="checkbox" name="degradado" value="true" class="rounded bg-gray-800 border-gray-700"> integrar degradado (sin HOLC)</label>
+            <button :disabled="busy" class="bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded text-sm" x-text="busy?'Integrando…':'Subir lista e integrar'"></button>
+        </form>
+        <p x-show="err" x-text="err" x-cloak class="text-red-400 text-xs"></p>
+        <p x-show="out" x-text="out" x-cloak class="text-green-400 text-xs"></p>
     </div>
 
     <!-- Status actions -->
@@ -399,75 +475,9 @@
             {% endif %}
         </div>
 
-        {% set profiles = (profile.pipeline_config_json or {}).get('profiles') or [] %}
         <div class="border-t border-gray-800 mt-3 pt-3">
-            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Perfiles de riesgo (tiers)</div>
-            <p class="text-xs text-gray-500 mb-3">La <b>base siempre opera</b> tu cuenta principal (el webhook de arriba). Cada perfil habilitado es una <b>cuenta ADICIONAL</b>: hereda la base y solo cambia lo que rellenes — normalmente las <b>cantidades por pierna</b> (vacío = hereda). Pon el <b>webhook propio</b> de cada perfil (si lo dejas vacío se ignora, para no duplicar en la cuenta base). Para agregar una fondeadora: habilita un perfil con su webhook y sus cantidades. Para que la base deje de operar y solo manden los perfiles, borra el webhook base de arriba.</p>
-            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/profiles" class="space-y-3">
-                {% for i in range(4) %}
-                {% set p = profiles[i] if i < (profiles|length) else {} %}
-                <div class="bg-gray-800/40 border border-gray-700 rounded p-3">
-                    <div class="flex items-center justify-between gap-2 mb-2">
-                        <label class="flex items-center gap-2 text-sm text-gray-200">
-                            <input type="checkbox" name="p{{ i }}_enabled" value="1" class="rounded bg-gray-800 border-gray-700" {% if p.get('enabled') %}checked{% endif %}>
-                            Perfil {{ i + 1 }} — habilitar
-                        </label>
-                        <input name="p{{ i }}_name" value="{{ p.get('name', '') }}" placeholder="nombre (ej. conservador)"
-                               class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs w-56">
-                    </div>
-                    <div class="grid grid-cols-2 gap-2">
-                        <div>
-                            <label class="block text-xs text-gray-400 mb-1">Cantidades por pierna (C1, C2, C3) — coma · vacío = hereda</label>
-                            <input name="p{{ i }}_quantities" value="{{ p.get('quantities')|join(', ') if p.get('quantities') is not none else '' }}" placeholder="0, 1, 0"
-                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-400 mb-1">max_contracts (tope duro)</label>
-                            <input name="p{{ i }}_max" type="number" min="0" value="{{ p.get('max_contracts') if p.get('max_contracts') is not none else '' }}"
-                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
-                        </div>
-                        <div class="col-span-2">
-                            <label class="block text-xs text-gray-400 mb-1">Webhook TradersPost (de este perfil)</label>
-                            <input name="p{{ i }}_webhook" value="{{ p.get('webhook_url', '') }}" placeholder="https://webhooks.traderspost.io/trading/webhook/..."
-                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-xs">
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-400 mb-1">Nota (cuenta destino)</label>
-                            <input name="p{{ i }}_note" value="{{ p.get('note', '') }}" placeholder="APEX 50k"
-                                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-xs">
-                        </div>
-                        <div class="flex items-end">
-                            <label class="flex items-center gap-2 text-xs text-gray-300">
-                                <input type="checkbox" name="p{{ i }}_dry_run" value="1" class="rounded bg-gray-800 border-gray-700" {% if p.get('dry_run') %}checked{% endif %}>
-                                Forzar dry-run (paper) en este perfil
-                            </label>
-                        </div>
-                    </div>
-                    <details class="mt-2">
-                        <summary class="text-xs text-gray-500 cursor-pointer select-none">Avanzado — override de niveles / SL / TP (normalmente NO tocar: el perfil HEREDA el bracket completo de la base — stop fijo y TP nominal incluidos. Un SL×ATR aquí REEMPLAZA al stop fijo heredado en este perfil; un TP aquí apaga el nominal)</summary>
-                        <div class="grid grid-cols-3 gap-2 mt-2">
-                            <div>
-                                <label class="block text-xs text-gray-400 mb-1">Niveles ATR — coma</label>
-                                <input name="p{{ i }}_levels" value="{{ p.get('levels')|join(', ') if p.get('levels') is not none else '' }}" placeholder="hereda"
-                                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
-                            </div>
-                            <div>
-                                <label class="block text-xs text-gray-400 mb-1">SL ×ATR</label>
-                                <input name="p{{ i }}_sl" value="{{ p.get('sl_atr_multiplier', '') }}" placeholder="hereda"
-                                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
-                            </div>
-                            <div>
-                                <label class="block text-xs text-gray-400 mb-1">TP ×ATR</label>
-                                <input name="p{{ i }}_tp" value="{{ p.get('tp_atr_multiplier', '') }}" placeholder="hereda"
-                                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
-                            </div>
-                        </div>
-                    </details>
-                </div>
-                {% endfor %}
-                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar perfiles</button>
-                <p class="text-xs text-gray-600">Para que un perfil ejecute escalonado, la base debe tener Scale Entry en modo ejecución. <b>Los 4 perfiles heredan de la base el bracket COMPLETO</b> (SL ×ATR o stop de puntos fijos + TP nominal por lado) <b>y los niveles ATR (C2, C3, …)</b> — mover el SL cambia WR/PF; para bajar riesgo usa menos contratos.</p>
-            </form>
+            <div class="text-xs uppercase tracking-wider text-gray-500 mb-1">Perfiles de riesgo (tiers)</div>
+            <p class="text-xs text-gray-500">Editables en la pestaña <button type="button" @click="stab='perfiles'" class="text-indigo-400 hover:underline">Perfiles</button>.</p>
         </div>
 
         {% set g = (profile.pipeline_config_json or {}).get('guardrails', {}) %}
@@ -809,6 +819,96 @@
         </div>
         <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar ficha</button>
         </form>
+    </div>
+
+    </div><!-- ══════════ /Sub-tab CONFIG ══════════ -->
+
+    <!-- ══════════ Sub-tab: LUXY (placeholder — estudio Luxy en L2/L3) ══════════ -->
+    <div x-show="stab === 'luxy'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400 space-y-2">
+        <h2 class="text-white font-semibold">Estudio Luxy — L2/L3</h2>
+        <p>El analizador de riesgo por palancas (Tablas A/B, gráficos in-sample/OOS) se integra aquí en los lotes <b>L2/L3</b>. Hoy el estudio del Motor de Riesgo vive en <a href="/ui/riesgo?strategy={{ strategy.strategy_id }}" class="text-indigo-400 hover:underline">📊 Estudio de riesgo →</a>.</p>
+    </div>
+
+    <!-- ══════════ Sub-tab: LAB (placeholder — migra en L6) ══════════ -->
+    <div x-show="stab === 'lab'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-6 text-sm text-gray-400 space-y-2">
+        <h2 class="text-white font-semibold">Lab — migra en L6</h2>
+        <p>El Lab (análisis técnico + HMM) se muda a esta pestaña en el lote <b>L6</b>, tal cual, sin rediseño. Hoy sigue en <a href="/ui/lab" class="text-indigo-400 hover:underline">Lab →</a>.</p>
+    </div>
+
+    <!-- ══════════ Sub-tab: PERFILES (la sección de perfiles, movida a su pestaña) ══════════ -->
+    <div x-show="stab === 'perfiles'" x-cloak class="bg-gray-900 border border-gray-800 rounded p-4">
+        {% if profile %}
+        {% set profiles = (profile.pipeline_config_json or {}).get('profiles') or [] %}
+        <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Perfiles de riesgo (tiers)</div>
+        <p class="text-xs text-gray-500 mb-3">La <b>base siempre opera</b> tu cuenta principal (el webhook de arriba). Cada perfil habilitado es una <b>cuenta ADICIONAL</b>: hereda la base y solo cambia lo que rellenes — normalmente las <b>cantidades por pierna</b> (vacío = hereda). Pon el <b>webhook propio</b> de cada perfil (si lo dejas vacío se ignora, para no duplicar en la cuenta base). Para agregar una fondeadora: habilita un perfil con su webhook y sus cantidades. Para que la base deje de operar y solo manden los perfiles, borra el webhook base de arriba.</p>
+        <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/profiles" class="space-y-3">
+            {% for i in range(4) %}
+            {% set p = profiles[i] if i < (profiles|length) else {} %}
+            <div class="bg-gray-800/40 border border-gray-700 rounded p-3">
+                <div class="flex items-center justify-between gap-2 mb-2">
+                    <label class="flex items-center gap-2 text-sm text-gray-200">
+                        <input type="checkbox" name="p{{ i }}_enabled" value="1" class="rounded bg-gray-800 border-gray-700" {% if p.get('enabled') %}checked{% endif %}>
+                        Perfil {{ i + 1 }} — habilitar
+                    </label>
+                    <input name="p{{ i }}_name" value="{{ p.get('name', '') }}" placeholder="nombre (ej. conservador)"
+                           class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs w-56">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Cantidades por pierna (C1, C2, C3) — coma · vacío = hereda</label>
+                        <input name="p{{ i }}_quantities" value="{{ p.get('quantities')|join(', ') if p.get('quantities') is not none else '' }}" placeholder="0, 1, 0"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">max_contracts (tope duro)</label>
+                        <input name="p{{ i }}_max" type="number" min="0" value="{{ p.get('max_contracts') if p.get('max_contracts') is not none else '' }}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-xs text-gray-400 mb-1">Webhook TradersPost (de este perfil)</label>
+                        <input name="p{{ i }}_webhook" value="{{ p.get('webhook_url', '') }}" placeholder="https://webhooks.traderspost.io/trading/webhook/..."
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-xs">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Nota (cuenta destino)</label>
+                        <input name="p{{ i }}_note" value="{{ p.get('note', '') }}" placeholder="APEX 50k"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-xs">
+                    </div>
+                    <div class="flex items-end">
+                        <label class="flex items-center gap-2 text-xs text-gray-300">
+                            <input type="checkbox" name="p{{ i }}_dry_run" value="1" class="rounded bg-gray-800 border-gray-700" {% if p.get('dry_run') %}checked{% endif %}>
+                            Forzar dry-run (paper) en este perfil
+                        </label>
+                    </div>
+                </div>
+                <details class="mt-2">
+                    <summary class="text-xs text-gray-500 cursor-pointer select-none">Avanzado — override de niveles / SL / TP (normalmente NO tocar: el perfil HEREDA el bracket completo de la base — stop fijo y TP nominal incluidos. Un SL×ATR aquí REEMPLAZA al stop fijo heredado en este perfil; un TP aquí apaga el nominal)</summary>
+                    <div class="grid grid-cols-3 gap-2 mt-2">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Niveles ATR — coma</label>
+                            <input name="p{{ i }}_levels" value="{{ p.get('levels')|join(', ') if p.get('levels') is not none else '' }}" placeholder="hereda"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">SL ×ATR</label>
+                            <input name="p{{ i }}_sl" value="{{ p.get('sl_atr_multiplier', '') }}" placeholder="hereda"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">TP ×ATR</label>
+                            <input name="p{{ i }}_tp" value="{{ p.get('tp_atr_multiplier', '') }}" placeholder="hereda"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-xs">
+                        </div>
+                    </div>
+                </details>
+            </div>
+            {% endfor %}
+            <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar perfiles</button>
+            <p class="text-xs text-gray-600">Para que un perfil ejecute escalonado, la base debe tener Scale Entry en modo ejecución. <b>Los 4 perfiles heredan de la base el bracket COMPLETO</b> (SL ×ATR o stop de puntos fijos + TP nominal por lado) <b>y los niveles ATR (C2, C3, …)</b> — mover el SL cambia WR/PF; para bajar riesgo usa menos contratos.</p>
+        </form>
+        {% else %}
+        <p class="text-gray-500 text-sm">Sin perfil de configuración — la estrategia necesita su config primero.</p>
+        {% endif %}
     </div>
 
     </div>

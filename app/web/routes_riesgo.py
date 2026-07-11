@@ -933,12 +933,23 @@ async def riesgo_page(request: Request, strategy: str | None = None,
 # Subir lista (existente o estrategia NUEVA) → integrar (subproceso awaited)
 # ---------------------------------------------------------------------------
 
-def _integrar_cmd(csv_path: Path, codigo: str, activo: str) -> list[str]:
+def _integrar_cmd(csv_path: Path, codigo: str, activo: str,
+                  degradado: bool = False) -> list[str]:
     cmd = [sys.executable, "-m", "scripts.nt_riesgo", "integrar",
            str(csv_path), "--codigo", codigo, "--activo", activo]
     if _stitch():
         cmd.append("--stitch-db")
+    if degradado:
+        cmd.append("--degradado")
     return cmd
+
+
+def holc_disponible(instrument: str) -> bool:
+    """¿Existe el HOLC 5m del instrumento en NINJATRADER/HOLC (o HOLC_DIR)?
+    Fuente ÚNICA: `lab_analyze._holc_dir()` — el mismo directorio que lee el
+    motor. Sirve para decidir si el alta puede correr con intrabar o degradada."""
+    from scripts.lab_analyze import _holc_dir
+    return (_holc_dir() / f"{instrument}_5m.csv").exists()
 
 
 def _calc_cmd(clave: str) -> list[str]:
@@ -967,6 +978,80 @@ async def _run_motor(cmd: list[str]) -> tuple[int, str]:
                                                 errors="replace")[-3000:]
 
 
+async def integrar_lista(strategy: str, instrument: str, raw: bytes,
+                         *, degradado: bool = False,
+                         recalc_lab: bool = True) -> dict:
+    """Núcleo COMPARTIDO subir-lista → integrar master. Lo usan Riesgo v1
+    (`riesgo_upload`) y el alta desde Estrategias (L1) — cero duplicación.
+
+    Escribe el CSV en `TRADES_DIR`, valida con el parser REAL, corre
+    `nt_riesgo integrar` en subproceso bajo el lock por estrategia (cuadre al
+    dólar bloqueante, sha256, guardia de doble-prefijo, intrabar), actualiza el
+    manifest compartido (`_guardar_manifest`) y encadena el recalc del Lab.
+
+    NO resuelve el instrumento — lo pasa el llamador (Riesgo lo detecta del
+    nombre del CSV; Estrategias lo toma del activo de la estrategia). `degradado`
+    integra SIN HOLC (master cuadrado; estudio pendiente). Devuelve un dict de
+    resultado; nunca lanza para errores esperados (los reporta en el dict)."""
+    if len(raw) > 20_000_000:
+        return {"ok": False, "status": 400, "error": "archivo demasiado grande"}
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    TRADES_DIR.mkdir(exist_ok=True)
+    dest = TRADES_DIR / f"upload_{strategy}_{ts}.csv"
+    dest.write_bytes(raw)
+
+    # Validación con el parser REAL antes de tocar manifest/motor
+    from scripts.lab_analyze import parse_luxalgo_csv
+    try:
+        trades = parse_luxalgo_csv(dest)
+    except Exception:
+        trades = []
+    if not trades:
+        dest.unlink(missing_ok=True)
+        return {"ok": False, "status": 400,
+                "error": "el CSV no parsea como ListaDeOperaciones de LuxAlgo"}
+
+    # integrar (el motor manda: doble-prefijo, cuadre al dólar, TZ) —
+    # SERIALIZADO por estrategia (P1-4): el lock cubre subproceso + manifest.
+    clave = clave_de(strategy, instrument)
+    async with _lock_integrar(strategy):
+        rc, tail = await _run_motor(
+            _integrar_cmd(dest, derive_codigo(strategy, instrument),
+                          instrument, degradado=degradado))
+        if rc != 0:
+            dest.unlink(missing_ok=True)
+            return {"ok": False, "status": 400, "error": "integrar falló",
+                    "detalle": tail.strip()[-800:]}
+
+        # Manifest: actualizar CSV (existente) o ALTA confirmada (nueva) —
+        # el `lab_manifest propose --confirm` hecho por UI.
+        manifest = routes_lab.load_manifest()      # releer bajo el lock
+        entry = manifest.get(strategy)
+        rel = dest.as_posix()
+        manifest[strategy] = {**(entry or {"candidates": None}),
+                              "instrument": instrument, "csv": rel,
+                              "confirmed": True}
+        _guardar_manifest(manifest)
+        nueva = entry is None
+
+    # LAB-1 — encadenar el recalc de la caché del Lab para esta estrategia
+    # (2º plano; opt-out). El manifest ya apunta al CSV recién integrado, así
+    # que el mismo listado alimenta las dos pestañas. Nunca recomputa aquí.
+    lab_recalc = (routes_lab._enqueue_recalc(strategy) if recalc_lab
+                  else False)
+
+    motor = _motor_manifest(clave) or {}
+    return {
+        "ok": True, "clave": clave, "strategy": strategy, "nueva": nueva,
+        "degradado": bool((motor.get("holc") or {}).get("degradado")
+                          or degradado),
+        "n_trades": (motor.get("trades") or {}).get("n", len(trades)),
+        "integrado": motor.get("integrado"),
+        "lab_recalc": ("running" if lab_recalc
+                       else ("busy" if recalc_lab else "skipped")),
+    }
+
+
 @router.post("/ui/riesgo/upload")
 async def riesgo_upload(strategy: str = Form(...),
                         file: UploadFile = File(...),
@@ -978,7 +1063,8 @@ async def riesgo_upload(strategy: str = Form(...),
 
     LAB-1: un solo upload deja las DOS pestañas frescas — además de integrar el
     master del Motor, encadena el recálculo de la caché del Lab para esta
-    estrategia (2º plano, opt-out con recalc_lab=false)."""
+    estrategia (2º plano, opt-out con recalc_lab=false). El núcleo vive en
+    `integrar_lista` (compartido con el alta de Estrategias)."""
     strategy = (strategy or "").strip()
     if not _KEY_RE.match(strategy):
         return JSONResponse({"error": "strategy_id inválido (usa letras/"
@@ -997,65 +1083,14 @@ async def riesgo_upload(strategy: str = Form(...),
             status_code=400)
 
     raw = await file.read()
-    if len(raw) > 20_000_000:
-        return JSONResponse({"error": "archivo demasiado grande"},
-                            status_code=400)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    TRADES_DIR.mkdir(exist_ok=True)
-    dest = TRADES_DIR / f"upload_{strategy}_{ts}.csv"
-    dest.write_bytes(raw)
-
-    # Validación con el parser REAL antes de tocar manifest/motor
-    from scripts.lab_analyze import parse_luxalgo_csv
-    try:
-        trades = parse_luxalgo_csv(dest)
-    except Exception:
-        trades = []
-    if not trades:
-        dest.unlink(missing_ok=True)
-        return JSONResponse(
-            {"error": "el CSV no parsea como ListaDeOperaciones de LuxAlgo"},
-            status_code=400)
-
-    # integrar (el motor manda: doble-prefijo, cuadre al dólar, TZ) —
-    # SERIALIZADO por estrategia (P1-4): el lock cubre subproceso + manifest.
-    clave = clave_de(strategy, instrument)
-    async with _lock_integrar(strategy):
-        rc, tail = await _run_motor(
-            _integrar_cmd(dest, derive_codigo(strategy, instrument),
-                          instrument))
-        if rc != 0:
-            dest.unlink(missing_ok=True)
-            return JSONResponse(
-                {"error": "integrar falló", "detalle": tail.strip()[-800:]},
-                status_code=400)
-
-        # Manifest: actualizar CSV (existente) o ALTA confirmada (nueva) —
-        # el `lab_manifest propose --confirm` hecho por UI.
-        manifest = routes_lab.load_manifest()      # releer bajo el lock
-        entry = manifest.get(strategy)
-        rel = dest.as_posix()
-        manifest[strategy] = {**(entry or {"candidates": None}),
-                              "instrument": instrument, "csv": rel,
-                              "confirmed": True}
-        _guardar_manifest(manifest)
-
-    # LAB-1 — encadenar el recalc de la caché del Lab para esta estrategia
-    # (2º plano; opt-out). El manifest ya apunta al CSV recién integrado, así
-    # que el mismo listado alimenta las dos pestañas. Nunca recomputa aquí.
-    lab_recalc = (routes_lab._enqueue_recalc(strategy) if recalc_lab
-                  else False)
-
-    motor = _motor_manifest(clave) or {}
-    return JSONResponse({
-        "ok": True, "clave": clave, "strategy": strategy,
-        "nueva": entry is None,
-        "n_trades": (motor.get("trades") or {}).get("n", len(trades)),
-        "integrado": motor.get("integrado"),
-        "lab_recalc": ("running" if lab_recalc
-                       else ("busy" if recalc_lab else "skipped")),
-        "hint": "dale Calcular para correr el estudio",
-    })
+    result = await integrar_lista(strategy, instrument, raw,
+                                  recalc_lab=recalc_lab)
+    if not result["ok"]:
+        payload = {k: v for k, v in result.items()
+                   if k in ("error", "detalle")}
+        return JSONResponse(payload, status_code=result["status"])
+    result["hint"] = "dale Calcular para correr el estudio"
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -1093,9 +1128,19 @@ async def riesgo_calcular(req: CalcReq) -> JSONResponse:
     if clave is None:
         return JSONResponse({"error": "estrategia fuera del manifest"},
                             status_code=400)
-    if _motor_manifest(clave) is None:
+    motor = _motor_manifest(clave)
+    if motor is None:
         return JSONResponse({"error": "sin listado integrado — sube el "
                                       "CSV primero"}, status_code=409)
+    # L1.1 — fail-honest: `calcular` necesita el intrabar (HOLC). Un master
+    # integrado en modo DEGRADADO no lo tiene, así que el estudio no puede
+    # correr (hoy reventaría sucio en el motor). La semántica de estudio sobre
+    # degradado se define en L2; hasta entonces, freno claro.
+    if (motor.get("degradado")
+            or (motor.get("holc") or {}).get("degradado")):
+        return JSONResponse(
+            {"error": "master degradado (sin HOLC/intrabar) — provee el HOLC "
+                      "y reintegra antes de calcular"}, status_code=409)
     if (JOBS.get(clave) or {}).get("status") == "running":
         return JSONResponse({"error": "ya hay un cálculo corriendo"},
                             status_code=409)

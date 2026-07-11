@@ -402,7 +402,8 @@ def _superset_faltantes(old_master: Path, new_trades: list[Trade]) -> list[str]:
 
 
 async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
-                   stitch: bool = False, fecha: str | None = None) -> dict:
+                   stitch: bool = False, fecha: str | None = None,
+                   degradado: bool = False) -> dict:
     if not csv_path.exists():
         raise SystemExit(f"⛔ No existe el export: {csv_path}")
     activo = activo or csv_instrument(str(csv_path))
@@ -462,12 +463,28 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
                 print(f"    - {k}")
 
     # 3-4) HOLC + costura + TZ bloqueante + ATR (núcleo del Lab, compartido
-    # con `calcular`)
-    bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
-        trades, activo, stitch)
-    stitched = stitch
-    holc_last = max(bars)
-    estimated_ids = {t.number for t in estimated}
+    # con `calcular`). Modo DEGRADADO (L1: activo SIN HOLC) — opt-in explícito:
+    # se SALTA la reconstrucción intrabar; el master integra igual (cuadre al
+    # dólar + sha256 + snapshot). NUNCA finge números: sin ATR/enriched, el
+    # manifest queda marcado `degradado` y `holc` nulo. Sin la bandera el flujo
+    # es idéntico al de siempre (Riesgo v1 sin cambios).
+    if degradado:
+        print("⚠ Integración DEGRADADA (sin HOLC): master sin reconstrucción "
+              "intrabar — sube el HOLC y reintegra para el estudio completo.")
+        bars = None
+        off = 0
+        tz_detail = None
+        stitched = False
+        sin_cobertura = len(trades)
+        estimated = []
+        estimated_ids = set()
+        holc_last = None
+    else:
+        bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
+            trades, activo, stitch)
+        stitched = stitch
+        holc_last = max(bars)
+        estimated_ids = {t.number for t in estimated}
 
     # 5) Persistencia: snapshot inmutable + master + enriched + manifest
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -480,7 +497,10 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
     if not snapshot.exists():
         shutil.copyfile(csv_path, snapshot)
     shutil.copyfile(csv_path, master)
-    write_enriched(base_dir / "enriched.csv", trades, off, estimated_ids)
+    # Sin intrabar no hay enriched (no se inventa ATR) — el estudio queda
+    # pendiente de proveer el HOLC.
+    if not degradado:
+        write_enriched(base_dir / "enriched.csv", trades, off, estimated_ids)
 
     base = metrics_usd([t.pnl_usd for t in trades])
     manifest = {
@@ -502,12 +522,14 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
         },
         "usd_por_punto": {"config": ppt_conocido, "inferido": ppt_inferido,
                           "usado": ppt, "ok": ppt_ok},
+        "degradado": degradado,
         "holc": {
-            "archivo": f"{activo}_5m.csv",
-            "ultima_barra": holc_last.isoformat(),
+            "archivo": None if degradado else f"{activo}_5m.csv",
+            "ultima_barra": None if degradado else holc_last.isoformat(),
             "stitch_db": stitched,
             "sin_cobertura": sin_cobertura,
             "atr_estimado": len(estimated),
+            "degradado": degradado,
         },
         "tz": tz_detail,
         "grids_version": grids_fingerprint(),
@@ -1104,6 +1126,10 @@ def main() -> None:
                        help="coser la cola HOLC desde Postgres (solo lectura)")
     p_int.add_argument("--fecha", default=None,
                        help="fecha del export (default: del nombre del CSV)")
+    p_int.add_argument("--degradado", action="store_true",
+                       help="integrar SIN HOLC (sin reconstrucción intrabar): "
+                            "master cuadrado al dólar, estudio pendiente de "
+                            "proveer el HOLC")
 
     p_cal = sub.add_parser("calcular",
                            help="correr los estudios de riesgo (MR-2)")
@@ -1141,7 +1167,7 @@ def main() -> None:
     args = ap.parse_args()
     if args.cmd == "integrar":
         asyncio.run(integrar(args.csv, args.codigo, args.activo,
-                             args.stitch_db, args.fecha))
+                             args.stitch_db, args.fecha, args.degradado))
     elif args.cmd == "calcular":
         hc = HaircutCfg(comision_rt_usd=args.comision,
                         slip_pts=args.slip_pts, gap_pts=args.gap_pts)
