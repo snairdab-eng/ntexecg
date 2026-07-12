@@ -752,7 +752,13 @@ async def test_create_generates_webhook_url_and_regenerate(
         "asset_symbol": "MES", "timeframe": "5m", "initial_mode": "paper",
     })
     assert resp.status_code == 303
-    assert "token" in resp.headers.get("location", "")   # flash con el token
+    # SEC-1b — el redirect lleva el id efímero, NO el token en claro
+    loc = resp.headers.get("location", "")
+    assert "token_id=" in loc
+    import re as _re
+    _tid = _re.search(r"token_id=([\w-]+)", loc).group(1)
+    _tok = (await client.get(f"/ui/strategies/token-once/{_tid}")).json()["token"]
+    assert _tok and _tok not in loc                      # el secreto NO va en la URL
     row = (await db.execute(select(Strategy).where(
         Strategy.strategy_id == "wh_strat"))).scalar_one()
     assert row.webhook_token is None          # nunca en claro en la DB

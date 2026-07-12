@@ -474,17 +474,20 @@ async def create_strategy_ui(
     # Puente P3 — promoción desde el estudio: encadenar directo al diff de
     # aplicar en Riesgo (?aplicar=1 abre el modal). El flash con el token
     # viaja por query param y Riesgo YA renderiza messages — no se pierde.
+    # SEC-1b — el token NO viaja en la URL: se guarda efímero y el redirect
+    # lleva solo el id; la página destino lo pide por fetch y lo muestra una vez.
+    from app.core import token_once
+    tid = token_once.put(new_token)
     if from_estudio.strip() and from_estudio.strip() == strategy_id:
         return redirect(
-            f"/ui/riesgo?strategy={strategy_id}&aplicar=1",
-            flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — token "
-                  f"webhook (cópialo YA, no se volverá a mostrar): "
-                  f"{new_token}",
+            f"/ui/riesgo?strategy={strategy_id}&aplicar=1&token_id={tid}",
+            flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — el token "
+                  f"webhook aparece arriba UNA vez.",
         )
     return redirect(
-        f"/ui/strategies/{strategy_id}",
-        flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — token webhook "
-              f"(cópialo YA, no se volverá a mostrar): {new_token}",
+        f"/ui/strategies/{strategy_id}?token_id={tid}",
+        flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — el token "
+              f"webhook aparece arriba UNA vez.",
     )
 
 
@@ -853,6 +856,19 @@ async def luxy_aplicar(
                         "TradersPost; el BE (si el estudio lo recomienda) NO se "
                         "aplicó (informativo).",
     })
+
+
+@router.get("/ui/strategies/token-once/{tid}")
+async def token_once_read(tid: str) -> JSONResponse:
+    """SEC-1b — entrega UNA vez el token guardado por el alta/rotación/promoción
+    (misma sesión autenticada; el router está protegido por require_auth).
+    Segundo read o expirado → 410."""
+    from app.core import token_once
+    tok = token_once.take(tid)
+    if tok is None:
+        return JSONResponse({"error": "token expirado o ya mostrado"},
+                            status_code=410)
+    return JSONResponse({"token": tok})
 
 
 @router.post("/ui/strategies/{strategy_id}/integrar")
@@ -1392,10 +1408,13 @@ async def regenerate_token(
         object_id=strategy_id, reason="webhook token regenerated via UI (hashed)",
     )
     await db.commit()
+    # SEC-1b — token efímero fuera de la URL (fetch en la página destino).
+    from app.core import token_once
+    tid = token_once.put(new_token)
     return redirect(
-        f"/ui/strategies/{strategy_id}",
-        flash="Token regenerado — actualiza la alerta en LuxAlgo con "
-              f"?token={new_token} (no se volverá a mostrar)",
+        f"/ui/strategies/{strategy_id}?token_id={tid}",
+        flash="Token regenerado — el nuevo token webhook aparece arriba UNA "
+              "vez; actualiza la alerta en LuxAlgo (?token=…).",
     )
 
 
@@ -2246,10 +2265,12 @@ async def clone_strategy(
         reason=f"cloned from {strategy_id}",
     )
     await db.commit()
+    from app.core import token_once
+    tid = token_once.put(clone_token)
     return redirect(
-        f"/ui/strategies/{new_strategy_id}",
-        flash=f"Clonada desde '{strategy_id}' → '{new_strategy_id}' — token "
-              f"webhook (cópialo YA): {clone_token}",
+        f"/ui/strategies/{new_strategy_id}?token_id={tid}",
+        flash=f"Clonada desde '{strategy_id}' → '{new_strategy_id}' — el token "
+              f"webhook aparece arriba UNA vez.",
     )
 
 

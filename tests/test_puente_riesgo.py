@@ -352,17 +352,23 @@ async def test_promocion_encadena_a_aplicar(client: AsyncClient,
     assert r.status_code == 303
     loc = r.headers["location"]
     assert f"/ui/riesgo?strategy={SID}" in loc and "aplicar=1" in loc
-    assert "token" in loc                                  # flash con el token
+    # SEC-1b — el redirect lleva el id efímero, NO el token en claro
+    assert "token_id=" in loc
+    import re as _re
+    tid = _re.search(r"token_id=([\w-]+)", loc).group(1)
     # nace DESARMADA
     s = (await db.execute(select(Strategy).where(
         Strategy.strategy_id == SID))).scalar_one()
     assert s.status in ("candidate", "paper")
-    # y la página de riesgo con ese flash renderiza el mensaje (token a la
-    # vista UNA vez) + el diff listo (botón presente porque ya hay viva)
+    # la página de riesgo trae el banner de un solo uso (token por fetch, no en
+    # el HTML) + el diff listo (botón presente porque ya hay viva)
     r2 = await client.get(loc.replace(" ", "%20"))
     assert r2.status_code == 200
-    assert "token webhook" in r2.text
+    assert 'id="token-once"' in r2.text                    # banner one-time
     assert "Aplicar a la config viva…" in r2.text
+    # el token se obtiene UNA vez por el endpoint efímero (misma sesión)
+    tk = await client.get(f"/ui/strategies/token-once/{tid}")
+    assert tk.status_code == 200 and tk.json()["token"]
 
 
 @pytest.mark.asyncio

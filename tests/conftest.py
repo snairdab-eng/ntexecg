@@ -123,12 +123,14 @@ def _reset_security_state() -> None:
     """SEC-1 — el lockout del login y el watermark de revocación son estado
     EN MEMORIA a nivel módulo; sin esto se filtrarían entre tests (un test con
     10 fallos bloquearía el login de otro)."""
-    from app.core import auth as _auth, login_guard as _lg
+    from app.core import auth as _auth, login_guard as _lg, token_once as _to
     _lg.reset()
     _auth._reset_revocation()
+    _to.reset()
     yield
     _lg.reset()
     _auth._reset_revocation()
+    _to.reset()
 
 
 @pytest.fixture(autouse=True)

@@ -111,6 +111,38 @@
     </div>
     {% endif %}
 
+    <!-- SEC-1b — banner del token de un solo uso: si el redirect trae ?token_id,
+         se pide por fetch (misma sesión) y se muestra UNA vez; el id se destruye
+         al leerlo y se limpia de la URL para que un refresh no lo re-pida. El
+         token JAMÁS estuvo en la URL. -->
+    <div id="token-once" class="hidden px-6 pt-4">
+        <div class="bg-emerald-900/50 border border-emerald-600 text-emerald-100 px-4 py-3 rounded text-sm flex justify-between items-start gap-3">
+            <div>
+                <div class="font-semibold">Token webhook — cópialo YA (no se vuelve a mostrar):</div>
+                <code id="token-once-value" class="font-mono break-all text-emerald-200"></code>
+            </div>
+            <button type="button" onclick="document.getElementById('token-once').classList.add('hidden')" class="opacity-60 hover:opacity-100 text-lg leading-none">&times;</button>
+        </div>
+    </div>
+    <script>
+    (function(){
+        var p = new URLSearchParams(location.search);
+        var tid = p.get('token_id');
+        if(!tid) return;
+        fetch('/ui/strategies/token-once/' + encodeURIComponent(tid), {credentials:'same-origin'})
+            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(j){ if(j && j.token){
+                document.getElementById('token-once-value').textContent = j.token;
+                document.getElementById('token-once').classList.remove('hidden');
+            }})
+            .finally(function(){
+                p.delete('token_id');
+                var qs = p.toString();
+                history.replaceState({}, '', location.pathname + (qs ? ('?' + qs) : '') + location.hash);
+            });
+    })();
+    </script>
+
     <!-- Main content -->
     <main class="flex-1 px-6 py-6">
         {% block content %}{% endblock %}
