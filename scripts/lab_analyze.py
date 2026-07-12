@@ -241,29 +241,60 @@ def load_holc(sym: str, tf: str = "5m") -> dict[datetime, tuple]:
 # este umbral la costura procede y lo reporta en el manifest; por encima ABORTA
 # (datos inconsistentes NO se integran). Constante nombrada = decisión explícita.
 STITCH_MAX_INCONSISTENTES_PCT = 0.01        # % (0.01% = 1 en 10.000)
+# LX-6 — solape MÍNIMO verificable: sin al menos estas barras en común no se puede
+# confiar la alineación de la cola (una cola mal-TZ solapa ~0 keys) → ABORTAR.
+STITCH_MIN_OVERLAP_BARS = 12                # ~1h de rejilla 5m
+
+_NY_TZ = None
+
+
+def _et_naive(dt: datetime) -> datetime:
+    """LX-6 — convención canónica ET-naive (la del CSV) al LEER `ohlcv_bars`. Si
+    el valor viene tz-aware (columna timestamptz devuelta por Postgres) se
+    CONVIERTE a America/New_York y se suelta el tz; si viene naive se asume ya ET
+    (nunca `.replace(tzinfo=None)` a ciegas sobre un valor aware)."""
+    if dt.tzinfo is None:
+        return dt
+    global _NY_TZ
+    if _NY_TZ is None:
+        from zoneinfo import ZoneInfo
+        _NY_TZ = ZoneInfo("America/New_York")
+    return dt.astimezone(_NY_TZ).replace(tzinfo=None)
 
 
 async def stitch_from_db(bars: dict[datetime, tuple], sym: str, tf: str
                          ) -> tuple[dict, dict]:
-    """Cose la cola reciente desde OhlcvBar (Postgres, SOLO lectura), validando
-    consistencia en el solape (mismo cierre ±0.1% de tolerancia relativa).
-    Devuelve (bars, stats). `stats` = {added, checked, mismatched, pct,
-    last_holc, last_stitched}. DB sin barras / cola corta → procede (added 0):
-    la costura NO inventa datos, solo extiende con lo que el almacén ya tiene."""
+    """Cose la cola reciente desde OhlcvBar (Postgres, SOLO lectura) — FAIL-CLOSED
+    (LX-6). Normaliza cada `bar_time` a ET-naive (`_et_naive`), valida el solape
+    (mismo cierre ±0.1%), y SOLO añade la cola si:
+      (a) hay solape suficiente (`checked ≥ STITCH_MIN_OVERLAP_BARS`) — si no,
+          ABORTA ("no puedo verificar la alineación de la cola"); una cola mal-TZ
+          solapa ~0 keys y cae aquí;
+      (b) el % de inconsistentes ≤ umbral (LX-4); si no, ABORTA;
+      (c) la cola es CONTINUA: empieza pegada al CSV y no tiene huecos mayores a la
+          rejilla de sesión del propio HOLC; si no, ABORTA.
+    Devuelve (bars, stats). DB sin barras / sin cola → procede (added 0): la
+    costura NO inventa datos, solo extiende con lo que el almacén ya tiene."""
     from sqlalchemy import select
     from app.db.session import AsyncSessionLocal
     from app.models.ohlcv_bar import OhlcvBar
 
-    last_holc = max(bars)
+    keys = sorted(bars)
+    last_holc = keys[-1]
+    # rejilla de sesión = mayor hueco entre barras consecutivas del HOLC (encoda
+    # el fin de semana / feriados del instrumento). La cola no puede saltar más.
+    session_gap = max((keys[i + 1] - keys[i] for i in range(len(keys) - 1)),
+                      default=timedelta(minutes=5))
     last_stitched = last_holc
-    added = mismatched = checked = 0
+    mismatched = checked = 0
+    cola: list[tuple[datetime, tuple]] = []
     async with AsyncSessionLocal() as db:
         rows = await db.execute(
             select(OhlcvBar).where(OhlcvBar.symbol == sym,
                                    OhlcvBar.timeframe == tf)
         )
         for b in rows.scalars().all():
-            ts = b.bar_time.replace(tzinfo=None) if b.bar_time.tzinfo else b.bar_time
+            ts = _et_naive(b.bar_time)          # LX-6: normalización de TZ
             row = (float(b.open), float(b.high), float(b.low), float(b.close),
                    float(b.volume or 0))
             if ts in bars:                      # solape → validar consistencia
@@ -272,18 +303,36 @@ async def stitch_from_db(bars: dict[datetime, tuple], sym: str, tf: str
                     mismatched += 1
                 continue
             if ts > last_holc:
-                bars[ts] = row
-                added += 1
-                if ts > last_stitched:
-                    last_stitched = ts
+                cola.append((ts, row))
     pct = round(100.0 * mismatched / checked, 4) if checked else 0.0
-    print(f"   costura DB: +{added} barras nuevas · solape verificado "
+    print(f"   costura DB: cola {len(cola)} barras · solape verificado "
           f"{checked} (inconsistentes: {mismatched} · {pct}%)")
+
+    if cola and checked < STITCH_MIN_OVERLAP_BARS:
+        raise SystemExit(
+            f"⛔ No puedo verificar la alineación de la cola: solape {checked} < "
+            f"{STITCH_MIN_OVERLAP_BARS} barras — NO se cose a ciegas (probable "
+            f"desalineación de TZ del feed vs el CSV ET).")
     if pct > STITCH_MAX_INCONSISTENTES_PCT:
         raise SystemExit(
             f"⛔ Solape HOLC↔DB inconsistente: {mismatched}/{checked} = {pct}% "
             f"> {STITCH_MAX_INCONSISTENTES_PCT}% — datos inconsistentes NO se "
             f"integran (revisar TZ/símbolo del feed).")
+    cola.sort()
+    prev = last_holc
+    for ts, _row in cola:
+        if ts - prev > session_gap:
+            raise SystemExit(
+                f"⛔ Salto en la costura: hueco {ts - prev} > rejilla de sesión "
+                f"{session_gap} (de {prev} a {ts}) — cola desalineada/incompleta, "
+                f"NO se cose.")
+        prev = ts
+    added = 0
+    for ts, row in cola:
+        bars[ts] = row
+        added += 1
+        if ts > last_stitched:
+            last_stitched = ts
     stats = {"added": added, "checked": checked, "mismatched": mismatched,
              "pct": pct, "last_holc": last_holc.isoformat(),
              "last_stitched": last_stitched.isoformat()}

@@ -11,6 +11,18 @@ feed — re-running either writer never creates duplicates.
 
 bar_time is stored NAIVE (exchange wall-clock as exported by NinjaTrader, ET).
 Both writers parse identically so dedup is exact on SQLite (tests) and Postgres.
+
+LX-6 — CONVENCIÓN CANÓNICA: ET-naive wall-clock (la del CSV) en TODO el ciclo.
+  · backfill (scripts/backfill_market_bars.py): lee el DateTime del CSV de
+    NinjaTrader, que YA es ET-naive → correcto.
+  · MarketBarsUpdater: guarda el campo `time` de los JSON del bridge .NET. El
+    bridge DEBE entregar ET (hora del exchange, igual que el export CSV). Si un
+    símbolo entra en UTC (verificar con scripts/audit_ohlcv_tz.py), el escritor
+    debe convertir a ET ANTES de persistir — el desalineo envenena el intrabar
+    de la costura (ver diagnóstico LX-6).
+  · LECTURA: la columna es DateTime(timezone=True) y Postgres puede devolver el
+    valor tz-aware; stitch_from_db lo normaliza con _et_naive (aware →
+    America/New_York → naive), NUNCA .replace(tzinfo=None) a ciegas.
 """
 from __future__ import annotations
 

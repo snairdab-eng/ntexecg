@@ -68,13 +68,13 @@ async def test_stitch_db_vacia_procede_con_aviso(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stitch_cose_la_cola_consistente(monkeypatch):
-    bars = _grid(2, close=101.0)                        # HOLC hasta _T0+5m
-    t_last = max(bars)
-    t_tail = t_last + timedelta(minutes=5)
-    rows = [_FakeBar(t_last, 101.0), _FakeBar(t_tail, 102.0)]  # solape ok + cola
+    bars = _grid(15, close=101.0)                       # ≥ STITCH_MIN_OVERLAP_BARS
+    keys = sorted(bars); t_last = keys[-1]
+    t_tail = t_last + timedelta(minutes=5)              # cola CONTIGUA (rejilla 5m)
+    rows = [_FakeBar(k, bars[k][3]) for k in keys] + [_FakeBar(t_tail, 102.0)]
     _patch_db(monkeypatch, rows)
     out, stats = await la.stitch_from_db(bars, "ES", "5m")
-    assert stats["added"] == 1 and stats["checked"] == 1 and stats["mismatched"] == 0
+    assert stats["checked"] == 15 and stats["mismatched"] == 0 and stats["added"] == 1
     assert t_tail in out and stats["last_stitched"] == t_tail.isoformat()
 
 

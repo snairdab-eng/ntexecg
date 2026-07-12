@@ -374,6 +374,8 @@ async def test_luxy_e2e_real(
     assert "robustez OOS" in html
     assert "$/trade" in html and "retiene " in html
     assert "pendiente de Recalcular" in html
+    # LX-6 — tripwire de plausibilidad: banner rojo + "sin veredicto" en el JS
+    assert 'id="lx-implausible"' in html and "números implausibles" in html
     # (el texto del banner de muestra vive en el payload/Python — se testea en
     #  test_luxy_toggles_lx2::test_muestra_banner_on_off_y_texto; ES no lo dispara.)
     assert "ET" in html                              # rango horario ET (R-T7)
@@ -448,6 +450,8 @@ async def test_luxy_evaluar_parity_real(
     assert study["split"]["n_in_sample"] <= study["split"]["n_trades_in"]
     # ES 100% cubierto por el HOLC → sin banner de muestra
     assert dash["muestra_banner"] is None
+    # LX-6 — el estudio LIMPIO del ES NO es implausible (tripwire OFF)
+    assert dash["implausible"] is False
     # LX-3b — semáforo de robustez SOLO de la fila OOS validada, con los umbrales
     oos_net, oos_pf = t3["oos"]["net_usd"], t3["oos"]["pf"]
     exp = ("rojo" if (oos_net is None or oos_pf is None or oos_net <= 0 or oos_pf < 1.0)

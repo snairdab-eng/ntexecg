@@ -428,6 +428,29 @@ def _card(m: dict) -> dict:
 ROBUSTEZ_PF_VERDE = 1.3       # 🟢 neto>0 y PF ≥ 1.3
 ROBUSTEZ_PF_MIN = 1.0        # 🟡 neto>0 y PF en [1.0, 1.3) · 🔴 neto≤0 o PF < 1.0
 RETENCION_N_MIN = 10        # OOS con menos trades → "muestra chica"
+# LX-6 — tripwire de plausibilidad (fail-honest): un PF por encima de esto es
+# absurdo para una estrategia real → delata intrabar desalineado (cola mal-TZ).
+PF_ABSURDO = 50.0
+PART_MIN_PLAUSIBLE = 90.0    # con C1 al mercado y sin corte de lado, debe ~100%
+
+
+def tripwire_implausible(legs, lado_accion, participacion, pf):
+    """LX-6 — (implausible, mensaje) del estudio. Con C1 al mercado (una pierna a
+    profundidad ≤0) y SIN corte de lado, la participación DEBE ser ~100%
+    (`leg_filled(0)=True` siempre); una participación baja o una PF absurda
+    delatan joins intrabar desalineados (cola mal-TZ)."""
+    c1_market = any(d <= 0 and w > 0 for d, w in (legs or ()))
+    dir_both = lado_accion != "cortar"
+    impl = []
+    if c1_market and dir_both and participacion is not None \
+            and participacion < PART_MIN_PLAUSIBLE:
+        impl.append(f"participación {participacion}% con C1 al mercado "
+                    f"(debería ~100%)")
+    if pf is not None and pf != float("inf") and pf > PF_ABSURDO:
+        impl.append(f"PF {round(pf, 1)} > {PF_ABSURDO}")
+    msg = ("números implausibles: revisa alineación/cobertura intrabar — "
+           + " · ".join(impl)) if impl else None
+    return bool(impl), msg
 
 
 def _expectativa(m: dict):
@@ -789,6 +812,16 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         dashboard["n_estimados"] = n_cola            # ATR-estimados en v1, fuera aquí
         dashboard["n_inicio"] = n_inicio
         dashboard["ultima_barra"] = _last.isoformat() if _last else None
+        # LX-6 — tripwire de plausibilidad (barato): con C1 al mercado (una pierna
+        # a profundidad ≤0) y SIN corte de lado, la participación DEBE ser ~100%
+        # (leg_filled(0)=True siempre); una PF absurda o participación baja delatan
+        # joins intrabar desalineados (cola mal-TZ). El semáforo NO se enciende.
+        _impl, _msg = tripwire_implausible(
+            (levers_in.get("ladder") or {}).get("legs") or (),
+            (levers_in.get("lado") or {}).get("accion"),
+            fila_in.get("participacion_pct"), fila_in.get("pf"))
+        dashboard["implausible"] = _impl
+        dashboard["implausible_msg"] = _msg
         # LX-3b — semáforo de robustez (OOS validada), retención $/trade y banner
         # de muestra (todo del payload; la estimación NO enciende semáforo).
         dashboard["robustez"] = robustez_semaforo(fila_oos)

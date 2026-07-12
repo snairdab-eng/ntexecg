@@ -763,6 +763,8 @@
 
           <!-- LX-3b — banner ámbar de muestra (trades fuera de la cobertura HOLC)
                + semáforo de robustez (SOLO de la fila OOS validada). -->
+          <!-- LX-6 — tripwire de plausibilidad: banner ROJO si los números del estudio son absurdos -->
+          <div id="lx-implausible" class="rounded p-2 text-xs mb-2 font-medium" style="display:none;background:rgba(248,81,73,.16);color:#f85149;border:1px solid #f85149"></div>
           <div id="lx-muestra-banner" class="rounded p-2 text-xs mb-2" style="display:none;background:rgba(210,153,34,.14);color:#d29922"></div>
           <div id="lx-robustez" class="text-xs mb-1"></div>
           <!-- LX-3 — Tabla reactiva: Crudo (lista base, fija) · Crudo+ (palancas
@@ -938,15 +940,19 @@
           // LX-3b — semáforo de robustez: SOLO de la fila OOS validada (motor).
           function semaforo(mode){
             const r=el('lx-robustez'); if(!r) return;
+            // LX-6 — si el estudio es implausible, el semáforo NO se enciende.
+            if(D.implausible){ r.style.opacity='0.5'; r.innerHTML='⚪ <b style="color:var(--lx-muted)">robustez OOS</b> <span style="color:#f85149">sin veredicto — números implausibles</span>'; return; }
             const v=(VROB&&VROB.verdict)||'rojo';
             const map={verde:['🟢','#3fb950','robusto'],amarillo:['🟡','#d29922','frágil'],rojo:['🔴','#f85149','no generaliza']};
             const m=map[v]||map.rojo; const dim=(mode==='est');
             r.style.opacity=dim?'0.5':'1';
             r.innerHTML='<span title="OOS = palancas probadas en datos que no participaron en derivarlas; si esto se degrada, la estrategia se está degradando">'+m[0]+' <b style="color:'+m[1]+'">robustez OOS</b> <span style="color:var(--lx-muted)">'+m[2]+(VROB&&VROB.pf!=null?' · PF '+(+VROB.pf).toFixed(2):'')+'</span></span>'+(dim?' <span style="color:#d29922">— pendiente de Recalcular</span>':'');
           }
-          // LX-3b — banner ámbar de muestra (estático del estudio; se pinta una vez).
-          function banner(){ const b=el('lx-muestra-banner'); if(!b) return;
-            if(D.muestra_banner){ b.textContent='⚠ '+D.muestra_banner; b.style.display=''; } else { b.style.display='none'; } }
+          // LX-3b/LX-6 — banner ámbar de muestra + banner ROJO de implausibilidad.
+          function banner(){ const b=el('lx-muestra-banner');
+            if(b){ if(D.muestra_banner){ b.textContent='⚠ '+D.muestra_banner; b.style.display=''; } else b.style.display='none'; }
+            const im=el('lx-implausible');
+            if(im){ if(D.implausible){ im.textContent='⛔ '+D.implausible_msg; im.style.display=''; } else im.style.display='none'; } }
           // ---- LX-1 #3: UN diagrama a todo el ancho, corte del split + OOS tenue ----
           function drawChart(){
             const cv=el('lx-chart'); if(!cv) return; const ctx=cv.getContext('2d');
