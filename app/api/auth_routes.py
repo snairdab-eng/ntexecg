@@ -48,7 +48,10 @@ def _login_error(request: Request, msg: str, code: int):
 async def login_form(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request, "login.html",
-        {"app_name": settings.APP_NAME, "app_version": settings.APP_VERSION, "error": None},
+        {"app_name": settings.APP_NAME, "app_version": settings.APP_VERSION,
+         "error": None,
+         # LX-1 #1 — 2FA honesto: el campo TOTP solo se pinta si hay secreto.
+         "totp_enabled": bool(settings.UI_TOTP_SECRET)},
     )
 
 

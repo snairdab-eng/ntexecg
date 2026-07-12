@@ -35,12 +35,14 @@
                        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm focus:outline-none focus:border-blue-600">
             </div>
 
+            {% if totp_enabled %}
             <div>
-                <label class="block text-xs text-gray-400 mb-1">Código 2FA <span class="text-gray-600">(si está activo)</span></label>
+                <label class="block text-xs text-gray-400 mb-1">Código 2FA</label>
                 <input name="totp" type="text" inputmode="numeric" autocomplete="one-time-code"
-                       pattern="[0-9]*" maxlength="6" placeholder="000000"
+                       pattern="[0-9]*" maxlength="6" placeholder="000000" required
                        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm tracking-widest focus:outline-none focus:border-blue-600">
             </div>
+            {% endif %}
 
             <button type="submit"
                     class="w-full bg-blue-700 hover:bg-blue-600 text-white font-medium px-4 py-2 rounded text-sm transition">

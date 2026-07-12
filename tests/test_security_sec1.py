@@ -90,6 +90,29 @@ async def test_totp_on_exige_codigo(
 
 
 # ---------------------------------------------------------------------------
+# LX-1 #1 — 2FA honesto en el login: el campo TOTP solo se pinta si hay secreto
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_login_sin_2fa_no_pinta_campo_totp(client: AsyncClient) -> None:
+    # el fixture _cfg deja UI_TOTP_SECRET="" (2FA apagado)
+    r = await client.get("/ui/login")
+    assert r.status_code == 200
+    assert 'name="totp"' not in r.text          # form usuario+contraseña limpio
+
+
+@pytest.mark.asyncio
+async def test_login_con_2fa_pinta_campo_totp(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "UI_TOTP_SECRET", _TOTP)
+    r = await client.get("/ui/login")
+    assert r.status_code == 200
+    assert 'name="totp"' in r.text
+    assert "2FA" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Tarea 3 — fail-fast del SESSION_SECRET
 # ---------------------------------------------------------------------------
 

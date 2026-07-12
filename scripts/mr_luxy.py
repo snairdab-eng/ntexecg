@@ -418,7 +418,8 @@ def _card(m: dict) -> dict:
     dd en magnitud NEGATIVA (como mae_min del prototipo)."""
     return {"net": m.get("net_usd"), "pf": m.get("pf"),
             "dd": -(m.get("max_dd_usd") or 0.0), "worst": m.get("peor_trade_usd"),
-            "wr": m.get("wr_pct"), "part": m.get("participacion_pct")}
+            "wr": m.get("wr_pct"), "part": m.get("participacion_pct"),
+            "n": m.get("n")}                      # LX-1 #4: la tabla reactiva usa N
 
 
 def _dashboard_payload(sts: list[SimTrade], by_number: dict, levers_in: dict,
@@ -670,6 +671,21 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         _lc = _listado_crudo(trades, off)
         dashboard["ventana_operacion"] = _lc["ventana_operacion"]
         dashboard["duracion_h_por_lado"] = _lc["duracion_h_por_lado"]
+        # LX-1 #4 — filas VALIDADAS de la tabla reactiva: Crudo (100%, sin
+        # palancas), In-sample y OOS cada una sobre SU subconjunto POR SEPARADO
+        # (R-T10: jamás mezclados). Difiere de la Tabla A, cuya fila In-sample
+        # aplica las palancas a TODA la muestra. `cutoff_i` = nº de trades
+        # in-sample en la nube (para la línea vertical de corte del diagrama).
+        fila_in_sub = (eval_levers(sts_in, levers_in, ppt,
+                                   cancel_after_s=cancel_after_s,
+                                   touches=touches_all)
+                       if levers_in and sts_in else {"n": 0})
+        dashboard["table3"] = {
+            "crudo": _rowA("Crudo", crudo),
+            "in": _rowA("In-sample", fila_in_sub),
+            "oos": _rowA("OOS", fila_oos),
+        }
+        dashboard["cutoff_i"] = len(sts_in)
 
     return {
         "version": 3,               # v3: BE same_bar recortado (walk aditivo)
@@ -882,8 +898,12 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
                                           cands, keys5, idx5, bars5)
                    for s in sts}
 
-    config = eval_levers(sts, lev, ppt, cancel_after_s=cancel_after_s,
-                         touches=touches)
+    # LX-1 #4 — R-T10: `config` (In-sample) se evalúa SOLO sobre el subconjunto
+    # in-sample; la fila OOS es un ESPEJO con las MISMAS palancas sobre el
+    # subconjunto OOS. Jamás se mezclan (antes `config` corría sobre todos los
+    # sts). `touches` está cacheado por número → sirve a ambos subconjuntos.
+    config = eval_levers(sts_in, lev, ppt, cancel_after_s=cancel_after_s,
+                         touches=touches) if sts_in else {"n": 0}
     oosm = eval_levers(sts_oos, lev, ppt, cancel_after_s=cancel_after_s,
                        touches=touches) if sts_oos else {"n": 0}
     crudo = metrics_usd([t.pnl_usd for t in trades])

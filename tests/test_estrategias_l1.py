@@ -343,17 +343,21 @@ async def test_luxy_e2e_real(
     assert study["levers_in_sample"]["breakeven"]["disponible"] is True
     assert len(study["tabla_a"]) == 3 and study["tabla_b"]["convergencia"]
 
-    # la sub-pestaña renderiza el DASHBOARD (L3) + la Tabla A
+    # la sub-pestaña renderiza el DASHBOARD (L3) con la tabla reactiva (LX-1 #4:
+    # la Tabla A estática se retiró) y el diagrama único (LX-1 #3)
     r = await client.get("/ui/strategies/ES5m_LuxReal")
     assert r.status_code == 200
     html = r.text
-    assert "Tabla A — métricas" in html
+    assert 'id="lx-table3"' in html                   # tabla reactiva (Crudo/In/OOS)
+    assert "Tabla A — métricas" not in html           # estática retirada
     assert "espejo" in html.lower()
     # dashboard portado (dark): raíz, payload inyectado, Recalcular motor,
-    # gráficas, sesiones ET y la honestidad del BE
+    # diagrama ÚNICO a todo el ancho, sesiones ET y la honestidad del BE
     assert 'id="lx-root"' in html and "window.LUXY" in html
     assert "Recalcular (motor)" in html
-    assert 'id="lx-chart-in"' in html and 'id="lx-chart-oos"' in html
+    assert 'id="lx-chart"' in html                    # un solo canvas
+    assert 'id="lx-chart-in"' not in html and 'id="lx-chart-oos"' not in html
+    assert "in-sample · OOS" in html                  # rótulo del corte del split
     assert "BE: requiere recálculo del motor" in html
     assert "ET" in html                              # rango horario ET (R-T7)
     # L4 — el panel de Perfiles renderiza el sizing + Export (builder real)
@@ -379,8 +383,10 @@ async def test_luxy_evaluar_parity_real(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """RECALCULAR (/luxy/evaluar) usa el evaluador de L2 → mismos números que
-    el estudio: evaluar sin overrides reproduce la fila In-sample de la Tabla A
-    (BE no recomendado en ES → coinciden)."""
+    el estudio. LX-1 #4: `config` se evalúa SOLO sobre el subconjunto in-sample
+    (R-T10), así que evaluar sin overrides reproduce la fila In-sample de la
+    TABLA REACTIVA (dashboard.table3.in = in-sample subset), y la fila OOS es el
+    espejo con las mismas palancas sobre el subconjunto OOS. BE no reco en ES."""
     import scripts.mr_luxy as mrl
     import app.web.routes_riesgo as rr
     monkeypatch.setenv("HOLC_DIR", "NINJATRADER/HOLC")
@@ -393,10 +399,22 @@ async def test_luxy_evaluar_parity_real(
 
     study = mrl.run_for_clave(clave, rr.MOTOR_DIR)
     ev = mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {})
-    fila_in = next(f for f in study["tabla_a"] if f["fila"] == "In-sample")
+    t3 = study["dashboard"]["table3"]
     assert study["levers_in_sample"]["breakeven"]["be_atr"] is None   # BE no reco
-    assert round(ev["config"]["net"]) == round(fila_in["net_usd"]), \
-        (ev["config"]["net"], fila_in["net_usd"])
+    # config == In-sample SUBCONJUNTO (no toda la muestra)
+    assert round(ev["config"]["net"]) == round(t3["in"]["net_usd"]), \
+        (ev["config"]["net"], t3["in"]["net_usd"])
+    # OOS-espejo con las MISMAS palancas sobre el subconjunto OOS
+    assert round(ev["oos"]["net"]) == round(t3["oos"]["net_usd"]), \
+        (ev["oos"]["net"], t3["oos"]["net_usd"])
+    # y los subconjuntos NO se mezclan: in + oos = total del split
+    assert t3["in"]["n"] + t3["oos"]["n"] == study["split"]["n_total"]
+    # LX-1 #3 — cutoff para el corte visual: coincide con el nº in-sample y con
+    # la frontera in→oos de la nube (orden cronológico, 100% de trades).
+    dash = study["dashboard"]
+    assert dash["cutoff_i"] == study["split"]["n_in_sample"]
+    assert sum(1 for t in dash["trades"] if t["in"]) == dash["cutoff_i"]
+    assert len(dash["trades"]) == study["split"]["n_total"]
 
 
 # ---------------------------------------------------------------------------

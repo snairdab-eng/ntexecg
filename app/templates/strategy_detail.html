@@ -751,19 +751,20 @@
             <div id="lx-notes" class="text-xs mt-2" style="color:var(--lx-muted)"></div>
           </div>
 
-          <!-- Teselas comparativas base → config -->
-          <div id="lx-tiles" class="grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+          <!-- LX-1 #4 — Tabla reactiva: Crudo (fija) · In-sample · OOS (espejo),
+               cada fila recalculada sobre SU subconjunto por separado (R-T10,
+               jamás mezclados). Reemplaza las teselas. -->
+          <div id="lx-table3" class="rounded overflow-x-auto" style="background:var(--lx-panel);border:1px solid var(--lx-line)"></div>
 
-          <!-- Dos gráficas de recorrido (in-sample / OOS) -->
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
-              <div class="text-xs mb-1" style="color:var(--lx-muted)">Recorrido — in-sample</div>
-              <canvas id="lx-chart-in" width="560" height="230" style="width:100%;height:auto"></canvas>
+          <!-- LX-1 #3 — UN solo diagrama a todo el ancho: 100% de trades en orden
+               cronológico, línea vertical de corte del split y barras OOS en tono
+               tenue. Un solo juego de líneas de palanca cruza todo el ancho. -->
+          <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+            <div class="flex items-center justify-between text-xs mb-1" style="color:var(--lx-muted)">
+              <span>Recorrido — 100% de trades (orden cronológico)</span>
+              <span class="font-mono">← in-sample · OOS →</span>
             </div>
-            <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
-              <div class="text-xs mb-1" style="color:var(--lx-muted)">Recorrido — OOS <span class="text-amber-500">(espejo)</span></div>
-              <canvas id="lx-chart-oos" width="560" height="230" style="width:100%;height:auto"></canvas>
-            </div>
+            <canvas id="lx-chart" width="1120" height="240" style="width:100%;height:auto"></canvas>
           </div>
           <div id="lx-legend" class="text-xs flex flex-wrap gap-3" style="color:var(--lx-muted)"></div>
 
@@ -829,179 +830,201 @@
           const SID = window.LUXY_SID, PV = D.pv, R = D.reco, A = R.alloc || [10,0,0];
           const el = id => document.getElementById(id);
           const money = v => (v==null?'—':(v<0?'−$':'$')+Math.abs(Math.round(v)).toLocaleString('en-US'));
+          const pct = v => (v==null?'—':(+v).toFixed(1)+'%');
+          const pf  = v => (v==null?'—':(isFinite(v)?(+v).toFixed(2):'∞'));
           const dLbl = {both:'ambos',long:'largos',short:'cortos'};
-          // Estado de palancas (USD)
+          // ---- Estado ACTUAL de palancas (USD) ----
           const S = { tp:R.tp_usd!=null, be:false, sc:(A[1]+A[2])>0, sl:R.sl_usd!=null,
                       tpV:R.tp_usd||0, beV:R.be_usd||0, l2:R.l2_usd||0, l3:R.l3_usd||0,
                       slV:R.sl_usd||0, dir:R.dir||'both' };
-          const RECO = {tp:S.tp,be:S.be,sc:S.sc,sl:S.sl,tpV:S.tpV,beV:S.beV,l2:S.l2,l3:S.l3,slV:S.slV,dir:S.dir};
-          // ---- estimación client-side (BE NUNCA acredita beneficio — honesto) ----
-          function estimate(){
-            const MES=PV/10, lv=[[0,A[0]],[S.l2,A[1]],[S.l3,A[2]]];
-            const lever=d=>{ let e=d.pnl;
-              if(S.sl && d.mae<=-S.slV) e=-S.slV;
-              else if(S.tp && d.mfe>=S.tpV) e=S.tpV;
-              // BREAKEVEN: excepción obligatoria — sin motor NO se acredita su
-              // beneficio (el orden intrabar no se conoce). Nunca un BE optimista.
-              if(!S.sc) return e;
-              const ep=e/PV; let t=0; for(const [L,q] of lv){ if(L===0||d.mae<=-L) t+=q*(ep+L/PV)*MES; } return t; };
-            const dok=d=> S.dir==='both'?true:S.dir==='long'?d.long:!d.long;
-            const kept=[]; for(const d of D.trades){ if(dok(d)) kept.push(lever(d)); }
-            return stats(kept);
-          }
-          function stats(a){ if(!a.length) return {net:0,pf:0,dd:0,worst:0,wr:0,part:0};
+          // LX-1 #2 — RECO0: copia INMUTABLE de las palancas del estudio. Restablecer
+          // SIEMPRE vuelve aqui; Recalcular JAMAS la pisa.
+          const RECO0 = JSON.parse(JSON.stringify(S));
+          // ---- filas VALIDADAS de la tabla reactiva (normalizadas a {net,pf,dd,worst,wr,part,n}) ----
+          function norm(r){ if(r==null) return null; return {
+            net: r.net!=null? r.net : r.net_usd, pf: r.pf,
+            dd: r.dd!=null? r.dd : -(r.max_dd_usd||0),
+            worst: r.worst!=null? r.worst : r.peor_trade_usd,
+            wr: r.wr!=null? r.wr : r.wr_pct,
+            part: r.part!=null? r.part : r.participacion_pct, n: r.n }; }
+          const T3 = D.table3 || {};
+          const V0 = { crudo:norm(T3.crudo), in:norm(T3.in), oos:norm(T3.oos) };
+          let VLAST = V0;                       // ultimo validado (Recalcular lo actualiza; NO toca RECO0)
+          // ---- estimacion client-side POR SUBCONJUNTO (BE nunca acredita beneficio) ----
+          const MES = PV/10;
+          function lever(d){ let e=d.pnl;
+            if(S.sl && d.mae<=-S.slV) e=-S.slV;
+            else if(S.tp && d.mfe>=S.tpV) e=S.tpV;
+            // BREAKEVEN: sin motor NO se acredita su beneficio (orden intrabar
+            // desconocido) — jamas un BE optimista en la estimacion.
+            if(!S.sc) return e;
+            const lv=[[0,A[0]],[S.l2,A[1]],[S.l3,A[2]]], ep=e/PV; let t=0;
+            for(const pair of lv){ const L=pair[0], q=pair[1]; if(L===0||d.mae<=-L) t+=q*(ep+L/PV)*MES; } return t; }
+          function statsCard(a, ntot){ if(!a.length) return {net:0,pf:null,dd:0,worst:0,wr:0,part:0,n:0};
             const gp=a.filter(x=>x>0).reduce((x,y)=>x+y,0), gl=a.filter(x=>x<0).reduce((x,y)=>x+y,0);
-            let eq=0,pk=0,dd=0; for(const p of a){eq+=p;pk=Math.max(pk,eq);dd=Math.min(dd,eq-pk);}
+            let eq=0,pk=0,dd=0; for(const x of a){eq+=x;pk=Math.max(pk,eq);dd=Math.min(dd,eq-pk);}
             return {net:a.reduce((x,y)=>x+y,0), pf:gl!==0?gp/Math.abs(gl):Infinity, dd,
-                    worst:Math.min(...a), wr:a.filter(x=>x>0).length/a.length*100, part:a.length/D.n*100}; }
-          // ---- teselas base → col ----
-          function tiles(base, col){
-            const defs=[['Neto total','net','money',true],['Profit factor','pf','num',true],
-              ['Max drawdown','dd','money',false],['Peor trade','worst','money',true],
-              ['Participación','part','pct',null],['Win rate','wr','pct',true]];
-            el('lx-tiles').innerHTML = defs.map(([lab,k,fmt,hi])=>{
-              const b=base[k], c=col[k]; let bs,cs,dcol='var(--lx-muted)';
-              const f=v=> fmt==='money'?money(v): fmt==='pct'?(v==null?'—':v.toFixed(1)+'%'): (v==null?'—':(isFinite(v)?v.toFixed(2):'∞'));
-              bs=f(b); cs=f(c);
-              if(hi!=null && b!=null && c!=null){ const d=(fmt==='money'&&k==='dd')?(Math.abs(c)-Math.abs(b)):(c-b);
-                const good=(fmt==='money'&&k==='dd')? d<0 : (d>0)===hi; if(d!==0) dcol=good?'var(--lx-green)':'var(--lx-red)'; }
-              return `<div class="rounded p-2" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
-                <div class="text-xs" style="color:var(--lx-muted)">${lab}</div>
-                <div class="text-xs" style="color:var(--lx-muted)">${bs} →</div>
-                <div class="font-mono text-sm" style="color:${dcol}">${cs}</div></div>`;
-            }).join('');
+                    worst:Math.min.apply(null,a), wr:a.filter(x=>x>0).length/a.length*100,
+                    part: ntot? a.length/ntot*100 : 0, n:a.length}; }
+          function estimateSubset(inSample){
+            const dok=d=> S.dir==='both'?true:S.dir==='long'?d.long:!d.long;
+            const sub=D.trades.filter(d=>!!d.in===inSample);
+            const kept=[]; for(const d of sub){ if(dok(d)) kept.push(lever(d)); }
+            return statsCard(kept, sub.length); }
+          // ---- tabla reactiva de 3 filas (Crudo fija · In-sample · OOS espejo) ----
+          function renderTable(mode){
+            const crudo=V0.crudo;                       // FIJA: 100% de trades, sin palancas
+            const inR = mode==='val'? VLAST.in  : estimateSubset(true);
+            const oosR= mode==='val'? VLAST.oos : estimateSubset(false);
+            const filas=[['Crudo',crudo,'text-gray-300',''],
+                         ['In-sample',inR,'text-emerald-300',''],
+                         ['OOS',oosR,'text-amber-300','espejo — no es la config a usar']];
+            const body=filas.map(function(f){ const name=f[0]; const c=f[1]||{}; const cls=f[2]; const note=f[3];
+              const cells=[money(c.net),pf(c.pf),money(c.dd),money(c.worst),pct(c.part),pct(c.wr),(c.n!=null?c.n:'—')];
+              return '<tr class="border-b border-gray-800 last:border-0"><td class="px-3 py-2 font-medium '+cls+'">'+name
+                + (note?' <span class="text-amber-500/80 text-xs font-normal">'+note+'</span>':'')
+                + '</td>'+cells.map(function(v){return '<td class="px-3 py-2 font-mono">'+v+'</td>';}).join('')+'</tr>'; }).join('');
+            el('lx-table3').innerHTML =
+              '<div class="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">Metricas — <span id="lx-t3-mode">validado</span></div>'
+              + '<table class="w-full text-sm"><thead><tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">'
+              + '<th class="px-3 py-2">Fila</th><th class="px-3 py-2">Neto</th><th class="px-3 py-2">PF</th><th class="px-3 py-2">Max DD</th><th class="px-3 py-2">Peor</th><th class="px-3 py-2">Particip.</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">N</th>'
+              + '</tr></thead><tbody>'+body+'</tbody></table>';
+            const tm=el('lx-t3-mode'); if(tm){ tm.textContent = mode==='val'?'validado · motor':'estimacion · aprox'; tm.style.color = mode==='val'?'#3fb950':'#d29922'; }
           }
-          // ---- gráficas ----
-          function draw(cid, subset){
-            const cv=el(cid); if(!cv) return; const ctx=cv.getContext('2d');
+          // ---- LX-1 #3: UN diagrama a todo el ancho, corte del split + OOS tenue ----
+          function drawChart(){
+            const cv=el('lx-chart'); if(!cv) return; const ctx=cv.getContext('2d');
             const W=cv.width, H=cv.height, pad=8, midY=H*0.55;
             ctx.clearRect(0,0,W,H); ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H);
-            const rows=D.trades.filter(subset); if(!rows.length){ ctx.fillStyle='#8b949e'; ctx.font='11px monospace'; ctx.fillText('sin operaciones en la ventana',10,20); return; }
+            const rows=D.trades; if(!rows.length){ ctx.fillStyle='#8b949e'; ctx.font='11px monospace'; ctx.fillText('sin operaciones',10,20); return; }
             const top=D.mfe_max||1, bot=Math.abs(D.mae_min)||1;
-            const yUp=v=> midY - (v/top)*(midY-pad);
-            const yDn=v=> midY + (Math.abs(v)/bot)*(H-midY-pad);
-            const bw=Math.max(1,(W-2*pad)/rows.length*0.7), step=(W-2*pad)/rows.length;
-            rows.forEach((d,i)=>{ const x=pad+i*step;
-              if(el('lx-t-mfe').checked && d.mfe>0){ ctx.fillStyle='rgba(63,185,80,.28)'; ctx.fillRect(x,yUp(d.mfe),bw,midY-yUp(d.mfe)); }
-              if(el('lx-t-mae').checked && d.mae<0){ ctx.fillStyle='rgba(248,81,73,.28)'; ctx.fillRect(x,midY,bw,yDn(d.mae)-midY); }
-              if(el('lx-t-cls').checked){ const c=d.pnl>=0?yUp(d.pnl):yDn(d.pnl); ctx.fillStyle=d.pnl>=0?'#3fb950':'#f85149'; ctx.fillRect(x,Math.min(midY,c),bw,Math.abs(c-midY)); }
-            });
-            // líneas de palanca
-            const line=(v,color,on)=>{ if(!on||v==null) return; const y=v>=0?yUp(v):yDn(v); ctx.strokeStyle=color; ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(W-pad,y); ctx.stroke(); ctx.setLineDash([]); };
-            line(S.tpV,'var(--lx-tp)',S.tp); line(S.beV,'#a371f7',S.be);
-            line(-S.slV,'#d29922',S.sl);
+            const yUp=v=> midY-(v/top)*(midY-pad), yDn=v=> midY+(Math.abs(v)/bot)*(H-midY-pad);
+            const step=(W-2*pad)/rows.length, bw=Math.max(1,step*0.7);
+            const cut = (D.cutoff_i!=null? D.cutoff_i : rows.filter(d=>d.in).length);
+            const xCut = pad + cut*step;
+            // banda OOS mas tenue
+            ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fillRect(xCut,0,Math.max(0,W-pad-xCut),H);
+            const mfeOn=el('lx-t-mfe').checked, maeOn=el('lx-t-mae').checked, clsOn=el('lx-t-cls').checked;
+            rows.forEach(function(d,i){ const x=pad+i*step, oos=!d.in, aF=oos?0.13:0.28;
+              if(mfeOn && d.mfe>0){ ctx.fillStyle='rgba(63,185,80,'+aF+')'; ctx.fillRect(x,yUp(d.mfe),bw,midY-yUp(d.mfe)); }
+              if(maeOn && d.mae<0){ ctx.fillStyle='rgba(248,81,73,'+aF+')'; ctx.fillRect(x,midY,bw,yDn(d.mae)-midY); }
+              if(clsOn){ const c=d.pnl>=0?yUp(d.pnl):yDn(d.pnl);
+                ctx.fillStyle=d.pnl>=0?(oos?'rgba(63,185,80,.5)':'#3fb950'):(oos?'rgba(248,81,73,.5)':'#f85149');
+                ctx.fillRect(x,Math.min(midY,c),bw,Math.abs(c-midY)); } });
+            // linea vertical de corte del split
+            if(cut>0 && cut<rows.length){ ctx.strokeStyle='#8b949e'; ctx.setLineDash([3,3]);
+              ctx.beginPath(); ctx.moveTo(xCut,0); ctx.lineTo(xCut,H); ctx.stroke(); ctx.setLineDash([]);
+              ctx.fillStyle='#8b949e'; ctx.font='10px monospace';
+              ctx.textAlign='right'; ctx.fillText('in-sample →', xCut-4, 11);
+              ctx.textAlign='left';  ctx.fillText('← OOS', xCut+4, 11); ctx.textAlign='left'; }
+            // UN solo juego de lineas de palanca, a todo el ancho
+            const line=function(v,color,on){ if(!on||v==null) return; const y=v>=0?yUp(v):yDn(v);
+              ctx.strokeStyle=color; ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(W-pad,y); ctx.stroke(); ctx.setLineDash([]); };
+            line(S.tpV,'var(--lx-tp)',S.tp); line(S.beV,'#a371f7',S.be); line(-S.slV,'#d29922',S.sl);
             if(S.sc){ line(-S.l2,'#58a6ff',true); line(-S.l3,'#58a6ff',true); }
             ctx.strokeStyle='#30363d'; ctx.beginPath(); ctx.moveTo(pad,midY); ctx.lineTo(W-pad,midY); ctx.stroke();
           }
-          function redraw(){ draw('lx-chart-in', d=>d.in); draw('lx-chart-oos', d=>!d.in); }
-          // ---- leyenda + códigos (fuera del plot) ----
+          // ---- leyenda ----
           function legend(){
             const showPts=D.units && D.units.show_pts;
-            const pts=v=> showPts&&PV? ' ('+Math.round(v/PV)+' pts)':'';
+            const ptf=v=> showPts&&PV? ' ('+Math.round(v/PV)+' pts)':'';
             el('lx-legend').innerHTML=[
               ['TP','var(--lx-tp)',S.tpV], ['BE','#a371f7',S.be?S.beV:null],
               ['C2','#58a6ff',-S.l2], ['C3','#58a6ff',-S.l3], ['SL','#d29922',-S.slV]
-            ].filter(x=>x[2]!=null).map(([n,c,v])=>`<span><span style="color:${c}">■</span> ${n} ${money(v)}${pts(v)}</span>`).join('');
+            ].filter(function(x){return x[2]!=null;}).map(function(x){return '<span><span style="color:'+x[1]+'">■</span> '+x[0]+' '+money(x[2])+ptf(x[2])+'</span>';}).join('');
           }
-          // ---- diagnósticos ----
+          // ---- diagnosticos (sin cambios funcionales) ----
           function diag(){
-            el('lx-zones').innerHTML=(R.zones||[]).map(z=>`<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">${z.name} <span style="color:var(--lx-muted)">${z.et}</span></span><span class="font-mono ${z.net<0?'':''}" style="color:${z.losing?'#d29922':'var(--lx-muted)'}">${z.n}·${money(z.net)}${z.losing?' pierde':''}</span></div>`).join('');
-            el('lx-days').innerHTML=(R.days||[]).map(z=>`<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">${z.name}</span><span class="font-mono" style="color:${z.losing?'#d29922':'var(--lx-muted)'}">${z.n}·${money(z.net)}${z.losing?' pierde':''}</span></div>`).join('');
-            const ts=D.timestop||{}; const mx=Math.max(1,...(ts.buckets||[]).map(b=>Math.abs(b.net)));
-            el('lx-ts').innerHTML=(ts.buckets||[]).map(b=>`<div class="flex justify-between gap-2"><span style="color:var(--lx-muted)">${b.range}m</span><span class="font-mono" style="color:${b.net<0?'#f85149':'var(--lx-muted)'}">${b.n}·${money(b.net)}</span></div>`).join('');
+            el('lx-zones').innerHTML=(R.zones||[]).map(function(z){return '<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">'+z.name+' <span style="color:var(--lx-muted)">'+z.et+'</span></span><span class="font-mono" style="color:'+(z.losing?'#d29922':'var(--lx-muted)')+'">'+z.n+'·'+money(z.net)+(z.losing?' pierde':'')+'</span></div>';}).join('');
+            el('lx-days').innerHTML=(R.days||[]).map(function(z){return '<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">'+z.name+'</span><span class="font-mono" style="color:'+(z.losing?'#d29922':'var(--lx-muted)')+'">'+z.n+'·'+money(z.net)+(z.losing?' pierde':'')+'</span></div>';}).join('');
+            const ts=D.timestop||{};
+            el('lx-ts').innerHTML=(ts.buckets||[]).map(function(b){return '<div class="flex justify-between gap-2"><span style="color:var(--lx-muted)">'+b.range+'m</span><span class="font-mono" style="color:'+(b.net<0?'#f85149':'var(--lx-muted)')+'">'+b.n+'·'+money(b.net)+'</span></div>';}).join('');
             el('lx-ts-why').textContent=ts.why||'';
           }
-          // ---- L7a: ventana de operación (rango por lado + cobertura) ----
+          // ---- ventana de operacion (L7a, sin cambios) ----
           function winDiag(){
             const w=el('lx-window'); if(!w) return;
             const vo=D.ventana_operacion, dl=D.duracion_h_por_lado, vv=D.ventana_vigente;
             if(!vo && !dl){ w.style.display='none'; return; }
             const hh=h=> (h==null?'—':String(h).padStart(2,'0')+':00');
-            const durL=(lbl,r)=> r? `${lbl} p50 <b style="color:var(--lx-ink)">${r.p50_h}h</b>·p90 <b style="color:var(--lx-ink)">${r.p90_h}h</b> <span style="color:var(--lx-muted)">(${r.min_h}–${r.max_h}h, n=${r.n})</span>` : `${lbl} <span style="color:var(--lx-muted)">— sin muestra</span>`;
-            const rngL=(lbl,r)=> r? `${lbl} <b style="color:var(--lx-ink)">${r.min}–${r.max}h</b> <span style="color:var(--lx-muted)">(p05–p95 ${r.p05}–${r.p95}, n=${r.n})</span>` : `${lbl} <span style="color:var(--lx-muted)">— sin muestra</span>`;
-            let h='<div class="text-xs uppercase tracking-wide mb-1" style="color:var(--lx-muted)">⏰ Ventana de operación <span style="text-transform:none">(cobertura — participación 100%)</span></div>';
-            if(dl){ h+=`<div class="text-xs mb-1" style="color:var(--lx-ink)"><b>Duración por lado:</b> ${durL('largos',dl.long)} · ${durL('cortos',dl.short)} <span style="color:var(--lx-muted)">— topo cancel_after 3600s (1h)</span></div>`; }
-            if(vo && vo.rango_horario_et){ const r=vo.rango_horario_et; h+=`<div class="text-xs mb-1" style="color:var(--lx-ink)"><b>Rango horario de entradas (ET):</b> ${rngL('total',r.total)} · ${rngL('largos',r.long)} · ${rngL('cortos',r.short)}</div>`; }
-            if(vo && vo.ventana_minima_cobertura){ const vm=vo.ventana_minima_cobertura; h+=`<div class="text-xs mb-1"><b style="color:var(--lx-green)">Ventana mínima de cobertura (100%):</b> <span style="color:var(--lx-ink)">${vm.dias_label} · ${hh(vm.hora_desde)}–${hh(vm.hora_hasta)} ET</span>`; if(vm.p95_ref) h+=` <span style="color:var(--lx-muted)">· ref p05–p95 ${hh(vm.p95_ref.hora_desde)}–${hh(vm.p95_ref.hora_hasta)} ET</span>`; h+='</div>'; }
-            if(vv && vv.pct_fuera!=null){ if(vv.pct_fuera>0){ h+=`<div class="text-xs rounded p-2 mt-1" style="background:rgba(210,153,34,.14);color:#d29922">⚠ tu ventana L2 actual dejaría fuera el <b>${vv.pct_fuera}%</b> de los trades del backtest (participación perdida). Cambiar la ventana es config de L2 — a mano en Estrategias/Activos, no entra en Aplicar.</div>`; } else { h+=`<div class="text-xs rounded p-2 mt-1" style="background:rgba(63,185,80,.12);color:#3fb950">✓ tu ventana L2 cubre el 100% de los trades observados.</div>`; } }
-            if(vo && vo.nota) h+=`<div class="text-xs mt-1" style="color:var(--lx-muted)">${vo.nota}</div>`;
+            const durL=(lbl,r)=> r? lbl+' p50 <b style="color:var(--lx-ink)">'+r.p50_h+'h</b>·p90 <b style="color:var(--lx-ink)">'+r.p90_h+'h</b> <span style="color:var(--lx-muted)">('+r.min_h+'–'+r.max_h+'h, n='+r.n+')</span>' : lbl+' <span style="color:var(--lx-muted)">— sin muestra</span>';
+            const rngL=(lbl,r)=> r? lbl+' <b style="color:var(--lx-ink)">'+r.min+'–'+r.max+'h</b> <span style="color:var(--lx-muted)">(p05–p95 '+r.p05+'–'+r.p95+', n='+r.n+')</span>' : lbl+' <span style="color:var(--lx-muted)">— sin muestra</span>';
+            let h='<div class="text-xs uppercase tracking-wide mb-1" style="color:var(--lx-muted)">⏰ Ventana de operacion <span style="text-transform:none">(cobertura — participacion 100%)</span></div>';
+            if(dl){ h+='<div class="text-xs mb-1" style="color:var(--lx-ink)"><b>Duracion por lado:</b> '+durL('largos',dl.long)+' · '+durL('cortos',dl.short)+' <span style="color:var(--lx-muted)">— topo cancel_after 3600s (1h)</span></div>'; }
+            if(vo && vo.rango_horario_et){ const r=vo.rango_horario_et; h+='<div class="text-xs mb-1" style="color:var(--lx-ink)"><b>Rango horario de entradas (ET):</b> '+rngL('total',r.total)+' · '+rngL('largos',r.long)+' · '+rngL('cortos',r.short)+'</div>'; }
+            if(vo && vo.ventana_minima_cobertura){ const vm=vo.ventana_minima_cobertura; h+='<div class="text-xs mb-1"><b style="color:var(--lx-green)">Ventana minima de cobertura (100%):</b> <span style="color:var(--lx-ink)">'+vm.dias_label+' · '+hh(vm.hora_desde)+'–'+hh(vm.hora_hasta)+' ET</span>'; if(vm.p95_ref) h+=' <span style="color:var(--lx-muted)">· ref p05–p95 '+hh(vm.p95_ref.hora_desde)+'–'+hh(vm.p95_ref.hora_hasta)+' ET</span>'; h+='</div>'; }
+            if(vv && vv.pct_fuera!=null){ if(vv.pct_fuera>0){ h+='<div class="text-xs rounded p-2 mt-1" style="background:rgba(210,153,34,.14);color:#d29922">⚠ tu ventana L2 actual dejaria fuera el <b>'+vv.pct_fuera+'%</b> de los trades del backtest (participacion perdida). Cambiar la ventana es config de L2 — a mano en Estrategias/Activos, no entra en Aplicar.</div>'; } else { h+='<div class="text-xs rounded p-2 mt-1" style="background:rgba(63,185,80,.12);color:#3fb950">✓ tu ventana L2 cubre el 100% de los trades observados.</div>'; } }
+            if(vo && vo.nota) h+='<div class="text-xs mt-1" style="color:var(--lx-muted)">'+vo.nota+'</div>';
             w.innerHTML=h;
           }
           // ---- chips / estado ----
-          function dirty(){ return JSON.stringify(S)!==JSON.stringify(RECO); }
+          function dirty(){ return JSON.stringify(S)!==JSON.stringify(RECO0); }
           function setChips(mode){
             const m=el('lx-mode'); if(mode==='val'){ m.textContent='validado · motor'; m.style.background='rgba(63,185,80,.16)'; m.style.color='#3fb950'; }
-            else { m.textContent='estimación · aprox'; m.style.background='rgba(210,153,34,.18)'; m.style.color='#d29922'; }
+            else { m.textContent='estimacion · aprox'; m.style.background='rgba(210,153,34,.18)'; m.style.color='#d29922'; }
             el('lx-recon').textContent='recon '+D.recon_ok+'/'+D.n;
             const fr=el('lx-frag'); if(D.fragile){ fr.style.display=''; fr.textContent='⚠ '+(D.notes||[]).slice(0,1).join(''); } else fr.style.display='none';
             el('lx-notes').textContent=(D.notes||[]).join(' · ');
           }
-          function showValidated(){ tiles(D.base, D.config); setChips('val'); }
-          function showEstimate(){ tiles(D.base, estimate()); setChips('est'); }
           function refresh(){
             el('lx-v-tp').textContent=money(S.tpV); el('lx-v-sl').textContent=money(-S.slV);
             el('lx-v-be').textContent=S.be?money(S.beV):'—'; el('lx-v-l2').textContent=money(-S.l2); el('lx-v-l3').textContent=money(-S.l3);
             el('lx-alloc').textContent=A.join('/'); el('lx-why').textContent=R.why_alloc||'';
             el('lx-be-note').style.display=S.be?'':'none';
             const d=dirty(); el('lx-recalc').disabled=!d; el('lx-hint').style.display=d?'':'none';
-            legend(); redraw();
-            if(d) showEstimate(); else showValidated();
+            legend(); drawChart();
+            const mode = d?'est':'val';
+            renderTable(mode); setChips(mode);
           }
-          // ---- sliders / toggles ----
-          function rng(id, max, get, set){ const e=el(id); e.min=0; e.max=Math.round(max); e.step=Math.max(1,Math.round(max/200)); e.value=Math.round(get());
-            e.addEventListener('input',()=>{ set(+e.value); refresh(); }); }
-          function initControls(){
+          // ---- LX-1 #2: bind UNA vez (bindOnce) · set de valores idempotente (setValues) ----
+          function setupRng(id, max, set){ const e=el(id); e.min=0; e.max=Math.round(Math.max(1,max)); e.step=Math.max(1,Math.round(max/200));
+            e.addEventListener('input',function(){ set(+e.value); refresh(); }); }
+          function syncDir(){ el('lx-dir').querySelectorAll('button').forEach(function(x){ const on=x.dataset.d===S.dir;
+            x.style.background=on?'var(--lx-scin)':'#21262d'; x.style.color=on?'#fff':'var(--lx-muted)'; }); }
+          function bindOnce(){
             const mfeMax=Math.max(1,D.mfe_max), maeMax=Math.max(1,Math.abs(D.mae_min));
-            rng('lx-r-tp',mfeMax,()=>S.tpV,v=>S.tpV=v); rng('lx-r-be',mfeMax,()=>S.beV,v=>S.beV=v);
-            rng('lx-r-l2',maeMax,()=>S.l2,v=>S.l2=v); rng('lx-r-l3',maeMax,()=>S.l3,v=>S.l3=v);
-            rng('lx-r-sl',maeMax,()=>S.slV,v=>S.slV=v);
-            [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(([id,k])=>{
-              const e=el(id); e.checked=S[k]; e.addEventListener('change',()=>{ S[k]=e.checked; refresh(); }); });
-            ['lx-t-mfe','lx-t-mae','lx-t-cls'].forEach(id=>el(id).addEventListener('change',redraw));
-            el('lx-dir').innerHTML=['both','long','short'].map(x=>`<button data-d="${x}" class="px-2 py-1 rounded text-xs" style="background:${S.dir===x?'var(--lx-scin)':'#21262d'};color:${S.dir===x?'#fff':'var(--lx-muted)'}">${dLbl[x]}</button>`).join(' ');
-            el('lx-dir').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ S.dir=b.dataset.d;
-              el('lx-dir').querySelectorAll('button').forEach(x=>{x.style.background=x.dataset.d===S.dir?'var(--lx-scin)':'#21262d';x.style.color=x.dataset.d===S.dir?'#fff':'var(--lx-muted)';}); refresh(); }));
+            setupRng('lx-r-tp',mfeMax,function(v){S.tpV=v;}); setupRng('lx-r-be',mfeMax,function(v){S.beV=v;});
+            setupRng('lx-r-l2',maeMax,function(v){S.l2=v;}); setupRng('lx-r-l3',maeMax,function(v){S.l3=v;});
+            setupRng('lx-r-sl',maeMax,function(v){S.slV=v;});
+            [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(function(pair){ const id=pair[0], k=pair[1];
+              el(id).addEventListener('change',function(){ S[k]=el(id).checked; refresh(); }); });
+            ['lx-t-mfe','lx-t-mae','lx-t-cls'].forEach(function(id){ el(id).addEventListener('change',drawChart); });
+            el('lx-dir').innerHTML=['both','long','short'].map(function(x){return '<button data-d="'+x+'" class="px-2 py-1 rounded text-xs">'+dLbl[x]+'</button>';}).join(' ');
+            el('lx-dir').querySelectorAll('button').forEach(function(b){ b.addEventListener('click',function(){ S.dir=b.dataset.d; syncDir(); refresh(); }); });
           }
-          el('lx-reset').addEventListener('click',()=>{ Object.assign(S,RECO); initControls(); refresh(); });
-          // ---- RECALCULAR = JOB del motor (números validados) ----
-          function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(r=>r.json()).then(j=>{
+          function setValues(){
+            el('lx-r-tp').value=Math.round(S.tpV); el('lx-r-be').value=Math.round(S.beV);
+            el('lx-r-l2').value=Math.round(S.l2); el('lx-r-l3').value=Math.round(S.l3); el('lx-r-sl').value=Math.round(S.slV);
+            [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(function(pair){ el(pair[0]).checked=S[pair[1]]; });
+            syncDir();
+          }
+          // LX-1 #2: Restablecer SIEMPRE vuelve a RECO0 (+ numeros validados del estudio)
+          el('lx-reset').addEventListener('click',function(){ Object.assign(S,RECO0); VLAST=V0; setValues(); refresh(); });
+          // ---- RECALCULAR = JOB del motor (numeros validados; JAMAS pisa RECO0) ----
+          function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(function(r){return r.json();}).then(function(j){
               if(j.status==='running'){ setTimeout(pollEval,2000); return; }
-              el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false;
-              if(j.status==='done' && j.result){ D.base=j.result.base; D.config=j.result.config; Object.assign(RECO,S); tiles(D.base,D.config); setChips('val'); el('lx-hint').style.display='none'; el('lx-recalc').disabled=true; redraw(); }
+              el('lx-recalc').textContent='Recalcular (motor)';
+              if(j.status==='done' && j.result){
+                VLAST={ crudo:norm(j.result.base), in:norm(j.result.config), oos:norm(j.result.oos) };
+                renderTable('val'); setChips('val'); el('lx-hint').style.display='none';
+                el('lx-recalc').disabled=true;
+              } else { el('lx-recalc').disabled=false; }
             }); }
-          el('lx-recalc').addEventListener('click',()=>{ el('lx-recalc').textContent='Calculando…'; el('lx-recalc').disabled=true;
+          el('lx-recalc').addEventListener('click',function(){ el('lx-recalc').textContent='Calculando…'; el('lx-recalc').disabled=true;
             const ov={sl_usd:S.sl?S.slV:0, tp_usd:S.tp?S.tpV:null, dir:S.dir, l2_usd:S.l2, l3_usd:S.l3};
             if(S.be) ov.be_usd=S.beV; else ov.be_off=true;
             fetch('/ui/strategies/'+SID+'/luxy/evaluar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ov)})
-              .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s})=>{ if(s===202) pollEval(); else { el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false; } }); });
-          initControls(); diag(); winDiag(); refresh();
+              .then(function(r){return r.json().then(function(j){return {s:r.status,j:j};});}).then(function(o){ if(o.s===202) pollEval(); else { el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false; } }); });
+          bindOnce(); setValues(); diag(); winDiag(); refresh();
         })();
         </script>
         {% endif %}
 
-        <!-- Tabla A -->
-        <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
-            <div class="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">Tabla A — métricas</div>
-            <table class="w-full text-sm">
-                <thead><tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
-                    <th class="px-3 py-2">Fila</th><th class="px-3 py-2">Neto</th><th class="px-3 py-2">PF</th><th class="px-3 py-2">Max DD</th><th class="px-3 py-2">Peor</th><th class="px-3 py-2">Particip.</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">n</th>
-                </tr></thead>
-                <tbody>
-                {% for r in A %}
-                <tr class="border-b border-gray-800 last:border-0">
-                    <td class="px-3 py-2 font-medium {% if r.fila=='OOS' %}text-amber-300{% elif r.fila=='In-sample' %}text-emerald-300{% else %}text-gray-300{% endif %}">{{ r.fila }}</td>
-                    <td class="px-3 py-2 font-mono">{% if r.net_usd is not none %}${{ '{:,.0f}'.format(r.net_usd) }}{% else %}—{% endif %}</td>
-                    <td class="px-3 py-2 font-mono">{{ r.pf if r.pf is not none else '—' }}</td>
-                    <td class="px-3 py-2 font-mono">{% if r.max_dd_usd is not none %}${{ '{:,.0f}'.format(r.max_dd_usd) }}{% else %}—{% endif %}</td>
-                    <td class="px-3 py-2 font-mono">{% if r.peor_trade_usd is not none %}${{ '{:,.0f}'.format(r.peor_trade_usd) }}{% else %}—{% endif %}</td>
-                    <td class="px-3 py-2 font-mono">{{ r.participacion_pct if r.participacion_pct is not none else '—' }}%</td>
-                    <td class="px-3 py-2 font-mono">{{ r.wr_pct if r.wr_pct is not none else '—' }}</td>
-                    <td class="px-3 py-2 font-mono text-gray-500">{{ r.n }}</td>
-                </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-        </div>
+        {# LX-1 #4 — Tabla A ESTÁTICA retirada: la tabla reactiva de arriba
+           (#lx-table3) la reemplaza (Crudo/In-sample/OOS por subconjunto,
+           validada por el motor y estimable al mover palancas). La Tabla A
+           aplicaba las palancas a TODA la muestra; el payload conserva
+           `luxy.tabla_a` por si hace falta. #}
 
         <!-- Tabla B -->
         <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
