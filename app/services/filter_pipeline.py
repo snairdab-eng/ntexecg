@@ -368,11 +368,23 @@ class FilterPipeline:
                         "expected": config["expected_symbol"],
                         "received": signal.ticker_received}
 
-        # 1.8 Per-strategy timeframe guardrail (Anexo 08) - opt-in.
+        # 1.8 Per-strategy timeframe guardrail (Anexo 08) — SIEMPRE-ON (Parte C).
+        # Fail-honest: si la señal NO trae timeframe (interval ausente del
+        # payload), el chequeo no se puede verificar → NO bloquea (para no tirar
+        # señales vivas / participación 100%), pero se anota tf_not_verified en
+        # el resultado del nivel para que el operador lo vea. Un timeframe
+        # PRESENTE que no coincide sí bloquea (interval_mismatch), como siempre.
+        tf_not_verified = False
         if config.get("enforce_timeframe_match") and config.get("expected_timeframe"):
-            if _normalize_tf(signal.timeframe) != _normalize_tf(
-                config["expected_timeframe"]
-            ):
+            _sig_tf = _normalize_tf(signal.timeframe)
+            if _sig_tf is None:
+                tf_not_verified = True
+                logger.info(
+                    "interval_guardrail_skipped strategy={} expected_tf={} "
+                    "reason=signal_timeframe_missing (tf_not_verified)",
+                    getattr(strategy, "strategy_id", None),
+                    config["expected_timeframe"])
+            elif _sig_tf != _normalize_tf(config["expected_timeframe"]):
                 return {"outcome": "BLOCK", "reason": "interval_mismatch",
                         "check": "1.8_interval_expected",
                         "expected": config["expected_timeframe"],
@@ -392,7 +404,10 @@ class FilterPipeline:
                 return {"outcome": "BLOCK", "reason": "market_data_not_active",
                         "check": "1.6_bridge_active"}
 
-        return {"outcome": _CONTINUE}
+        result = {"outcome": _CONTINUE}
+        if tf_not_verified:
+            result["tf_not_verified"] = True   # fail-honest: chequeo 1.8 saltado
+        return result
 
     # ───────────────────────────────────────────────────────────────────────
     # LEVEL 2 — Temporal context

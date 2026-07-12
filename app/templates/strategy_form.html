@@ -163,18 +163,12 @@
         <!-- Sección 6 — Guardarraíles (Anexo 08) -->
         <fieldset class="space-y-3">
             <legend class="text-sm uppercase tracking-wider text-gray-500 mb-2">Guardarraíles (Anexo 08)</legend>
-            <p class="text-xs text-gray-600">Validaciones de integridad por estrategia. Apagadas = no se aplican.</p>
+            <p class="text-xs text-gray-600">Validaciones de integridad por estrategia.</p>
 
-            <label class="flex items-center gap-2 text-sm text-gray-300">
-                <input type="checkbox" name="enforce_symbol_match" value="1"
-                       class="rounded bg-gray-800 border-gray-700">
-                Rechazar si el ticker recibido ≠ activo base (symbol_mismatch)
-            </label>
-            <label class="flex items-center gap-2 text-sm text-gray-300">
-                <input type="checkbox" name="enforce_timeframe_match" value="1"
-                       class="rounded bg-gray-800 border-gray-700">
-                Rechazar si el interval ≠ timeframe (interval_mismatch)
-            </label>
+            <div class="text-xs text-gray-400 bg-gray-800/40 border border-gray-800 rounded px-3 py-2 space-y-1">
+                <div>✓ <b class="text-gray-300">symbol_mismatch</b> e <b class="text-gray-300">interval_mismatch</b> — <span class="text-emerald-400">siempre activos</span>, no configurables (seguridad de ruteo).</div>
+                <div class="text-gray-600">Rechaza toda entrada cuyo ticker ≠ activo base o cuyo interval ≠ timeframe.</div>
+            </div>
 
             <div class="grid grid-cols-2 gap-3">
                 <div>

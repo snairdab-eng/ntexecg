@@ -60,31 +60,12 @@ TOTAL_MICROS = 10
 _RANK_STOP, _RANK_BE, _RANK_TP = 0, 1, 2
 _REASON = {_RANK_STOP: "stop", _RANK_BE: "breakeven", _RANK_TP: "tp"}
 
-# R-T7 — UNA sola partición de sesiones/zonas horarias (en tiempo de New York),
-# a la granularidad de la receta de Luxy. FUENTE ÚNICA: el estudio construye
-# `reco.zones` de aquí y el front renderiza esas filas tal cual (front == motor,
-# no re-particiona). Extiende el `sesion_et` grueso del motor (RTH/tarde/asia/
-# europa) a estas 6 zonas con su rango ET.
-LUXY_ZONES = [
-    ("Asia", "19:00–01:59 ET", [19, 20, 21, 22, 23, 0, 1]),
-    ("Europa/Londres", "02:00–07:59 ET", [2, 3, 4, 5, 6, 7]),
-    ("Apertura US", "08:00–09:59 ET", [8, 9]),
-    ("NY media", "10:00–11:59 ET", [10, 11]),
-    ("NY tarde", "12:00–15:59 ET", [12, 13, 14, 15]),
-    ("Cierre US", "16:00–18:59 ET", [16, 17, 18]),
-]
-_DAY_ES = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
-           4: "Viernes", 5: "Sábado", 6: "Domingo"}
-
-
-def zone_of_hour(hr: int | None) -> str | None:
-    """Zona de la partición ÚNICA (R-T7) para una hora ET. None si no mapea."""
-    if hr is None:
-        return None
-    for name, _et, hours in LUXY_ZONES:
-        if hr in hours:
-            return name
-    return None
+# R-T7 — UNA sola partición de sesiones/zonas horarias (en tiempo de New York):
+# la FUENTE canónica es `scripts.sesiones_et` (extraída en L7a). Luxy la CONSUME;
+# el estudio construye `reco.zones`/`zones_partition` de aquí y el front las
+# renderiza tal cual (front == motor, no re-particiona). Se re-exportan para no
+# romper los `mrl.LUXY_ZONES` / `mrl.zone_of_hour` de callers y tests.
+from scripts.sesiones_et import LUXY_ZONES, _DAY_ES, zone_of_hour  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +552,7 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
                cancel_after_s: float | None = CANCEL_AFTER_MAX_S,
                keys5=None, idx5=None, bars5=None,
                has_intrabar: bool = True,
-               fecha: str | None = None) -> dict:
+               fecha: str | None = None, off: int = 0) -> dict:
     """Estudio Luxy completo (Tablas A/B) sobre los `trades` enriquecidos del
     master. `keys5/idx5/bars5` = HOLC del motor (para el intrabar del BE, R-T2);
     ausentes o has_intrabar=False → estudio DEGRADADO/limitado honesto.
@@ -681,6 +662,14 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
     if intrabar and levers_in and sts:
         dashboard = _dashboard_payload(sts, by_number, levers_in, ppt,
                                        crudo, fila_in)
+        # L7a — Ventana de operación + rango/duración por lado NATIVAS en Luxy:
+        # REUSO del helper de v1 (RIES-W `_listado_crudo`/`_ventana_operacion`)
+        # sobre TODO el listado crudo + el offset ET del enriched → paridad
+        # numérica exacta con v1, cero duplicación. v1 muere en L7b.
+        from scripts.nt_riesgo import _listado_crudo
+        _lc = _listado_crudo(trades, off)
+        dashboard["ventana_operacion"] = _lc["ventana_operacion"]
+        dashboard["duracion_h_por_lado"] = _lc["duracion_h_por_lado"]
 
     return {
         "version": 3,               # v3: BE same_bar recortado (walk aditivo)
@@ -778,8 +767,10 @@ def reconcile_trade_vs_v1(st: SimTrade, legs: tuple, b_pts: float | None,
 # ---------------------------------------------------------------------------
 
 def _load_master(base_dir):
-    """(manifest, trades enriquecidos, ppt, keys5, idx5, bars5, has_intrabar)
-    del master integrado. Degradado / sin HOLC → has_intrabar False."""
+    """(manifest, trades enriquecidos, ppt, keys5, idx5, bars5, has_intrabar,
+    off) del master integrado. `off` = offset ET del enriched (RIES-W: la
+    ventana de operación lo necesita para calcar `hora_et`; paridad con v1).
+    Degradado / sin HOLC → has_intrabar False y off 0."""
     import json
     from scripts.lab_analyze import (
         detect_tz_offset, enrich_with_bars, load_holc, parse_luxalgo_csv,
@@ -792,6 +783,7 @@ def _load_master(base_dir):
     trades = parse_luxalgo_csv(base_dir / "master.csv")
     keys5 = idx5 = bars5 = None
     has_intrabar = False
+    off = 0
     if not degradado:
         try:
             bars5 = load_holc(activo, "5m")
@@ -802,7 +794,8 @@ def _load_master(base_dir):
             has_intrabar = True
         except Exception:
             has_intrabar = False
-    return man, trades, ppt, keys5, idx5, bars5, has_intrabar
+            off = 0
+    return man, trades, ppt, keys5, idx5, bars5, has_intrabar, off
 
 
 def _overrides_to_levers(base: dict, o: dict, atr_med, ppt) -> dict:
@@ -863,7 +856,7 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
 
     if cancel_after_s is not None:
         cancel_after_s = min(float(cancel_after_s), CANCEL_AFTER_MAX_S)
-    _man, trades, ppt, keys5, idx5, bars5, intrabar = _load_master(
+    _man, trades, ppt, keys5, idx5, bars5, intrabar, _off = _load_master(
         Path(motor_dir) / clave)
     split_in_out(trades, oos)
     sts = from_trades(trades, ppt)
@@ -919,12 +912,13 @@ def run_for_clave(clave: str, motor_dir, *, oos: float = 0.3,
     from pathlib import Path
 
     base_dir = Path(motor_dir) / clave
-    man, trades, ppt, keys5, idx5, bars5, has_intrabar = _load_master(base_dir)
+    man, trades, ppt, keys5, idx5, bars5, has_intrabar, off = _load_master(
+        base_dir)
     fecha = fecha or date.today().isoformat()
 
     study = luxy_study(trades, ppt, oos=oos, cancel_after_s=cancel_after_s,
                        keys5=keys5, idx5=idx5, bars5=bars5,
-                       has_intrabar=has_intrabar, fecha=fecha)
+                       has_intrabar=has_intrabar, fecha=fecha, off=off)
     study["clave"] = clave
     study["master"] = {"integrado": man.get("integrado"),
                        "sha256": (man.get("export") or {}).get("sha256_master"),

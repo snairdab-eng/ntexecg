@@ -484,16 +484,10 @@
         <div class="border-t border-gray-800 mt-3 pt-3">
             <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Guardarraíles (Anexo 08)</div>
             <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/guardrails" class="space-y-3">
-                <label class="flex items-center gap-2 text-gray-300">
-                    <input type="checkbox" name="enforce_symbol_match" value="1"
-                           class="rounded bg-gray-800 border-gray-700" {% if g.get('enforce_symbol_match') %}checked{% endif %}>
-                    Rechazar si el ticker ≠ activo base (symbol_mismatch)
-                </label>
-                <label class="flex items-center gap-2 text-gray-300">
-                    <input type="checkbox" name="enforce_timeframe_match" value="1"
-                           class="rounded bg-gray-800 border-gray-700" {% if g.get('enforce_timeframe_match') %}checked{% endif %}>
-                    Rechazar si el interval ≠ timeframe (interval_mismatch)
-                </label>
+                <div class="text-xs text-gray-400 bg-gray-800/40 border border-gray-800 rounded px-3 py-2 space-y-1">
+                    <div>✓ <b class="text-gray-300">symbol_mismatch</b> e <b class="text-gray-300">interval_mismatch</b> — <span class="text-emerald-400">siempre activos</span>, no configurables (seguridad de ruteo).</div>
+                    <div class="text-gray-600">Rechaza toda entrada cuyo ticker ≠ activo base o cuyo interval ≠ timeframe. El valor persistido del toggle viejo se ignora.</div>
+                </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div>
                         <label class="block text-xs text-gray-400 mb-1">Antigüedad máx. entrada (seg)</label>
@@ -512,184 +506,6 @@
             </form>
         </div>
 
-        {% set flt = (profile.pipeline_config_json or {}).get('filters', {}) %}
-        <div class="border-t border-gray-800 mt-3 pt-3"
-             x-data="{ res: null, err: null, loading: false,
-                       fname(n){ return {volume_relative:'Volumen relativo', atr_normalized:'ATR normalizado', vwap_position:'Posición VWAP', time_of_day:'Hora de sesión'}[n] || n; },
-                       async probar() {
-                         this.loading = true; this.err = null; this.res = null;
-                         const root = this.$el, q = new URLSearchParams();
-                         for (const f of ['volume_relative','atr_normalized','vwap_position','time_of_day']) {
-                           const cb = root.querySelector('[name=&quot;f_'+f+'_enabled&quot;]');
-                           const w = root.querySelector('[name=&quot;f_'+f+'_weight&quot;]');
-                           q.set('f_'+f+'_enabled', cb && cb.checked ? '1' : '0');
-                           if (w && w.value) q.set('f_'+f+'_weight', w.value);
-                         }
-                         const sm = root.querySelector('[name=&quot;score_minimum&quot;]');
-                         if (sm && sm.value) q.set('score_minimum', sm.value);
-                         try {
-                           const r = await fetch('/ui/strategies/{{ strategy.strategy_id }}/probar-filtros?' + q.toString());
-                           const j = await r.json();
-                           if (!r.ok) { this.err = j.error || ('error ' + r.status); }
-                           else { this.res = j; }
-                         } catch (e) { this.err = String(e); }
-                         this.loading = false;
-                       } }">
-            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Filtros de calidad — Nivel 4 (Fase 5)</div>
-            <p class="text-xs text-gray-500 mb-3">Opt-in. Sin filtros activos, el score es <b>100</b> (pasa). Con uno o más activos, el score es el promedio ponderado (0–100) y se compara contra el <b>score mínimo</b>. El peso es relativo (cualquier escala).</p>
-
-            <!-- EST-2 — evidencia informativa del Lab (SOLO LECTURA); activar un
-                 filtro en producción es decisión del operador. -->
-            {% if lab_evidence %}
-            <div class="text-xs mb-3 rounded px-2 py-1.5 bg-gray-800/40 border border-gray-800 text-gray-500">
-                <span class="text-gray-400">Evidencia informativa del Lab</span> — activar un filtro en producción es
-                decisión del operador; el edge base viene de LuxAlgo (pivote).
-                {% if lab_evidence.lab_link %}
-                <a href="{{ lab_evidence.lab_link }}" class="text-blue-400 hover:text-blue-300 whitespace-nowrap">ver estudio en el Lab →</a>
-                {% endif %}
-                {% if not lab_evidence.available %}
-                <span class="text-amber-500">· sin caché — recalcula en el Lab</span>
-                {% elif lab_evidence.stale %}
-                <span class="text-amber-500">· ⚠ caché vieja vs CSV — recalcula (evidencia de {{ lab_evidence.cache_date }})</span>
-                {% endif %}
-            </div>
-            {% endif %}
-            <!-- EST-1 — última evaluación real que llegó a L4 (evidencia de que el filtro mide) -->
-            <div class="text-xs mb-3 rounded px-2 py-1 bg-gray-800/60 border border-gray-700 text-gray-300">
-                {% if ultima_eval %}
-                última señal: <b class="text-gray-100">score {{ ultima_eval.score }}</b> (umbral {{ ultima_eval.umbral }}) — {{ ultima_eval.hace }}{% if ultima_eval.quality %} · calidad {{ ultima_eval.quality }}{% endif %}{% if ultima_eval.outcome == 'BLOCK' %} · <span class="text-orange-400">bloqueada ({{ ultima_eval.block_reason }})</span>{% endif %}
-                {% else %}
-                sin evaluaciones aún{% if not filters_active_now %} (filtros inactivos → score 100 automático){% endif %}
-                {% endif %}
-            </div>
-            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/filters" class="space-y-2">
-                {% for name, label, desc in [
-                    ('volume_relative', 'Volumen relativo', 'volumen de la barra vs promedio de 20'),
-                    ('atr_normalized', 'ATR normalizado', 'volatilidad reciente vs su baseline'),
-                    ('vwap_position', 'Posición vs VWAP', 'precio vs VWAP, con signo por dirección'),
-                    ('time_of_day', 'Hora de sesión', 'penaliza apertura/lunch/cierre') ] %}
-                {% set f = flt.get(name, {}) %}
-                <div class="flex items-center gap-3">
-                    <label class="flex items-center gap-2 text-gray-300 flex-1">
-                        <input type="checkbox" name="f_{{ name }}_enabled" value="1"
-                               class="rounded bg-gray-800 border-gray-700" {% if f.get('enabled') %}checked{% endif %}>
-                        <span>{{ label }} <span class="text-gray-600 text-xs">— {{ desc }}</span></span>
-                    </label>
-                    <div class="w-24">
-                        <input name="f_{{ name }}_weight" type="number" step="0.1" min="0" placeholder="peso"
-                               value="{{ f.get('weight', 1.0) }}"
-                               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-sm">
-                    </div>
-                </div>
-                {% if lab_evidence and lab_evidence.available %}
-                {% set v = lab_evidence.verdicts.get(name) %}
-                {% if v %}
-                <div class="text-xs text-gray-500 ml-6 -mt-1 mb-1">
-                    {% if v.state == 'sin_datos' %}
-                    Lab: sin OOS suficiente para veredicto
-                    {% else %}
-                    Lab:{% if v.d_net_out is not none %} Δnet OOS {{ '+' if v.d_net_out >= 0 else '−' }}${{ (v.d_net_out|abs)|round|int }}{% endif %}{% if v.pf_base_out is not none and v.pf_kept_out is not none %}{% if v.d_net_out is not none %},{% endif %} PF {{ v.pf_base_out }}→{{ v.pf_kept_out }}{% endif %}
-                    {% if v.state == 'candidato' %}<span class="text-emerald-500">(candidato — valida antes de activar)</span>{% else %}<span class="text-gray-600">(no aporta)</span>{% endif %}
-                    {% if v.low_n_out %}<span class="text-gray-600">· muestra OOS chica</span>{% endif %}
-                    {% if lab_evidence.stale %}<span class="text-amber-600">· caché vieja</span>{% endif %}
-                    {% endif %}
-                </div>
-                {% endif %}
-                {% endif %}
-                {% endfor %}
-                {% set pc_smin = (profile.pipeline_config_json or {}).get('score_minimum') if profile else None %}
-                <div class="flex items-center gap-3 pt-2 border-t border-gray-800">
-                    <label class="text-gray-300 flex-1 text-sm">Score mínimo (override de esta estrategia)
-                        <span class="text-gray-600 text-xs">— 1..100; vacío = hereda del global/activo</span>
-                    </label>
-                    <div class="w-24">
-                        <input name="score_minimum" type="number" min="1" max="100" placeholder="hereda"
-                               value="{{ pc_smin if pc_smin is not none else '' }}"
-                               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-100 text-sm">
-                    </div>
-                </div>
-                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm mt-1">Guardar filtros</button>
-            </form>
-            <!-- EST-1 — probar ahora (read-only): score con las barras actuales, sin guardar ni emitir señal -->
-            <div class="mt-3 pt-3 border-t border-gray-800">
-                <button type="button" @click="probar()" :disabled="loading"
-                        class="bg-gray-700 hover:bg-gray-600 text-gray-100 px-3 py-1.5 rounded text-sm disabled:opacity-50">
-                    <span x-show="!loading">🧪 Probar ahora <span class="text-gray-400">(barras actuales, sin guardar)</span></span>
-                    <span x-show="loading">probando…</span>
-                </button>
-                <div x-show="err" class="text-xs text-orange-400 mt-2" x-text="err"></div>
-                <template x-if="res">
-                    <div class="mt-2 text-sm">
-                        <div class="text-gray-200">score de prueba: <b x-text="res.score"></b>
-                            <span class="text-gray-500">(umbral <span x-text="res.score_minimum"></span>, <span x-text="res.n_bars + ' barras de ' + res.data_symbol"></span>) —</span>
-                            <span :class="res.passed ? 'text-green-400' : 'text-orange-400'"
-                                  x-text="res.passed ? 'pasaría' : 'bloquearía'"></span>
-                        </div>
-                        <div x-show="!res.measured" class="text-xs text-gray-500">sin filtros activos → score 100 automático</div>
-                        <table x-show="res.filters.length" class="text-xs mt-1 w-full max-w-md">
-                            <template x-for="f in res.filters" :key="f.name">
-                                <tr class="text-gray-400 border-t border-gray-800/60">
-                                    <td class="py-0.5" x-text="fname(f.name)"></td>
-                                    <td class="py-0.5 text-right" x-text="'peso ' + f.weight"></td>
-                                    <td class="py-0.5 text-right text-gray-200" x-text="f.points + '/100'"></td>
-                                </tr>
-                            </template>
-                        </table>
-                    </div>
-                </template>
-            </div>
-        </div>
-
-        {% set rg = (profile.pipeline_config_json or {}).get('regime', {}) %}
-        <div class="border-t border-gray-800 mt-3 pt-3">
-            <div class="text-xs uppercase tracking-wider text-gray-500 mb-2">Régimen de mercado — Nivel 4 (Fase 6)</div>
-            <p class="text-xs text-gray-500 mb-3">Opt-in. Bloquea la entrada si el régimen actual (detectado en un TF superior) no está en los permitidos. Régimen <b>unknown</b> (datos insuficientes) nunca bloquea.</p>
-            <!-- EST-1 — régimen 1h ACTUAL del activo (evidencia de que el toggle mide algo real) -->
-            {% if regime_now is not none %}
-            <div class="text-xs mb-3 rounded px-2 py-1 bg-gray-800/60 border border-gray-700 text-gray-300">
-                régimen {{ regime_now.timeframe }} actual ({{ regime_now.data_symbol }}):
-                {% if regime_now.sufficient %}
-                <b class="text-gray-100">{{ regime_now.label }}</b>
-                <span class="text-gray-500">(ER {{ '%.2f'|format(regime_now.er) }}, {{ regime_now.n_bars }} barras)</span>
-                {% else %}
-                <b class="text-gray-400">unknown</b>
-                <span class="text-gray-500">— barras insuficientes (N&lt;{{ regime_now.min_bars }}; hay {{ regime_now.n_available }})</span>
-                {% endif %}
-            </div>
-            {% else %}
-            <div class="text-xs mb-3 text-gray-600">régimen actual: sin bridge de datos conectado.</div>
-            {% endif %}
-            <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/regime" class="space-y-3">
-                <label class="flex items-center gap-2 text-gray-300">
-                    <input type="checkbox" name="regime_enabled" value="1"
-                           class="rounded bg-gray-800 border-gray-700" {% if rg.get('enabled') %}checked{% endif %}>
-                    Activar filtro de régimen
-                </label>
-                <div>
-                    <label class="block text-xs text-gray-400 mb-1">Timeframe del régimen</label>
-                    {% set rtf = rg.get('timeframe', '1h') %}
-                    <select name="regime_timeframe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-gray-100 text-sm">
-                        {% for tf in ['1h','4h'] %}
-                        <option value="{{ tf }}" {% if rtf == tf %}selected{% endif %}>{{ tf }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div>
-                    <div class="text-xs text-gray-400 mb-1">Regímenes permitidos</div>
-                    {% set allowed = rg.get('allowed_regimes', []) %}
-                    <div class="flex flex-wrap gap-4">
-                        {% for r, lbl in [('trending_bull','Tendencia alcista'),('trending_bear','Tendencia bajista'),('ranging','Rango / lateral')] %}
-                        <label class="flex items-center gap-2 text-gray-300 text-sm">
-                            <input type="checkbox" name="regime_allow_{{ r }}" value="1"
-                                   class="rounded bg-gray-800 border-gray-700" {% if r in allowed %}checked{% endif %}>
-                            {{ lbl }}
-                        </label>
-                        {% endfor %}
-                    </div>
-                </div>
-                <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar régimen</button>
-            </form>
-        </div>
         {% else %}
         <p class="text-gray-600">Sin perfil de configuración.</p>
         {% endif %}
@@ -1001,6 +817,11 @@
               <div id="lx-ts-why" class="text-xs mt-1" style="color:var(--lx-muted)"></div>
             </div>
           </div>
+
+          <!-- L7a — Ventana de operación NATIVA en Luxy (rango/duración por lado
+               + ventana mínima de cobertura + comparación con la L2 vigente).
+               Paridad numérica con Riesgo v1 (reusa el helper RIES-W). -->
+          <div id="lx-window" class="rounded p-3 mt-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)"></div>
         </div>
         <script>
         (function(){
@@ -1090,6 +911,22 @@
             el('lx-ts').innerHTML=(ts.buckets||[]).map(b=>`<div class="flex justify-between gap-2"><span style="color:var(--lx-muted)">${b.range}m</span><span class="font-mono" style="color:${b.net<0?'#f85149':'var(--lx-muted)'}">${b.n}·${money(b.net)}</span></div>`).join('');
             el('lx-ts-why').textContent=ts.why||'';
           }
+          // ---- L7a: ventana de operación (rango por lado + cobertura) ----
+          function winDiag(){
+            const w=el('lx-window'); if(!w) return;
+            const vo=D.ventana_operacion, dl=D.duracion_h_por_lado, vv=D.ventana_vigente;
+            if(!vo && !dl){ w.style.display='none'; return; }
+            const hh=h=> (h==null?'—':String(h).padStart(2,'0')+':00');
+            const durL=(lbl,r)=> r? `${lbl} p50 <b style="color:var(--lx-ink)">${r.p50_h}h</b>·p90 <b style="color:var(--lx-ink)">${r.p90_h}h</b> <span style="color:var(--lx-muted)">(${r.min_h}–${r.max_h}h, n=${r.n})</span>` : `${lbl} <span style="color:var(--lx-muted)">— sin muestra</span>`;
+            const rngL=(lbl,r)=> r? `${lbl} <b style="color:var(--lx-ink)">${r.min}–${r.max}h</b> <span style="color:var(--lx-muted)">(p05–p95 ${r.p05}–${r.p95}, n=${r.n})</span>` : `${lbl} <span style="color:var(--lx-muted)">— sin muestra</span>`;
+            let h='<div class="text-xs uppercase tracking-wide mb-1" style="color:var(--lx-muted)">⏰ Ventana de operación <span style="text-transform:none">(cobertura — participación 100%)</span></div>';
+            if(dl){ h+=`<div class="text-xs mb-1" style="color:var(--lx-ink)"><b>Duración por lado:</b> ${durL('largos',dl.long)} · ${durL('cortos',dl.short)} <span style="color:var(--lx-muted)">— topo cancel_after 3600s (1h)</span></div>`; }
+            if(vo && vo.rango_horario_et){ const r=vo.rango_horario_et; h+=`<div class="text-xs mb-1" style="color:var(--lx-ink)"><b>Rango horario de entradas (ET):</b> ${rngL('total',r.total)} · ${rngL('largos',r.long)} · ${rngL('cortos',r.short)}</div>`; }
+            if(vo && vo.ventana_minima_cobertura){ const vm=vo.ventana_minima_cobertura; h+=`<div class="text-xs mb-1"><b style="color:var(--lx-green)">Ventana mínima de cobertura (100%):</b> <span style="color:var(--lx-ink)">${vm.dias_label} · ${hh(vm.hora_desde)}–${hh(vm.hora_hasta)} ET</span>`; if(vm.p95_ref) h+=` <span style="color:var(--lx-muted)">· ref p05–p95 ${hh(vm.p95_ref.hora_desde)}–${hh(vm.p95_ref.hora_hasta)} ET</span>`; h+='</div>'; }
+            if(vv && vv.pct_fuera!=null){ if(vv.pct_fuera>0){ h+=`<div class="text-xs rounded p-2 mt-1" style="background:rgba(210,153,34,.14);color:#d29922">⚠ tu ventana L2 actual dejaría fuera el <b>${vv.pct_fuera}%</b> de los trades del backtest (participación perdida). Cambiar la ventana es config de L2 — a mano en Estrategias/Activos, no entra en Aplicar.</div>`; } else { h+=`<div class="text-xs rounded p-2 mt-1" style="background:rgba(63,185,80,.12);color:#3fb950">✓ tu ventana L2 cubre el 100% de los trades observados.</div>`; } }
+            if(vo && vo.nota) h+=`<div class="text-xs mt-1" style="color:var(--lx-muted)">${vo.nota}</div>`;
+            w.innerHTML=h;
+          }
           // ---- chips / estado ----
           function dirty(){ return JSON.stringify(S)!==JSON.stringify(RECO); }
           function setChips(mode){
@@ -1137,7 +974,7 @@
             if(S.be) ov.be_usd=S.beV; else ov.be_off=true;
             fetch('/ui/strategies/'+SID+'/luxy/evaluar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ov)})
               .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s})=>{ if(s===202) pollEval(); else { el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false; } }); });
-          initControls(); diag(); refresh();
+          initControls(); diag(); winDiag(); refresh();
         })();
         </script>
         {% endif %}

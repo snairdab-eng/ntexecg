@@ -1226,6 +1226,7 @@ async def strategy_detail(
 
     # L4 — panel de Perfiles (read-only) sobre el reparto derivado del estudio.
     perfiles_panel = None
+    _cfg = None
     try:
         from app.services.config_resolver import ConfigResolver
         _cfg = await ConfigResolver().resolve(
@@ -1233,6 +1234,26 @@ async def strategy_detail(
         perfiles_panel = _perfiles_panel(strategy, _cfg, luxy_study_data)
     except Exception:
         perfiles_panel = None
+
+    # L7a — Ventana de operación de Luxy vs la ventana L2 VIGENTE de la
+    # estrategia (participación perdida). REUSA `_pct_trades_fuera` de v1 sobre
+    # las `muestras` persistidas — cero recomputación del motor. Solo informa
+    # (no entra en Aplicar; cambiar la ventana es config sensible de L2).
+    try:
+        _dash = (luxy_study_data or {}).get("dashboard") or {}
+        _vo = _dash.get("ventana_operacion")
+        if _vo:
+            import app.web.routes_riesgo as rr
+            from app.web.routes_assets import readable_window
+            _scfg = (_cfg or {}).get("session_config_json")
+            _pct = rr._pct_trades_fuera(_scfg, _vo.get("muestras") or [])
+            _dash["ventana_vigente"] = {
+                "window": readable_window(_scfg),
+                "pct_fuera": _pct,
+                "cobertura_ok": (_pct == 0.0),
+            }
+    except Exception:
+        pass
 
     # L5 — badge de deriva de la config viva frente a la reco IN-SAMPLE de Luxy
     # (refleja también la aplicación hecha desde Luxy).

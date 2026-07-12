@@ -184,12 +184,22 @@ class ConfigResolver:
             )
             strategy_profile = result.scalar_one_or_none()
 
+            # Parte C — the routing-safety guardrails (symbol_mismatch /
+            # interval_mismatch) are SIEMPRE-ON. A persisted enforce_*=False in
+            # pipeline_config_json is deliberately ignored: the UI toggle was
+            # removed and the check can no longer be disabled. This lives in the
+            # resolver (not the pipeline), so the opt-in filter_pipeline unit
+            # tests that pass config explicitly stay intact.
+            config["enforce_symbol_match"] = True
+            config["enforce_timeframe_match"] = True
+
             if strategy_profile:
                 guardrails = (strategy_profile.pipeline_config_json or {}).get(
                     "guardrails", {})
                 if isinstance(guardrails, dict):
-                    for _k in ("enforce_symbol_match", "enforce_timeframe_match",
-                               "signal_max_age_entry_seconds",
+                    # Staleness thresholds remain per-strategy configurable; the
+                    # enforce_* toggles above are forced and no longer read here.
+                    for _k in ("signal_max_age_entry_seconds",
                                "signal_max_age_exit_seconds"):
                         if guardrails.get(_k) is not None:
                             config[_k] = guardrails[_k]

@@ -400,6 +400,57 @@ async def test_luxy_evaluar_parity_real(
 
 
 # ---------------------------------------------------------------------------
+# L7a — ventana de operación NATIVA en Luxy (paridad numérica con v1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.asyncio
+async def test_luxy_ventana_paridad_v1_real(
+    client: AsyncClient, dirs: Path, db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La ventana de operación de Luxy (rango/duración POR LADO + cobertura) es
+    NUMÉRICAMENTE IGUAL a la de v1: Luxy reusa el mismo helper RIES-W
+    (`nt_riesgo._listado_crudo`) sobre el mismo listado crudo + offset ET, sin
+    duplicar lógica. Además la ruta inyecta la comparación con la ventana L2
+    vigente y el front expone el panel nativo."""
+    import scripts.mr_luxy as mrl
+    import scripts.nt_riesgo as ntr
+    import app.web.routes_riesgo as rr
+    monkeypatch.setenv("HOLC_DIR", "NINJATRADER/HOLC")
+    await _mk_strategy(db, "ES5m_Vent", "ES")
+    csv_real = Path(sorted(_ES_CSV)[-1])
+    r = await client.post(
+        "/ui/strategies/ES5m_Vent/integrar",
+        files={"file": (csv_real.name, csv_real.read_bytes(), "text/csv")})
+    clave = r.json()["clave"]
+
+    study = mrl.run_for_clave(clave, rr.MOTOR_DIR)
+    dash = study["dashboard"]
+    assert dash is not None                        # ES tiene HOLC → intrabar
+
+    # v1 INDEPENDIENTE: recarga el master y llama al helper RIES-W directo.
+    base_dir = rr.MOTOR_DIR / clave
+    _man, trades, _ppt, _k, _i, _b, has_intrabar, off = mrl._load_master(base_dir)
+    assert has_intrabar and isinstance(off, int)   # master enriquecido (offset ET)
+    lc = ntr._listado_crudo(trades, off)
+
+    # paridad exacta (mismo helper, mismos trades, mismo offset)
+    assert dash["ventana_operacion"] == lc["ventana_operacion"]
+    assert dash["duracion_h_por_lado"] == lc["duracion_h_por_lado"]
+    # el rango POR LADO existe (largos/cortos) — el dato que dimensiona el topo
+    et = dash["ventana_operacion"]["rango_horario_et"]
+    assert "long" in et and "short" in et
+
+    # la ruta expone el panel nativo + inyecta la comparación con la L2 vigente
+    page = await client.get("/ui/strategies/ES5m_Vent")
+    assert page.status_code == 200
+    assert 'id="lx-window"' in page.text
+    assert '"ventana_operacion"' in page.text
+    assert '"ventana_vigente"' in page.text
+
+
+# ---------------------------------------------------------------------------
 # Riesgo v1 intacta (regresión)
 # ---------------------------------------------------------------------------
 

@@ -458,11 +458,12 @@ async def test_update_guardrails_on_detail(
     assert g.get("enforce_timeframe_match") is None
     assert g.get("signal_max_age_entry_seconds") == 90
 
-    # Detail page reflects the saved value (checkbox checked + number value)
+    # Parte C — el toggle enforce salió de la UI (guardarraíl SIEMPRE-ON);
+    # el valor persiste igual pero ya no hay checkbox para (des)activarlo.
     page = await client.get("/ui/strategies/ug_strat")
     assert page.status_code == 200
-    assert 'name="enforce_symbol_match" value="1"' in page.text
-    assert 'checked' in page.text
+    assert 'name="enforce_symbol_match"' not in page.text
+    assert "siempre activos" in page.text
 
     # Clearing all removes the guardrails key
     resp = await client.post("/ui/strategies/ug_strat/guardrails", data={})
@@ -551,10 +552,10 @@ async def test_update_filters_persists_and_cleans(
     assert (row.pipeline_config_json or {}).get(
         "guardrails", {}).get("enforce_symbol_match") is True
 
-    # Detail Config tab renders the filter checkboxes
+    # Parte C — el form de filtros salió de la UI (el endpoint/servicio siguen)
     page = await client.get("/ui/strategies/flt_strat")
     assert page.status_code == 200
-    assert 'name="f_volume_relative_enabled"' in page.text
+    assert 'name="f_volume_relative_enabled"' not in page.text
 
     # No filter enabled → "filters" key removed (scorer → 100), guardrails kept
     resp = await client.post("/ui/strategies/flt_strat/filters", data={
@@ -596,9 +597,10 @@ async def test_update_regime_persists_and_cleans(
     # unrelated keys survive the merge
     assert (row.pipeline_config_json or {}).get("filters") == {"x": 1}
 
+    # Parte C — el form de régimen salió de la UI (el endpoint sigue)
     page = await client.get("/ui/strategies/rg_strat")
     assert page.status_code == 200
-    assert 'name="regime_enabled"' in page.text
+    assert 'name="regime_enabled"' not in page.text
 
     # Enabled but no regime allowed → gate removed (would block nothing)
     resp = await client.post("/ui/strategies/rg_strat/regime", data={
