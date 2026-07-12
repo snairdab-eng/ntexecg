@@ -463,17 +463,32 @@ def retencion_oos(oos: dict, crudo_plus: dict) -> dict:
             "pct": pct, "muestra_chica": n_oos < RETENCION_N_MIN, "n_oos": n_oos}
 
 
-def muestra_banner(n_total: int, n_simulable: int):
-    """Nota de muestra (LX-3b): trades fuera de la cobertura HOLC almacenada en
-    NTEXECG. None si toda la muestra es simulable (n_simulable == n_total). El
-    HOLC vive en NTEXECG, NO viaja en la lista: por eso 'cobertura almacenada'.
-    (La distinción fina cola/inicio con el manifest llega en LX-4.)"""
+def muestra_banner(n_total: int, n_simulable: int, holc_meta: dict | None = None):
+    """Nota de muestra: trades fuera de la cobertura HOLC almacenada en NTEXECG.
+    None si toda la muestra es simulable (n_simulable == n_total). El HOLC vive
+    en NTEXECG, NO viaja en la lista.
+
+    LX-4 — con `holc_meta` (bloque `holc` del manifest) distingue la **cola
+    descubierta** (posterior a la última barra cosida) de los **previos al inicio
+    del almacén**, e indica la acción (reintegrar cose la cola)."""
     fuera = int(n_total) - int(n_simulable)
     if fuera <= 0:
         return None
+    hm = holc_meta or {}
+    inicio = int(hm.get("sin_cobertura") or 0)
+    inicio = min(inicio, fuera)
+    cola = fuera - inicio
+    last = (hm.get("stitch") or {}).get("last_stitched") or hm.get("ultima_barra")
+    partes = []
+    if cola:
+        partes.append(f"{cola} en la cola descubierta"
+                      + (f" desde {last}" if last else ""))
+    if inicio:
+        partes.append(f"{inicio} previos al inicio del almacén")
+    detalle = "; ".join(partes) if partes else str(fuera)
     return (f"{fuera} de {n_total} trades fuera de la cobertura HOLC almacenada "
-            f"en NTEXECG (cola posterior a la última barra, o previos al inicio) "
-            f"— Crudo+ los excluye de la simulación.")
+            f"en NTEXECG ({detalle}) — Crudo+ los excluye de la simulación. "
+            f"Reintegra la lista para actualizar la cobertura.")
 
 
 def _entry_hour_et(tr, off) -> int:
@@ -619,7 +634,8 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
                cancel_after_s: float | None = CANCEL_AFTER_MAX_S,
                keys5=None, idx5=None, bars5=None,
                has_intrabar: bool = True,
-               fecha: str | None = None, off: int = 0) -> dict:
+               fecha: str | None = None, off: int = 0,
+               holc_meta: dict | None = None) -> dict:
     """Estudio Luxy completo (Tablas A/B) sobre los `trades` enriquecidos del
     master. `keys5/idx5/bars5` = HOLC del motor (para el intrabar del BE, R-T2);
     ausentes o has_intrabar=False → estudio DEGRADADO/limitado honesto.
@@ -758,7 +774,8 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         # de muestra (todo del payload; la estimación NO enciende semáforo).
         dashboard["robustez"] = robustez_semaforo(fila_oos)
         dashboard["retencion"] = retencion_oos(fila_oos, fila_in)
-        dashboard["muestra_banner"] = muestra_banner(len(trades), len(sts))
+        dashboard["muestra_banner"] = muestra_banner(
+            len(trades), len(sts), holc_meta)
 
     return {
         "version": 3,               # v3: BE same_bar recortado (walk aditivo)
@@ -862,7 +879,8 @@ def _load_master(base_dir):
     Degradado / sin HOLC → has_intrabar False y off 0."""
     import json
     from scripts.lab_analyze import (
-        detect_tz_offset, enrich_with_bars, load_holc, parse_luxalgo_csv,
+        detect_tz_offset, enrich_with_bars, load_holc, load_holc_from_path,
+        parse_luxalgo_csv,
     )
     man = json.loads((base_dir / "manifest.json").read_text(encoding="utf-8"))
     ppt = float(man["usd_por_punto"]["usado"])          # R-T9: del master
@@ -875,7 +893,12 @@ def _load_master(base_dir):
     off = 0
     if not degradado:
         try:
-            bars5 = load_holc(activo, "5m")
+            # LX-4 — prioriza el snapshot HOLC por-clave (cosido al integrar):
+            # así el estudio hereda la cobertura de la cola por R-T2. Fallback al
+            # HOLC global para masters viejos sin snapshot (→ reintegrar cose).
+            _snap = base_dir / "holc_5m.csv"
+            bars5 = (load_holc_from_path(_snap) if _snap.exists()
+                     else load_holc(activo, "5m"))
             off, _s, _d = detect_tz_offset(trades, bars5)
             enrich_with_bars(trades, bars5, off)
             keys5 = sorted(bars5)
@@ -1037,7 +1060,8 @@ def run_for_clave(clave: str, motor_dir, *, oos: float = 0.3,
 
     study = luxy_study(trades, ppt, oos=oos, cancel_after_s=cancel_after_s,
                        keys5=keys5, idx5=idx5, bars5=bars5,
-                       has_intrabar=has_intrabar, fecha=fecha, off=off)
+                       has_intrabar=has_intrabar, fecha=fecha, off=off,
+                       holc_meta=man.get("holc"))
     study["clave"] = clave
     study["master"] = {"integrado": man.get("integrado"),
                        "sha256": (man.get("export") or {}).get("sha256_master"),

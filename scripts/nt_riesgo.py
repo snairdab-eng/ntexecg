@@ -293,6 +293,18 @@ _ENRICHED_COLS = ("number", "side", "entry_ts", "exit_ts", "duracion_min",
                   "mfe_atr", "hora_et", "atr_estimado")
 
 
+def _write_holc_snapshot(path: Path, bars: dict) -> None:
+    """LX-4 — escribe el HOLC (cosido si hubo stitch) a CSV en el formato de
+    `load_holc` (DateTime,Open,High,Low,Close,Volume), para que el estudio Luxy
+    lo lea por-clave y herede la cobertura de la cola (R-T2, reproducible)."""
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["DateTime", "Open", "High", "Low", "Close", "Volume"])
+        for ts in sorted(bars):
+            o, h, lo, c, v = bars[ts]
+            w.writerow([ts.strftime("%Y-%m-%d %H:%M:%S"), o, h, lo, c, v])
+
+
 def write_enriched(path: Path, trades: list[Trade], offset_min: int,
                    estimated: set[int]) -> None:
     delta = timedelta(minutes=offset_min)
@@ -355,8 +367,9 @@ async def _enriquecer(trades: list[Trade], activo: str, stitch: bool,
     opcional, validación TZ BLOQUEANTE, ATR(14) vivo y ATR estimado de cola.
     Todo del núcleo del Lab."""
     bars = load_holc(activo, "5m")
+    stitch_stats = None
     if stitch:
-        bars = await stitch_from_db(bars, activo, "5m")
+        bars, stitch_stats = await stitch_from_db(bars, activo, "5m")
     off, sanity, tz_detail = detect_tz_offset(trades, bars)
     print(f"· TZ offset {off:+d} min · sanity {sanity*100:.0f}% · "
           f"HOLC hasta {max(bars)}{' (+costura DB)' if stitch else ''}")
@@ -375,7 +388,7 @@ async def _enriquecer(trades: list[Trade], activo: str, stitch: bool,
     if sin_cobertura:
         print(f"⚠ {sin_cobertura} trade(s) sin cobertura de barras "
               f"(inicio del HOLC): sin ATR.")
-    return bars, off, tz_detail, sin_cobertura, estimated
+    return bars, off, tz_detail, sin_cobertura, estimated, stitch_stats
 
 
 # ---------------------------------------------------------------------------
@@ -479,9 +492,10 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
         estimated = []
         estimated_ids = set()
         holc_last = None
+        stitch_stats = None
     else:
-        bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
-            trades, activo, stitch)
+        bars, off, tz_detail, sin_cobertura, estimated, stitch_stats = \
+            await _enriquecer(trades, activo, stitch)
         stitched = stitch
         holc_last = max(bars)
         estimated_ids = {t.number for t in estimated}
@@ -501,6 +515,10 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
     # pendiente de proveer el HOLC.
     if not degradado:
         write_enriched(base_dir / "enriched.csv", trades, off, estimated_ids)
+        # LX-4 — snapshot del HOLC (cosido si stitch) por-clave: el estudio Luxy
+        # lo hereda por R-T2 (lee este archivo, no el HOLC global mutable), así
+        # la cobertura de la cola llega a Luxy al reintegrar con costura.
+        _write_holc_snapshot(base_dir / "holc_5m.csv", bars)
 
     base = metrics_usd([t.pnl_usd for t in trades])
     manifest = {
@@ -525,8 +543,10 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
         "degradado": degradado,
         "holc": {
             "archivo": None if degradado else f"{activo}_5m.csv",
+            "snapshot": None if degradado else "holc_5m.csv",   # LX-4 (por-clave)
             "ultima_barra": None if degradado else holc_last.isoformat(),
             "stitch_db": stitched,
+            "stitch": stitch_stats,                             # LX-4 (added/checked/pct/last_stitched)
             "sin_cobertura": sin_cobertura,
             "atr_estimado": len(estimated),
             "degradado": degradado,
@@ -688,8 +708,8 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
     print("└────────────────────────────────────────────────────────────")
 
     trades = parse_luxalgo_csv(base_dir / "master.csv")
-    bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
-        trades, activo, stitch)
+    bars, off, tz_detail, sin_cobertura, estimated, _stitch_stats = \
+        await _enriquecer(trades, activo, stitch)
     split_in_out(trades, oos)
 
     # Pullback del Lab (ventana 180 min) — reconciliación de fill-rates Y
@@ -962,8 +982,8 @@ async def recrear(clave: str, fecha: str) -> dict:
 
     hc = HaircutCfg(**orig["haircut"])
     trades = parse_luxalgo_csv(snap)
-    bars, off, tz_detail, sin_cobertura, estimated = await _enriquecer(
-        trades, mo["activo"], mo["stitch_db"])
+    bars, off, tz_detail, sin_cobertura, estimated, _stitch_stats = \
+        await _enriquecer(trades, mo["activo"], mo["stitch_db"])
     holc_last = max(bars).isoformat()
     if holc_last != mo["holc_ultima_barra"]:
         print(f"⚠ El HOLC cambió desde la corrida original "

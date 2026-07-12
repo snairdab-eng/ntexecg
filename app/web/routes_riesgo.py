@@ -839,9 +839,17 @@ def _calc_cmd(clave: str) -> list[str]:
 
 
 def _stitch() -> bool:
-    v = (os.environ.get("MR_CALC_STITCH")
-         or os.environ.get("LAB_RECALC_STITCH") or "")
-    return v.lower() in ("1", "true")
+    """LX-4 — costura DB por DEFAULT en el flujo web (integrar/calcular del
+    panel): la cola reciente de `ohlcv_bars` se cose al vuelo. Se APAGA en
+    APP_ENV=test (la suite no exige Postgres). La env var
+    MR_CALC_STITCH/LAB_RECALC_STITCH sigue como override explícito. El CLI
+    conserva su bandera `--stitch-db` aparte."""
+    env = (os.environ.get("MR_CALC_STITCH")
+           or os.environ.get("LAB_RECALC_STITCH") or "")
+    if env:
+        return env.lower() in ("1", "true")
+    from app.core.config import settings
+    return settings.APP_ENV != "test"
 
 
 def _motor_env() -> dict:

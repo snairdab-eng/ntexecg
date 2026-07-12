@@ -213,9 +213,10 @@ def find_trades_csv(instrument: str) -> Path:
 # OHLC: HOLC CSV (histórico estático) + costura opcional de Postgres (cola)
 # ---------------------------------------------------------------------------
 
-def load_holc(sym: str, tf: str = "5m") -> dict[datetime, tuple]:
-    """{DateTime: (open, high, low, close, volume)} del export estático."""
-    path = _holc_dir() / f"{sym}_{tf}.csv"
+def load_holc_from_path(path) -> dict[datetime, tuple]:
+    """{DateTime: (open, high, low, close, volume)} de un CSV HOLC concreto
+    (formato DateTime,Open,High,Low,Close,Volume). LX-4: lo reusa el snapshot
+    por-clave del estudio Luxy (`holc_5m.csv` cosido)."""
     out: dict[datetime, tuple] = {}
     with open(path, encoding="utf-8-sig", newline="") as fh:
         for r in csv.DictReader(fh):
@@ -230,14 +231,31 @@ def load_holc(sym: str, tf: str = "5m") -> dict[datetime, tuple]:
     return out
 
 
-async def stitch_from_db(bars: dict[datetime, tuple], sym: str, tf: str) -> dict:
+def load_holc(sym: str, tf: str = "5m") -> dict[datetime, tuple]:
+    """{DateTime: (open, high, low, close, volume)} del export estático global."""
+    return load_holc_from_path(_holc_dir() / f"{sym}_{tf}.csv")
+
+
+# LX-4 — umbral fail-honest del solape HOLC↔DB. Dato de producción: 387,011
+# barras verificadas, 1 inconsistente (ruido de feed) = 0.00026%. Por debajo de
+# este umbral la costura procede y lo reporta en el manifest; por encima ABORTA
+# (datos inconsistentes NO se integran). Constante nombrada = decisión explícita.
+STITCH_MAX_INCONSISTENTES_PCT = 0.01        # % (0.01% = 1 en 10.000)
+
+
+async def stitch_from_db(bars: dict[datetime, tuple], sym: str, tf: str
+                         ) -> tuple[dict, dict]:
     """Cose la cola reciente desde OhlcvBar (Postgres, SOLO lectura), validando
-    consistencia en el solape (mismo cierre ±1 tick de tolerancia relativa)."""
+    consistencia en el solape (mismo cierre ±0.1% de tolerancia relativa).
+    Devuelve (bars, stats). `stats` = {added, checked, mismatched, pct,
+    last_holc, last_stitched}. DB sin barras / cola corta → procede (added 0):
+    la costura NO inventa datos, solo extiende con lo que el almacén ya tiene."""
     from sqlalchemy import select
     from app.db.session import AsyncSessionLocal
     from app.models.ohlcv_bar import OhlcvBar
 
     last_holc = max(bars)
+    last_stitched = last_holc
     added = mismatched = checked = 0
     async with AsyncSessionLocal() as db:
         rows = await db.execute(
@@ -256,11 +274,20 @@ async def stitch_from_db(bars: dict[datetime, tuple], sym: str, tf: str) -> dict
             if ts > last_holc:
                 bars[ts] = row
                 added += 1
+                if ts > last_stitched:
+                    last_stitched = ts
+    pct = round(100.0 * mismatched / checked, 4) if checked else 0.0
     print(f"   costura DB: +{added} barras nuevas · solape verificado "
-          f"{checked} (inconsistentes: {mismatched})")
-    if checked and mismatched / checked > 0.05:
-        raise SystemExit("⛔ Solape HOLC↔DB inconsistente (>5%) — revisar TZ/símbolo.")
-    return bars
+          f"{checked} (inconsistentes: {mismatched} · {pct}%)")
+    if pct > STITCH_MAX_INCONSISTENTES_PCT:
+        raise SystemExit(
+            f"⛔ Solape HOLC↔DB inconsistente: {mismatched}/{checked} = {pct}% "
+            f"> {STITCH_MAX_INCONSISTENTES_PCT}% — datos inconsistentes NO se "
+            f"integran (revisar TZ/símbolo del feed).")
+    stats = {"added": added, "checked": checked, "mismatched": mismatched,
+             "pct": pct, "last_holc": last_holc.isoformat(),
+             "last_stitched": last_stitched.isoformat()}
+    return bars, stats
 
 
 # ---------------------------------------------------------------------------
@@ -1069,7 +1096,7 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     bars = load_holc(instrument, "5m")
     stitched = False
     if stitch:
-        bars = await stitch_from_db(bars, instrument, "5m")
+        bars, _stitch_stats = await stitch_from_db(bars, instrument, "5m")
         stitched = True
     holc_range = (min(bars), max(bars), stitched)
     print(f"· {len(bars)} barras 5m ({holc_range[0]} → {holc_range[1]})")

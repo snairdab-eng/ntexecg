@@ -496,6 +496,56 @@ async def test_luxy_toggles_motor_real(
     assert mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {"days_off": [4]}) == evD
 
 
+@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.asyncio
+async def test_luxy_hereda_cobertura_del_snapshot(
+    client: AsyncClient, dirs: Path, db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LX-4 — Luxy hereda la cobertura del HOLC por R-T2 vía el snapshot por-clave
+    (`holc_5m.csv`), no del HOLC global. Al integrar se escribe el snapshot; si la
+    costura extiende la cola (snapshot con MÁS barras) → `n_simulable` sube y el
+    banner de muestra desaparece. Aquí lo demostramos truncando/restaurando el
+    snapshot (la costura hace exactamente eso: añadir la cola desde la DB)."""
+    import scripts.mr_luxy as mrl
+    import scripts.nt_riesgo as ntr
+    import app.web.routes_riesgo as rr
+    from scripts.lab_analyze import load_holc_from_path
+    monkeypatch.setenv("HOLC_DIR", "NINJATRADER/HOLC")
+    await _mk_strategy(db, "ES5m_Cob", "ES")
+    csv_real = Path(sorted(_ES_CSV)[-1])
+    r = await client.post(
+        "/ui/strategies/ES5m_Cob/integrar",
+        files={"file": (csv_real.name, csv_real.read_bytes(), "text/csv")})
+    clave = r.json()["clave"]
+
+    base_dir = rr.MOTOR_DIR / clave
+    snap = base_dir / "holc_5m.csv"
+    assert snap.exists()                              # LX-4: snapshot por-clave escrito
+    man = json.loads((base_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert man["holc"]["snapshot"] == "holc_5m.csv"
+
+    n_full = mrl.run_for_clave(clave, rr.MOTOR_DIR)["dashboard"]["n_simulable"]
+
+    # cobertura RECORTADA (cola descubierta): truncar el HOLC en la mediana de los
+    # tiempos de entrada → ~la mitad de los trades quedan sin barras.
+    from scripts.lab_analyze import parse_luxalgo_csv
+    trades = parse_luxalgo_csv(base_dir / "master.csv")
+    cut = sorted(t.entry_ts for t in trades)[len(trades) // 2]
+    full = load_holc_from_path(snap)
+    ntr._write_holc_snapshot(snap, {k: v for k, v in full.items() if k <= cut})
+    st_trunc = mrl.run_for_clave(clave, rr.MOTOR_DIR)
+    n_trunc = st_trunc["dashboard"]["n_simulable"]
+    assert n_trunc < n_full                           # menos cobertura → menos simulables
+    assert st_trunc["dashboard"]["muestra_banner"] is not None   # banner aparece
+
+    # RESTAURAR la cobertura completa (lo que hace la costura) → n_simulable SUBE
+    ntr._write_holc_snapshot(snap, full)
+    st_re = mrl.run_for_clave(clave, rr.MOTOR_DIR)
+    assert st_re["dashboard"]["n_simulable"] == n_full and n_full > n_trunc
+    assert st_re["dashboard"]["muestra_banner"] is None          # cubierto → sin banner
+
+
 # ---------------------------------------------------------------------------
 # L7a — ventana de operación NATIVA en Luxy (paridad numérica con v1)
 # ---------------------------------------------------------------------------
