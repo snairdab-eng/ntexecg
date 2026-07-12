@@ -131,6 +131,8 @@ async def test_headers_seguridad_html(client: AsyncClient) -> None:
     csp = r.headers["content-security-policy"]
     assert "frame-ancestors 'self'" in csp                   # enmienda del arquitecto
     assert "default-src 'self'" in csp
+    # SEC-1c — Alpine necesita 'unsafe-eval' para inicializar x-data/x-show
+    assert "'unsafe-eval'" in csp
 
 
 @pytest.mark.asyncio

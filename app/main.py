@@ -63,16 +63,20 @@ async def _redirect_to_login(request: Request, exc: NotAuthenticated) -> Redirec
     return RedirectResponse(url="/ui/login", status_code=303)
 
 
-# SEC-1 Tarea 4 — CSP HONESTA y funcional. Compromiso documentado:
-# 'unsafe-inline' en script/style es necesario porque el Tailwind CDN inyecta
-# estilos inline y las plantillas usan JS inline (Alpine/HTMX). Los 3 CDN van
-# explícitos. `frame-ancestors 'self'` (enmienda del arquitecto): L6 embebe
-# /ui/lab en un iframe SAME-ORIGIN — 'self' lo permite; nadie más puede
-# enmarcar el panel. Candidato futuro: self-host de Tailwind para quitar
-# 'unsafe-inline' y el CDN dinámico (sin SRI).
+# SEC-1 Tarea 4 — CSP HONESTA y funcional. Compromisos documentados en script-src:
+#  · 'unsafe-inline' — Tailwind CDN inyecta estilos inline y las plantillas usan
+#    JS inline (banner del token, Alpine/HTMX).
+#  · 'unsafe-eval' — SEC-1c: el build ESTÁNDAR de Alpine evalúa las expresiones
+#    de x-data/x-show con `new Function` (≈ eval); sin esto Alpine NO inicializa
+#    los componentes (bug: el modal de confirmación quedaba abierto y ningún
+#    botón respondía). Alternativa futura: el build "CSP" de Alpine (evita eval)
+#    — exige reescribir plantillas a métodos declarados; se ANOTA, no se hace.
+# Los 3 CDN van explícitos. `frame-ancestors 'self'` (enmienda): L6 embebe
+# /ui/lab en un iframe SAME-ORIGIN — 'self' lo permite; nadie más enmarca el
+# panel. Candidato futuro: self-host de Tailwind para quitar 'unsafe-inline'/CDN.
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com "
     "https://unpkg.com https://cdn.jsdelivr.net; "
     "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
     "https://fonts.googleapis.com; "
