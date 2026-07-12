@@ -438,6 +438,14 @@ async def test_luxy_evaluar_parity_real(
     # n_simulable < n_total; este export de ES está 100% cubierto → n iguales).
     assert isinstance(dash["n_total"], int) and isinstance(dash["n_simulable"], int)
     assert dash["n_simulable"] <= dash["n_total"]
+    # LX-5 — UNA sola definición de simulable: n_simulable == Crudo+ n == suma de
+    # los subconjuntos por ventana (sts_in + sts_oos). Sin ambigüedad.
+    assert dash["n_simulable"] == t3["crudo_plus"]["n"]
+    assert dash["n_simulable"] == study["split"]["n_in_sample"] + study["split"]["n_oos"]
+    assert dash["n_no_simulable"] == dash["n_total"] - dash["n_simulable"]
+    # doble universo del split: trades totales vs simulables
+    assert study["split"]["n_trades_in"] + study["split"]["n_trades_oos"] == dash["n_total"]
+    assert study["split"]["n_in_sample"] <= study["split"]["n_trades_in"]
     # ES 100% cubierto por el HOLC → sin banner de muestra
     assert dash["muestra_banner"] is None
     # LX-3b — semáforo de robustez SOLO de la fila OOS validada, con los umbrales
@@ -535,9 +543,17 @@ async def test_luxy_hereda_cobertura_del_snapshot(
     full = load_holc_from_path(snap)
     ntr._write_holc_snapshot(snap, {k: v for k, v in full.items() if k <= cut})
     st_trunc = mrl.run_for_clave(clave, rr.MOTOR_DIR)
-    n_trunc = st_trunc["dashboard"]["n_simulable"]
+    dt = st_trunc["dashboard"]
+    n_trunc = dt["n_simulable"]
     assert n_trunc < n_full                           # menos cobertura → menos simulables
-    assert st_trunc["dashboard"]["muestra_banner"] is not None   # banner aparece
+    assert dt["muestra_banner"] is not None           # banner aparece
+    # LX-5 — desglose por causa: los descubiertos son cola posterior (v1 estimaría)
+    assert "cola posterior a la última barra cosida" in dt["muestra_banner"]
+    assert dt["n_estimados"] > 0                       # cola contada aparte
+    # consistencia total incluso con cobertura truncada
+    assert dt["n_simulable"] == dt["table3"]["crudo_plus"]["n"]
+    assert dt["n_simulable"] == st_trunc["split"]["n_in_sample"] + st_trunc["split"]["n_oos"]
+    assert dt["n_estimados"] + dt["n_inicio"] == dt["n_no_simulable"]
 
     # RESTAURAR la cobertura completa (lo que hace la costura) → n_simulable SUBE
     ntr._write_holc_snapshot(snap, full)

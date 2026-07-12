@@ -127,17 +127,17 @@ def test_integrar_y_calcular_cmd_llevan_stitch(monkeypatch):
 # ── banner con datos del manifest (cola vs inicio) ──────────────────────────
 
 def test_banner_distingue_cola_e_inicio():
-    b = mrl.muestra_banner(121, 102, {
-        "sin_cobertura": 3, "ultima_barra": "2026-07-04T20:00:00",
-        "stitch": {"last_stitched": "2026-07-10T21:00:00"}})
-    assert "16 en la cola descubierta desde 2026-07-10T21:00:00" in b
+    # LX-5 — desglose por causa desde los datos del estudio (cola vs inicio)
+    b = mrl.muestra_banner(121, 102, 16, 3, "2026-07-10T21:00:00")
+    assert "16 en la cola posterior a la última barra cosida (2026-07-10T21:00:00)" in b
+    assert "reintegra cuando el updater alcance" in b
     assert "3 previos al inicio del almacén" in b
-    assert "Reintegra la lista para actualizar la cobertura" in b
-    # sin holc_meta → texto básico compatible con LX-3b
+    assert "Crudo+ los excluye de la simulación" in b
+    # sin desglose → resto genérico, pero enciende igual (n_simulable < n_total)
     b2 = mrl.muestra_banner(121, 102)
     assert "19 de 121" in b2 and "cobertura HOLC almacenada en NTEXECG" in b2
-    # cubierto → sin banner
-    assert mrl.muestra_banner(120, 120, {"sin_cobertura": 0}) is None
+    # cubierto → sin banner (nunca cuenta estimados como simulables)
+    assert mrl.muestra_banner(120, 120, 0, 0) is None
 
 
 # ── criterio 6 — verificación del updater (sin arreglar aquí) ───────────────

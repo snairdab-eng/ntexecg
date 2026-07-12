@@ -723,7 +723,8 @@
             ⚠ Estudio <b>DEGRADADO</b> (sin HOLC/intrabar): solo crudo. Fills con corte y BREAKEVEN no disponibles — provee el HOLC y reintegra.
         </div>
         {% endif %}
-        <div class="text-xs text-gray-500">Corte del split (viejo=derivar · reciente=probar): <span class="font-mono">{{ luxy.split.cutoff_ts or '—' }}</span> · in-sample {{ luxy.split.n_in_sample }} · OOS {{ luxy.split.n_oos }} · $/punto {{ luxy.usd_por_punto }} (del master).</div>
+        {# LX-5 — doble universo sin ambigüedad: trades totales vs simulables (ATR intrabar real) #}
+        <div class="text-xs text-gray-500">Corte del split (viejo=derivar · reciente=probar): <span class="font-mono">{{ luxy.split.cutoff_ts or '—' }}</span> · in-sample {{ luxy.split.n_trades_in if luxy.split.n_trades_in is not none else luxy.split.n_in_sample }} ({{ luxy.split.n_in_sample }} simulables) · OOS {{ luxy.split.n_trades_oos if luxy.split.n_trades_oos is not none else luxy.split.n_oos }} ({{ luxy.split.n_oos }} simulables) · $/punto {{ luxy.usd_por_punto }} (del master).</div>
 
         {% if luxy.dashboard %}
         <!-- ═══ Dashboard portado (dark) — panel_palancas_multi.html sobre el estudio real ═══ -->
@@ -1025,7 +1026,10 @@
           function setChips(mode){
             const m=el('lx-mode'); if(mode==='val'){ m.textContent='validado · motor'; m.style.background='rgba(63,185,80,.16)'; m.style.color='#3fb950'; }
             else { m.textContent='estimacion · aprox'; m.style.background='rgba(210,153,34,.18)'; m.style.color='#d29922'; }
-            el('lx-recon').textContent='recon '+D.recon_ok+'/'+D.n;
+            // LX-5 — chip HONESTO: cobertura intrabar real (simulables/total), no
+            // un placeholder "recon X/X". La reconciliación luxy↔v1 vive aparte.
+            el('lx-recon').textContent='intrabar '+D.n_simulable+'/'+D.n_total;
+            el('lx-recon').title='trades con ATR intrabar REAL (simulables con palancas) sobre el total del master';
             const fr=el('lx-frag'); if(D.fragile){ fr.style.display=''; fr.textContent='⚠ '+(D.notes||[]).slice(0,1).join(''); } else fr.style.display='none';
             el('lx-notes').textContent=(D.notes||[]).join(' · ');
           }
