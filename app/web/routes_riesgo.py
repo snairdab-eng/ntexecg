@@ -33,6 +33,7 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
+    RedirectResponse,
 )
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -790,143 +791,21 @@ def _estudio_ctx(clave: str, cuenta: float = CUENTA_DEFAULT,
 # Página
 # ---------------------------------------------------------------------------
 
-@router.get("/ui/riesgo", response_class=HTMLResponse)
-async def riesgo_page(request: Request, strategy: str | None = None,
-                      db: AsyncSession = Depends(get_db)) -> HTMLResponse:
-    manifest = routes_lab.load_manifest()
-    groups: dict[str, list[str]] = {}
-    for k, e in sorted(manifest.items(),
-                       key=lambda kv: (kv[1]["instrument"], kv[0])):
-        groups.setdefault(e["instrument"], []).append(k)
-
-    key = strategy if (strategy and _KEY_RE.match(strategy)
-                       and strategy in manifest) else None
-    if key is None and manifest:
-        key = next(iter(sorted(
-            manifest, key=lambda k: (manifest[k]["instrument"], k))))
-
-    # Estrategias VIVAS de la DB (las mismas de la pestaña Estrategias):
-    # para el alta de una nueva y para el enlace estudio ↔ config en vivo.
-    vivas: list[dict] = []
-    try:
-        from app.models.strategy import Strategy
-        rows = (await db.execute(select(Strategy))).scalars().all()
-        vivas = [{"strategy_id": s.strategy_id,
-                  "asset_symbol": s.asset_symbol or "",
-                  "instrument": MICRO_TO_LAB.get(
-                      (s.asset_symbol or "").strip().upper()),
-                  "status": s.status}
-                 for s in rows]
-    except Exception:
-        pass
-    vivas_ids = {v["strategy_id"] for v in vivas}
-
-    ctx: dict = {
-        "groups": groups, "key": key, "manifest_entry": None,
-        "motor": None, "avisos": [], "estudio": None, "clave": None,
-        "job": None, "link_vivo": None, "deriva": None,
-        "ventana_vigente": None,
-        "cuenta": _leer_cuenta(),
-        # Puente P3: el flash de la promoción (incluye el token del webhook,
-        # que se muestra UNA sola vez) debe sobrevivir el redirect a Riesgo.
-        "messages": flash_messages(request),
-        "vivas_nuevas": sorted([v for v in vivas
-                                if v["strategy_id"] not in manifest
-                                and v["instrument"]],
-                               key=lambda v: v["strategy_id"]),
-    }
-    if key:
-        entry = manifest[key]
-        instrument = entry["instrument"]
-        clave = clave_de(key, instrument)
-        # R-obs-2 — la cuenta es por estrategia (fallback global → default)
-        ctx["cuenta"] = _leer_cuenta(clave)
-        motor = _motor_manifest(clave)
-        # R-obs-4 — unidades del instrumento con FUENTE ÚNICA en el Symbol
-        # Mapper (tick_size/tick_value del catálogo, los mismos que consume
-        # config_resolver): el micro (MES) y el mini (ES) comparten tick_size.
-        unidades = None
-        try:
-            from app.models.symbol_map import SymbolMap
-            rows = (await db.execute(select(SymbolMap))).scalars().all()
-            for sm in rows:
-                tv = (sm.tv_symbol or "").strip().upper()
-                if (MICRO_TO_LAB.get(tv) or tv) == instrument.upper() \
-                        and sm.tick_size:
-                    unidades = {
-                        "tick_size": float(sm.tick_size),
-                        "tick_value": (float(sm.tick_value)
-                                       if sm.tick_value is not None
-                                       else None),
-                        "tv_symbol": sm.tv_symbol,
-                    }
-                    break
-        except Exception:
-            pass
-        ctx.update({
-            "manifest_entry": {"csv": Path(entry["csv"]).name,
-                               "instrument": instrument,
-                               "confirmed": bool(entry.get("confirmed"))},
-            "clave": clave,
-            "motor": motor,
-            "estudio": _estudio_ctx(clave, ctx["cuenta"], unidades),
-            "job": (JOBS.get(clave) or {}).get("status"),
-            "link_vivo": (f"/ui/strategies/{key}"
-                          if key in vivas_ids else None),
-        })
-        if motor:
-            # Identidad del master + avisos (el MISMO helper del CLI)
-            from scripts.nt_riesgo import _avisos_master
-            try:
-                ctx["avisos"] = _avisos_master(
-                    motor, instrument, date.today(), TRADES_DIR,
-                    MOTOR_DIR / clave / "snapshots")
-            except (KeyError, ValueError):
-                ctx["avisos"] = []
-        # Puente P1 — badge de deriva: config viva vs recomendación validada
-        est = ctx["estudio"]
-        if est and est.get("reco"):
-            pcfg: dict | None = None
-            if ctx["link_vivo"]:
-                try:
-                    from app.models.strategy_profile import StrategyProfile
-                    prow = (await db.execute(
-                        select(StrategyProfile).where(
-                            StrategyProfile.strategy_id == key)
-                    )).scalar_one_or_none()
-                    pcfg = ((prow.pipeline_config_json or {})
-                            if prow else {})
-                except Exception:
-                    pcfg = None
-            ctx["deriva"] = deriva_estudio(
-                pcfg, _activacion_json(est["reco"]), est.get("fecha"),
-                hay_viva=bool(ctx["link_vivo"]))
-
-        # LOTE RIES-W — ventana de operación: comparar la ventana MÍNIMA de
-        # cobertura del estudio contra la ventana L2 VIGENTE de la estrategia
-        # (ConfigResolver) y computar el % de trades que quedaría FUERA
-        # (participación perdida). Solo informa — NO entra en Aplicar.
-        est = ctx["estudio"]
-        vo = (((est or {}).get("listado_crudo") or {})
-              .get("ventana_operacion")) if est else None
-        if vo and ctx["link_vivo"]:
-            try:
-                from app.services.config_resolver import ConfigResolver
-                from app.web.routes_assets import readable_window
-                asset = next((v["asset_symbol"] for v in vivas
-                              if v["strategy_id"] == key), None)
-                eff = await ConfigResolver().resolve(db, key, asset)
-                scfg = eff.get("session_config_json")
-                pct = _pct_trades_fuera(scfg, vo.get("muestras") or [])
-                ctx["ventana_vigente"] = {
-                    "window": readable_window(scfg),
-                    "pct_fuera": pct,
-                    "cobertura_ok": (pct == 0.0),
-                    "min_cobertura": vo.get("ventana_minima_cobertura"),
-                }
-            except Exception:
-                ctx["ventana_vigente"] = None
-    return await render(request, "riesgo.html", ctx)
+@router.get("/ui/riesgo")
+async def riesgo_page(strategy: str | None = None) -> RedirectResponse:
+    """L7b — Riesgo v1 RETIRADO de la UI (patrón P3, NO destructivo). El motor,
+    los datos y los estudios quedan INTACTOS; los helpers y endpoints que reusan
+    L5/L7a y las fichas (Puente aplicar/preview, cuenta, heatmap, reporte,
+    integrar/calcular, deriva_estudio, _pct_trades_fuera, _merge/_diff) siguen
+    vivos en este módulo. La navegación canónica es la sub-pestaña Luxy del
+    detalle de Estrategias:
+      · `?strategy=X` (clave/id válido) → 302 al detalle de X (sub-pestaña Luxy);
+      · sin parámetro → 302 a /ui/strategies.
+    Rollback trivial: `git revert` de este commit restaura la página v1 completa
+    (la plantilla `riesgo.html` y toda la lógica de contexto siguen en el repo)."""
+    if strategy and _KEY_RE.match(strategy):
+        return RedirectResponse(f"/ui/strategies/{strategy}", status_code=302)
+    return RedirectResponse("/ui/strategies", status_code=302)
 
 
 # ---------------------------------------------------------------------------

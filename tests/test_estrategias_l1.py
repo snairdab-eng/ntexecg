@@ -455,13 +455,17 @@ async def test_luxy_ventana_paridad_v1_real(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_riesgo_v1_sigue_respondiendo(
+async def test_riesgo_v1_redirige_al_detalle(
     client: AsyncClient, dirs: Path
 ) -> None:
-    (dirs / "REPORTES" / "lab_manifest.json").write_text(
-        json.dumps({"version": 1, "entries": {}}), encoding="utf-8")
+    """L7b — Riesgo v1 retirado de la UI: /ui/riesgo redirige (patrón P3). Sin
+    `strategy` → /ui/strategies; con `?strategy=X` → detalle de X (Luxy)."""
     r = await client.get("/ui/riesgo")
-    assert r.status_code == 200
+    assert r.status_code == 302
+    assert r.headers["location"] == "/ui/strategies"
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/ui/strategies/ES5m_Test"
 
 
 # ---------------------------------------------------------------------------

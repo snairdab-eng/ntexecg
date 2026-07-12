@@ -114,16 +114,20 @@ async def test_app_arranca_sin_templates_y_nav_intacto(
                           data={"name": "X", "strategy_type": "t"})
     assert r.status_code == 404
 
+    # L7b — /ui/riesgo ya no renderiza (redirige); el nav se verifica en otra
+    # página real (Estrategias).
     r = await client.get("/ui/riesgo")
-    assert r.status_code == 200
-    html = r.text
+    assert r.status_code == 302
+    html = (await client.get("/ui/strategies")).text
     assert "strategy-templates" not in html           # nav sin la entrada
-    for entrada in (">Dashboard<", ">Estrategias<", ">Señales<", ">Lab<",
-                    ">Riesgo<", ">Posiciones<", ">Settings<", ">Audit<"):
+    for entrada in (">Dashboard<", ">Estrategias<", ">Señales<",
+                    ">Posiciones<", ">Settings<", ">Audit<"):
         assert entrada in html, entrada
+    # L7b — Riesgo y Lab fuera del nav (Riesgo redirige; Lab vive en el detalle)
+    assert ">Riesgo<" not in html and ">Lab<" not in html
 
-    # invariantes: Lab UI conservada (el operador canceló su retiro),
-    # Estrategias (con el form de alta, sin templates_list) responde
+    # invariantes: Lab UI conservada (bookmark/iframe L6 vivos aunque fuera del
+    # nav), Estrategias (con el form de alta, sin templates_list) responde
     r = await client.get("/ui/lab")
     assert r.status_code == 200
     r = await client.get("/ui/strategies")

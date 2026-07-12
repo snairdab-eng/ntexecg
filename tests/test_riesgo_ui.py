@@ -59,6 +59,11 @@ def _write_lab_manifest(dirs: Path, entries: dict) -> None:
         json.dumps({"version": 1, "entries": entries}), encoding="utf-8")
 
 
+def _manifest_es(dirs: Path, csv: str = "ListaDeOperaciones/x.csv") -> None:
+    _write_lab_manifest(dirs, {"ES5m_Test": {
+        "instrument": "ES", "csv": csv, "confirmed": True}})
+
+
 MOTOR_MAN = {
     "version": 1, "activo": "ES", "codigo": "Test",
     "integrado": "2026-07-04",
@@ -217,383 +222,54 @@ def test_derive_codigo_y_clave():
 # ---------------------------------------------------------------------------
 # Página
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_pagina_renderiza_estudio(client: AsyncClient, dirs: Path,
-                                        db: AsyncSession) -> None:
-    _write_lab_manifest(dirs, {"ES5m_Test": {
-        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv",
-        "confirmed": True}})
-    _seed_motor(dirs)
-    db.add(Strategy(strategy_id="ES5m_Test", name="T", asset_symbol="MES",
-                    status="paper", enabled=True))
-    await db.commit()
-
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert r.status_code == 200
-    html = r.text
-    assert "28,175" in html                       # línea base
-    assert "CON CONFIG recomendada" in html       # comparación rotulada
-    assert "CRUDO" in html                        # etiqueta P1-5
-    assert "PF OOS" in html                       # número de confianza
-    assert "35,478" in html                       # recomendada
-    assert "cancel_after" in html                 # corte / honestidad
-    assert "fills reales de producción" in html
-    assert "/ui/riesgo/heatmap?strategy=ES5m_Test" in html
-    assert "/ui/strategies/ES5m_Test" in html     # puente a config viva
-    assert "backstop_points" in html              # JSON de activación
-
-
-@pytest.mark.asyncio
-async def test_pagina_sin_estudio_y_sin_master(client: AsyncClient,
-                                               dirs: Path) -> None:
-    _write_lab_manifest(dirs, {"ES5m_Test": {
-        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv",
-        "confirmed": True}})
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert r.status_code == 200
-    assert "Sin listado integrado" in r.text
-
-    _seed_motor(dirs, con_estudio=False)
-    r2 = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert "sin estudio todavía" in r2.text
-    assert "Calcular" in r2.text
-
-
-@pytest.mark.asyncio
-async def test_script_valido_con_job_en_memoria(client: AsyncClient,
-                                                dirs: Path) -> None:
-    """Regresión (bug producción 2026-07-06): con un job en JOBS, el
-    autoescape de Jinja convertía las comillas de `job: '<estado>'` en
-    &#39; → SyntaxError → riesgoApp sin definir → TODOS los botones del
-    componente muertos ("me dejó eliminar una vez pero después ya no":
-    la primera carga era sin job → null → script válido; tras Calcular,
-    job='done' rompía cada carga siguiente). tojson es autoescape-safe."""
-    _write_lab_manifest(dirs, {"ES5m_Test": {
-        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv",
-        "confirmed": True}})
-    _seed_motor(dirs)
-    rr.JOBS["ES_Test"] = {"status": "done", "tail": "", "rc": 0}
-    try:
-        r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    finally:
-        rr.JOBS.pop("ES_Test", None)
-    assert r.status_code == 200
-    html = r.text
-    script = html.split("function riesgoApp()")[1].split("</script>")[0]
-    # el veneno exacto del bug: entidades HTML dentro del JS inline
-    for entidad in ("&#39;", "&#34;", "&quot;", "&amp;"):
-        assert entidad not in script, entidad
-    assert 'job: "done",' in script
-    # y sin job: null literal (no la cadena "None")
-    rr.JOBS.pop("ES_Test", None)
-    r2 = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    script2 = r2.text.split("function riesgoApp()")[1].split("</script>")[0]
-    assert "job: null," in script2
-    assert "None" not in script2.split("cuenta:")[0]
-
-
-# ---------------------------------------------------------------------------
-# P1-1 — banner "sin recomendación validada" (nunca en blanco)
+# L7b — la PÁGINA v1 (render del estudio, banners, tarjetas, config-a-aplicar,
+# heatmap colapsado, espejo de estudios) se RETIRÓ. Su lógica de datos la cubren
+# las suites del motor (recrear bit-a-bit) y su presencia en el DETALLE la cubren
+# test_estrategias_l1 (Luxy) y test_perfiles_l4. Aquí queda: el REDIRECT (P3) y
+# los ENDPOINTS que sobreviven (upload/integrar/calcular/cuenta/renombrar/borrar/
+# heatmap/reporte). El motor, los datos y los estudios quedan INTACTOS.
 # ---------------------------------------------------------------------------
 
-ESTUDIO_SIN_RECO = {
-    "linea_base": {
-        "total": {"n": 40, "net_usd": 5200.0, "pf": 1.9, "wr_pct": 70.0,
-                  "max_dd_usd": 1200.0, "peor_trade_usd": -800.0},
-        "in": {}, "out": {"pf": 2.1},
-    },
-    "recomendacion": None,
-    "backstop": {"optimo": {"backstop_usd": 3000.0}},
-    "corte_fills": {"cancel_after_s": 3600.0, "tope_natural_atr": 1.0,
-                    "niveles": []},
-    "ls": {"lectura": "sin asimetría dominante"},
-    "configs": [
-        {"nombre": "7+3 MES @ 0.25/0.5× + backstop", "n_piernas": 2,
-         "etiquetas": ["barrido", "alta_participacion"],
-         "participacion_pct": 88.0,
-         "total": {"net_usd": 5900.0, "pf": 2.2, "max_dd_usd": 900.0,
-                   "peor_trade_usd": -600.0},
-         "gate": {"estado": "aprobada", "score": 6.5}},
-        {"nombre": "señal + backstop (sin escalera)", "n_piernas": 1,
-         "etiquetas": [], "participacion_pct": 100.0,
-         "total": {"net_usd": 5300.0, "pf": 1.95, "max_dd_usd": 1100.0,
-                   "peor_trade_usd": -700.0},
-         "gate": {"estado": "aprobada", "score": 4.8}},
-    ],
-    "robustez": {
-        "elegido": None,
-        "tabla": [{"nombre": "7+3 MES @ 0.25/0.5× + backstop",
-                   "veredicto": "no generaliza OOS", "flags": ["n_bajo"]}],
-    },
-    "meta": {"fecha": "2026-07-06"},
-}
+@pytest.mark.asyncio
+async def test_riesgo_v1_redirect_p3(client: AsyncClient, dirs: Path) -> None:
+    """/ui/riesgo redirige (no renderiza): sin `strategy` → /ui/strategies; con
+    `?strategy=X` → detalle de X (sub-pestaña Luxy). Rollback = git revert."""
+    _manifest_es(dirs)
+    _seed_motor(dirs)
+    r = await client.get("/ui/riesgo")
+    assert r.status_code == 302 and r.headers["location"] == "/ui/strategies"
+    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/ui/strategies/ES5m_Test"
 
 
 @pytest.mark.asyncio
-async def test_banner_sin_recomendacion_validada(client: AsyncClient,
-                                                 dirs: Path) -> None:
-    """Adversarial: con ELEGIDO=ninguno (6E/6J/YM) la sección de estudio NO
-    puede quedar en blanco — banner con el motivo honesto + top configs
-    aprobadas marcadas 'no validadas por OOS'."""
-    _write_lab_manifest(dirs, {"6E5m_Test": {
-        "instrument": "6E", "csv": "ListaDeOperaciones/x.csv",
-        "confirmed": True}})
-    base = dirs / "MotorRiesgo" / "6E_Test"
-    (base / "runs").mkdir(parents=True)
-    (base / "snapshots").mkdir()
-    (base / "snapshots" / "export_2026-07-04.csv").write_text(
-        "x", encoding="utf-8")
-    man = dict(MOTOR_MAN, activo="6E", codigo="Test")
-    (base / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
-    (base / "runs" / "estudios_2026-07-06.json").write_text(
-        json.dumps(ESTUDIO_SIN_RECO), encoding="utf-8")
-
-    r = await client.get("/ui/riesgo?strategy=6E5m_Test")
-    assert r.status_code == 200
-    html = r.text
-    assert "Sin recomendación validada" in html
-    assert "no generaliza" in html or "nativo" in html      # motivo honesto
-    assert "no validadas por OOS" in html
-    assert "7+3 MES @ 0.25/0.5× + backstop" in html          # top referencia
-    # y las etiquetas crudo/config presentes (P1-5)
-    assert "CRUDO" in html
-
-
-@pytest.mark.asyncio
-async def test_tarjeta_gestion_por_lado(client: AsyncClient,
+async def test_cuenta_editable_persiste(client: AsyncClient,
                                         dirs: Path) -> None:
-    """P1b: estudio con recomendación de lado → tarjeta 'Gestión por lado'
-    con efecto y caveat; sin ella (ES simétrico) → sin tarjeta."""
-    _write_lab_manifest(dirs, {"YM5m_Test": {
-        "instrument": "YM", "csv": "ListaDeOperaciones/x.csv",
-        "confirmed": True}})
-    base = dirs / "MotorRiesgo" / "YM_Test"
-    (base / "runs").mkdir(parents=True)
-    (base / "snapshots").mkdir()
-    (base / "snapshots" / "export_2026-07-04.csv").write_text(
-        "x", encoding="utf-8")
-    (base / "manifest.json").write_text(
-        json.dumps(dict(MOTOR_MAN, activo="YM", codigo="Test")),
-        encoding="utf-8")
-    est = json.loads(json.dumps(ESTUDIO_SIN_RECO))
-    est["gestion_lado"] = {"recomendacion": {
-        "lado_malo": "short", "lado_bueno": "long", "accion": "cortar",
-        "motivo": "cortos: net -8,220 USD, PF 0.31 y concentra la "
-                  "catástrofe (peor -9,175)",
-        "n_lado_malo": 19, "muestra_chica": True,
-        "efecto_solo_lado_bueno": {"net_usd": 30910.0, "wr_pct": 100.0,
-                                   "max_dd_usd": 0.0,
-                                   "peor_trade_usd": 105.0},
-        "mecanismo": "solo largos — filtro de lado en la config (paso "
-                     "aparte)",
-        "caveat": "recomendación ESTRUCTURAL — no pasa por el walk-forward; "
-                  "considera cortar y valida en demo — muestra chica "
-                  "(19 trades en el lado cortos)",
-    }}
-    (base / "runs" / "estudios_2026-07-06.json").write_text(
-        json.dumps(est), encoding="utf-8")
-
-    r = await client.get("/ui/riesgo?strategy=YM5m_Test")
-    assert r.status_code == 200
-    html = r.text
-    assert "Gestión por lado" in html
-    assert "CORTAR" in html.upper()
-    assert "30,910" in html                    # el efecto (solo largos)
-    assert "muestra chica" in html             # caveat honesto
-    assert "no pasa por el walk-forward" in html
-
-
-@pytest.mark.asyncio
-async def test_sin_gestion_lado_no_hay_tarjeta(client: AsyncClient,
-                                               dirs: Path) -> None:
-    _write_lab_manifest(dirs, {"ES5m_Test": {
-        "instrument": "ES", "csv": "ListaDeOperaciones/x.csv",
-        "confirmed": True}})
-    _seed_motor(dirs)                          # ESTUDIO sin gestion_lado
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert r.status_code == 200
-    # texto exclusivo del CUERPO de la tarjeta (el bullet de la
-    # recomendación y el comentario HTML mencionan el título legítimamente)
-    assert "no pasa por el walk-forward" not in r.text
-    assert "el lado malo" not in r.text.lower()
-
-
-# ---------------------------------------------------------------------------
-# v2 — los DOS estudios conviven y se espejean; cuenta editable; gestión de
-# datos (renombrar/eliminar estrategia, eliminar/reemplazar el .csv)
-# ---------------------------------------------------------------------------
-
-def _manifest_es(dirs: Path, csv: str = "ListaDeOperaciones/x.csv") -> None:
-    _write_lab_manifest(dirs, {"ES5m_Test": {
-        "instrument": "ES", "csv": csv, "confirmed": True}})
-
-
-@pytest.mark.asyncio
-async def test_dos_estudios_conviven_y_espejean(client: AsyncClient,
-                                                dirs: Path) -> None:
-    """Los dos estudios en la misma ficha, con la MISMA estructura visual
-    (6 KPI crudo → con config); solo cambia la tarjeta ★: 'PF fuera de
-    muestra' (validado) vs 'PF (in-sample)' (sin validar — para decidir).
-    El trade desastroso va en ROJO con su % de la cuenta, la duración
-    ganador/perdedor está en la base y la participación es banner."""
-    _manifest_es(dirs)
-    est = json.loads(json.dumps(ESTUDIO))
-    est["proteccion"] = PROTECCION
-    est["listado_crudo"] = LISTADO_CRUDO
-    _seed_motor(dirs, estudio=est)
-
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert r.status_code == 200
-    html = r.text
-    # B — las dos secciones rotuladas, conviviendo
-    assert "Estudio validado (fuera de muestra)" in html
-    assert "Protección de cuenta (in-sample)" in html
-    # espejo: misma tarjeta ★, distinto label+badge
-    assert "PF fuera de muestra (OOS) ★" in html
-    assert "PF (in-sample) ★" in html
-    assert "sin validar — para decidir" in html
-    assert "NO promesa a futuro" in html
-    # A — el desastre en ROJO con % de la cuenta ($10k default: 101.6%)
-    assert "101.6% de la cuenta" in html
-    assert "#46" in html
-    # a $10k nada llega al umbral → se muestra lo más cercano (SL 4×ATR)
-    assert "SL 4×ATR" in html
-    assert "supervivencia &gt; net" in html or "supervivencia > net" in html
-    # B — participación como banner en AMBOS estudios
-    assert html.count("Participación:</b> crudo 100%") == 2
-    # C — duración media ganador/perdedor en la línea base
-    assert "ganador 26.9h" in html and "perdedor 15.1h" in html
-    # el suelo del SL (deja respirar) está explicado
-    assert "p95 3.6" in html
-
-
-@pytest.mark.asyncio
-async def test_orden_tarjetas_adyacentes_heatmap_colapsado(
-    client: AsyncClient, dirs: Path
-) -> None:
-    """Reorganización: las DOS filas de tarjetas KPI quedan ADYACENTES
-    (validado y protección, una arriba de la otra — comparación de un
-    vistazo); recomendaciones/JSON DEBAJO de ambas; heatmap al FINAL en un
-    <details> colapsado por defecto (referencia, no la vista principal)."""
-    import re
-
-    _manifest_es(dirs)
-    est = json.loads(json.dumps(ESTUDIO))
-    est["proteccion"] = PROTECCION
-    est["listado_crudo"] = LISTADO_CRUDO
-    _seed_motor(dirs, estudio=est)
-
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert r.status_code == 200
-    html = r.text
-
-    i_crudo = html.index("CRUDO (baseline)")
-    i_kpi1 = html.index("PF fuera de muestra (OOS) ★")     # tarjetas estudio 1
-    i_kpi2 = html.index("PF (in-sample) ★")                # tarjetas estudio 2
-    i_reco = html.index("Recomendación (validada OOS)")    # detalle 1
-    i_prot = html.index("(in-sample) — palancas")          # detalle 2 (título
-    # único de la tarjeta; el banner del bloque KPI solo la menciona)
-    i_json = html.index("pipeline_config_json")            # JSON de activación
-    i_heat = html.index("Candidatas del walk-forward")     # heatmap (colapsado)
-
-    # orden: CRUDO → KPIs validado → KPIs protección → detalles → heatmap
-    assert i_crudo < i_kpi1 < i_kpi2 < i_reco < i_prot < i_heat
-    assert i_kpi2 < i_json                       # el JSON no separa tarjetas
-
-    # ADYACENTES: entre las dos filas KPI no hay heatmap, ni JSON, ni
-    # recomendaciones (solo la nota de honestidad y el header del bloque 2)
-    entre = html[i_kpi1:i_kpi2]
-    assert "Candidatas" not in entre
-    assert "pipeline_config_json" not in entre
-    assert "Recomendación" not in entre
-
-    # heatmap dentro de <details> SIN atributo open (colapsado por defecto)
-    m = re.search(r"<details[^>]*>", html)
-    assert m is not None, "el heatmap ya no está en un <details>"
-    assert "open" not in m.group(0)
-    assert html.index(m.group(0)) < i_heat       # y lo envuelve
-    # la imagen sigue sirviéndose desde el endpoint del motor
-    assert "/ui/riesgo/heatmap?strategy=ES5m_Test" in html
-
-
-@pytest.mark.asyncio
-async def test_cuenta_editable_persiste_y_recomputa(client: AsyncClient,
-                                                    dirs: Path) -> None:
-    """La cuenta es editable, persiste y RECOMPUTA la selección: a $10k el
-    −10,162 es rojo (101.6%); a $200k no hay rojos y el crudo ya protege
-    (0 palancas — 'sin SL adicional')."""
+    """L7b — el ENDPOINT de cuenta sobrevive (la página v1 que la pintaba se
+    retiró). Rango inválido → 400 sin persistir; válido → 200 y persiste. El
+    RECÓMPUTO de la protección (`proteccion_para_cuenta`, puro) lo cubren los
+    test_proteccion_* de test_robs2."""
     _manifest_es(dirs)
     est = json.loads(json.dumps(ESTUDIO))
     est["proteccion"] = PROTECCION
     _seed_motor(dirs, estudio=est)
 
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert "101.6% de la cuenta" in r.text            # default $10,000
-
-    # rango inválido → 400 y NO persiste
+    # rango inválido → 400 y NO persiste (sigue el default)
     r = await client.post("/ui/riesgo/cuenta", json={"cuenta_usd": 1.0})
     assert r.status_code == 400
+    assert rr._leer_cuenta() == rr.CUENTA_DEFAULT
 
+    # válido → 200 y persiste (global)
     r = await client.post("/ui/riesgo/cuenta", json={"cuenta_usd": 200_000})
     assert r.status_code == 200
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    html = r.text
-    assert "200000" in html                           # persistió (input)
-    assert "101.6% de la cuenta" not in html          # % relativo a cuenta
-    assert "Sin trades rojos" in html
-    assert "sin freno adicional" in html              # el crudo ya protege
-    # R-obs-2b: las cajas de "efecto" (donde vivía el 5.1% del peor trade)
-    # se retiraron a pedido del operador — la confianza in-sample del
-    # elegido (el crudo espejo, PF 1.62) vive ahora en la línea ✅ del
-    # espejo de palancas.
-    assert "PF in-sample 1.62" in html
+    assert rr._leer_cuenta() == 200_000.0
 
 
-@pytest.mark.asyncio
-async def test_config_a_aplicar_unidades_y_copy(client: AsyncClient,
-                                                dirs: Path, db) -> None:
-    """R-obs 3/4/5: tarjeta 'Configuración a aplicar' (bloqueos sí/no
-    explícitos, JSON al lado), unidades con fuente única en Symbol Mapper
-    (sin tick data → aviso 'catálogo incompleto', nunca un número
-    engañoso), y la copy nueva de las palancas de protección (freno
-    catastrófico, escalera REAL, TP por encima del p99)."""
-    _manifest_es(dirs)
-    est = json.loads(json.dumps(ESTUDIO))
-    est["proteccion"] = PROTECCION
-    est["meta"] = {"fecha": "2026-07-05", "usd_por_punto": 50.0,
-                   "activo": "ES"}
-    est["backstop"] = {"atr_mediana_pts": 14.7}
-    _seed_motor(dirs, estudio=est)
-
-    # SIN catálogo: solo $ + aviso — nunca ticks/pts inventados
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert r.status_code == 200
-    html = r.text
-    assert "Configuración a aplicar" in html
-    assert "catálogo incompleto" in html.lower()
-    assert "Bloquear largos" in html and "Bloquear cortos" in html
-    assert "por encima de los cierres de LuxAlgo" in html
-    assert "backstop_points" in html               # el JSON sigue al lado
-    # copy nueva de las palancas de protección (elegido = SL 4 + escalera)
-    assert "freno catastrófico" in html
-    assert "Sin stop adicional de $ fijo" in html
-    assert "se toca rara vez" in html
-    assert "5 micros @ 0.25×ATR" in html           # escalera REAL, no fijo
-    assert "la escalera no mejoró" not in html
-
-    # CON catálogo (Symbol Mapper, fuente única): unidad natural + $
-    from app.models.symbol_map import SymbolMap
-    db.add(SymbolMap(tv_symbol="MES", mapped_symbol="MESU2026",
-                     exchange="CME", contract_type="future",
-                     pine_script_config='"ticker": "MES"',
-                     tick_size=0.25, tick_value=1.25, active=True))
-    await db.commit()
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    html = r.text
-    assert "360 ticks" in html                     # backstop 90 pts / 0.25
-    assert "$4,500" in html                        # y el $ del estudio
-    assert "Catálogo incompleto" not in html
+# L7b — 'Configuración a aplicar' era render de la página v1 (retirada). El
+# JSON de activación aplicable vive ahora en Luxy (`activacion_from_study`) y el
+# aplicar supervisado en test_luxy_aplicar_l5.py; las unidades por Symbol Mapper
+# en test_perfiles_l4.py.
 
 
 @pytest.mark.asyncio
@@ -618,8 +294,8 @@ async def test_renombrar_y_eliminar_estrategia(client: AsyncClient,
     entries = json.loads((dirs / "REPORTES" / "lab_manifest.json")
                          .read_text(encoding="utf-8"))["entries"]
     assert "ES5m_Renombrada" in entries and "ES5m_Test" not in entries
-    r = await client.get("/ui/riesgo?strategy=ES5m_Renombrada")
-    assert r.status_code == 200 and "ES_Renombrada" in r.text
+    # L7b — el estudio movido sigue legible por el helper (la página v1 se retiró)
+    assert rr._motor_manifest("ES_Renombrada") is not None
 
     # renombrar a un id ya existente → 409
     _write_lab_manifest(dirs, {**entries, "ES5m_Otra": {
@@ -664,8 +340,9 @@ async def test_eliminar_listado_csv_conserva_estrategia(
     entries = json.loads((dirs / "REPORTES" / "lab_manifest.json")
                          .read_text(encoding="utf-8"))["entries"]
     assert "ES5m_Test" in entries                 # la estrategia sigue
-    r = await client.get("/ui/riesgo?strategy=ES5m_Test")
-    assert "Sin listado integrado" in r.text      # lista para reemplazar
+    # L7b — la carpeta del motor se borró (lista para reemplazar); el helper lo
+    # confirma sin la página v1 (retirada).
+    assert rr._motor_manifest("ES_Test") is None
 
 
 # ---------------------------------------------------------------------------
@@ -833,8 +510,9 @@ async def test_heatmap_y_reporte(client: AsyncClient, dirs: Path) -> None:
 @pytest.mark.asyncio
 async def test_aceptacion_es_end_to_end(client: AsyncClient,
                                         dirs: Path) -> None:
-    """El criterio: desde la pestaña, sobre ES, subir el export, Calcular,
-    y VER la línea base ($28,175), la comparación y el heatmap."""
+    """El criterio, L7b: sobre ES, subir el export y Calcular (endpoints vivos),
+    y VER la línea base ($28,175) en el estudio PERSISTIDO + el heatmap por su
+    endpoint. (La página v1 que lo pintaba se retiró; el dato es el mismo.)"""
     _write_lab_manifest(dirs, {})
     csv_real = Path(sorted(_ES_CSV)[-1])          # export 2026-07-04
 
@@ -858,13 +536,11 @@ async def test_aceptacion_es_end_to_end(client: AsyncClient,
         await asyncio.sleep(1.0)
     assert s.json()["status"] == "done", s.json().get("tail", "")[-500:]
 
-    # 3) VER: línea base, comparación base→recomendada, heatmap
-    r = await client.get("/ui/riesgo?strategy=ES5m_UiTest")
-    assert r.status_code == 200
-    html = r.text
-    assert "28,175" in html                        # la línea base de ES
-    assert "CON CONFIG recomendada" in html
-    assert "PF OOS" in html
+    # 3) VER (L7b — sin página v1): el estudio PERSISTIDO trae la línea base de
+    # ES ($28,175); el heatmap sigue sirviéndose por su endpoint.
+    est = rr._latest_estudio(rr.clave_de("ES5m_UiTest", "ES"))
+    assert est is not None
+    assert round(est["linea_base"]["total"]["net_usd"]) == 28175
     hm = await client.get("/ui/riesgo/heatmap?strategy=ES5m_UiTest")
     assert hm.status_code == 200
     assert hm.headers["content-type"] == "image/png"

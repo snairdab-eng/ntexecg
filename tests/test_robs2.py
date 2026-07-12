@@ -130,9 +130,9 @@ async def test_cuenta_por_estrategia(client: AsyncClient, dirs: Path) -> None:
     # global de arranque
     (dirs / "MotorRiesgo" / "cuenta.json").write_text(
         json.dumps({"cuenta_usd": 25_000.0}), encoding="utf-8")
-    # sin cuenta propia → hereda el global
-    r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert "25000" in r.text.replace(",", "").replace(".0", "")
+    # sin cuenta propia → hereda el global (L7b: helper vivo; la página v1 que
+    # antes la pintaba se retiró — la analítica de cuenta vive en Perfiles L4).
+    assert rr._leer_cuenta("ES_Test") == 25_000.0
     # guardar POR estrategia
     r = await client.post("/ui/riesgo/cuenta",
                           json={"cuenta_usd": 50_000.0, "strategy": SID})
@@ -179,64 +179,11 @@ def test_listado_crudo_rango_por_lado():
     assert lc2["duracion_h_por_lado"]["short"] is None
 
 
-@pytest.mark.asyncio
-async def test_ficha_muestra_rango_por_lado(client: AsyncClient,
-                                            dirs: Path) -> None:
-    _manifest_es(dirs)
-    estudio = json.loads(json.dumps(ESTUDIO))
-    estudio["listado_crudo"] = {
-        "metricas": {"n": 120, "net_usd": 28175.0, "pf": 1.62,
-                     "wr_pct": 79.2, "max_dd_usd": 11750.0,
-                     "peor_trade_usd": -10162.5},
-        "duracion_h": {"ganador_prom_h": 26.9, "perdedor_prom_h": 15.1,
-                       "n_ganadores": 95, "n_perdedores": 25},
-        "duracion_h_por_lado": {
-            "long": {"n": 80, "min_h": 0.3, "p50_h": 4.2, "p90_h": 38.5,
-                     "max_h": 120.4},
-            "short": None,
-        },
-    }
-    _seed_motor(dirs, estudio=estudio)
-    r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert r.status_code == 200
-    html = r.text
-    assert "Rango de operación por lado" in html
-    assert "p50 <b class=\"text-gray-200\">4.2h</b>" in html
-    assert "38.5h" in html
-    assert "cortos — sin muestra" in html
-    assert "3600s = 1h" in html                     # el topo, visible
-    # estudio viejo SIN el campo → la ficha no truena ni muestra la sección
-    _seed_motor(dirs, clave="ES_Test2", estudio=ESTUDIO)
-
-
-@pytest.mark.asyncio
-async def test_ficha_proteccion_espeja_lineas_sin_cajas(client: AsyncClient,
-                                                        dirs: Path) -> None:
-    """R-obs-2b: la ficha de protección espeja las LÍNEAS de la validada
-    (SL, Escalera, TP, Lado, cancel_after, Sizing, Confianza — números
-    propios) y las 4 cajas de 'efecto' se retiraron (tachadas por el
-    operador: sus números ya viven en las tarjetas KPI)."""
-    _manifest_es(dirs)
-    estudio = json.loads(json.dumps(ESTUDIO))
-    estudio["proteccion"] = PROTECCION
-    _seed_motor(dirs, estudio=estudio)
-    r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert r.status_code == 200
-    html = r.text
-    assert "(in-sample) — palancas" in html
-    # las líneas nuevas del espejo: la validada usa "cancel_after coherente";
-    # la protección su propio "cancel_after"; Sizing/Confianza en AMBAS
-    assert "<b>cancel_after:</b>" in html
-    assert html.count("<b>Sizing:</b>") >= 2
-    assert html.count("<b>Confianza:</b>") >= 2
-    assert "PF in-sample" in html
-    assert "tamaño fijo, sin equity" in html
-    # las cajas tachadas: FUERA
-    for caja in ("Peor trade protegido", "Max DD protegido", "Costo en net",
-                 "Ganadoras cortadas por el stop"):
-        assert caja not in html, caja
-    # participación 100% visible en el objetivo del bloque
-    assert "sin saltar señales" in html
+# L7b — los tests de RENDER de la ficha v1 (rango por lado, protección) se
+# retiraron con la página. La lógica sigue bajo prueba en unidad:
+# `test_listado_crudo_rango_por_lado` (arriba) y los `test_proteccion_*`; y su
+# presencia EN EL DETALLE (Luxy/Perfiles) en `test_estrategias_l1
+# ::test_luxy_ventana_paridad_v1_real` y `test_perfiles_l4.py`.
 
 
 # ---------------------------------------------------------------------------
@@ -520,64 +467,22 @@ def test_pct_trades_fuera_angosta_y_24h():
     assert _pct_trades_fuera(angosta, []) is None       # sin muestras
 
 
-@pytest.mark.asyncio
-async def test_ficha_ventana_operacion_sin_viva(client: AsyncClient,
-                                                dirs: Path) -> None:
-    """Ficha con el campo pero SIN estrategia viva vinculada: se pinta la
-    sección de cobertura y la nota de que no hay ventana L2 que comparar."""
-    _manifest_es(dirs)
-    estudio = json.loads(json.dumps(ESTUDIO))
-    estudio["listado_crudo"] = {**_LC_BASE, "ventana_operacion": VENTANA_OP}
-    _seed_motor(dirs, estudio=estudio)
-    r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert r.status_code == 200
-    html = r.text
-    assert "Ventana de operación" in html
-    assert "Ventana mínima de cobertura (100%)" in html
-    assert "lun · 10:00–22:00 ET" in html
-    assert "Sin estrategia viva vinculada" in html
-    # honestidad: el filtro de sesión está descartado, es de cobertura
-    assert "DESCARTADO por diseño" in html
+# L7b — la ficha v1 de la ventana de operación se retiró; la ventana + la
+# comparación con la ventana L2 vigente viven ahora en el detalle (Luxy, L7a) y
+# se prueban en `test_estrategias_l1::test_luxy_ventana_paridad_v1_real`. Aquí se
+# conserva la prueba UNITARIA del helper que ambas rutas reusan (`_pct_trades_fuera`),
+# incluida la arista del banner "trades fuera de la ventana" (participación perdida).
 
-
-@pytest.mark.asyncio
-async def test_ficha_sin_ventana_operacion_no_truena(client: AsyncClient,
-                                                     dirs: Path) -> None:
-    """Estudio viejo con listado_crudo pero SIN ventana_operacion → la sección
-    no aparece y la ficha no truena (guarda {% if %})."""
-    _manifest_es(dirs)
-    estudio = json.loads(json.dumps(ESTUDIO))
-    estudio["listado_crudo"] = dict(_LC_BASE)            # sin ventana_operacion
-    _seed_motor(dirs, estudio=estudio)
-    r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert r.status_code == 200
-    assert "Ventana de operación" not in r.text
-
-
-@pytest.mark.asyncio
-async def test_ficha_ventana_banner_fuera(client: AsyncClient, dirs: Path,
-                                          db) -> None:
-    """Estrategia viva con ventana L2 ANGOSTA (RTH): banner ámbar con el % de
-    trades del backtest que quedaría fuera (participación perdida)."""
-    from app.models.asset_profile import AssetProfile
-    from app.models.strategy import Strategy
-    _manifest_es(dirs)
-    db.add(Strategy(strategy_id=SID, name="T", asset_symbol="MES",
-                    status="paper", enabled=True))
-    db.add(AssetProfile(symbol="MES", active=True, session_config_json={
-        "days_enabled": [1, 2, 3, 4, 5],
-        "entry_start": "09:30", "entry_end": "15:45"}))
-    await db.commit()
-    estudio = json.loads(json.dumps(ESTUDIO))
-    vo = json.loads(json.dumps(VENTANA_OP))
-    # 3 dentro RTH (10/11/14h) + 2 fuera (20/22h) → 40% fuera
-    vo["muestras"] = [[1, 600], [1, 660], [1, 840], [1, 1200], [1, 1320]]
-    estudio["listado_crudo"] = {**_LC_BASE, "ventana_operacion": vo}
-    _seed_motor(dirs, estudio=estudio)
-    r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert r.status_code == 200
-    assert "dejaría fuera" in r.text
-    assert "40.0%" in r.text
+def test_pct_trades_fuera_helper_intacto():
+    scfg = {"days_enabled": [1, 2, 3, 4, 5],
+            "entry_start": "09:30", "entry_end": "15:45"}
+    # 3 dentro RTH (10/11/14h) + 2 fuera (20/22h) → 40% fuera (banner ámbar)
+    muestras = [[1, 600], [1, 660], [1, 840], [1, 1200], [1, 1320]]
+    assert rr._pct_trades_fuera(scfg, muestras) == 40.0
+    # sin ventana L2 restrictiva → cubre todo (0%)
+    assert rr._pct_trades_fuera(None, muestras) == 0.0
+    # sin muestras → None (la vista no pinta comparación)
+    assert rr._pct_trades_fuera(scfg, []) is None
 
 
 def test_reporte_md_incluye_ventana_operacion():

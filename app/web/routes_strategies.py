@@ -471,21 +471,17 @@ async def create_strategy_ui(
         reason="created via UI",
     )
     await db.commit()
-    # Puente P3 — promoción desde el estudio: encadenar directo al diff de
-    # aplicar en Riesgo (?aplicar=1 abre el modal). El flash con el token
-    # viaja por query param y Riesgo YA renderiza messages — no se pierde.
-    # SEC-1b — el token NO viaja en la URL: se guarda efímero y el redirect
-    # lleva solo el id; la página destino lo pide por fetch y lo muestra una vez.
+    # Puente P3 — promoción desde el estudio. L7b: Riesgo v1 retirado de la UI;
+    # el destino es el DETALLE de Estrategias (sub-pestaña Luxy), donde el diff
+    # de aplicar vive ahora (`/luxy/aplicar`). `aplicar=1` queda como hint inerte.
+    # SEC-1b — el token NO viaja en la URL: se guarda efímero y el redirect lleva
+    # solo el id; la página destino lo pide por fetch y lo muestra una vez.
     from app.core import token_once
     tid = token_once.put(new_token)
-    if from_estudio.strip() and from_estudio.strip() == strategy_id:
-        return redirect(
-            f"/ui/riesgo?strategy={strategy_id}&aplicar=1&token_id={tid}",
-            flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — el token "
-                  f"webhook aparece arriba UNA vez.",
-        )
+    dest = (f"/ui/strategies/{strategy_id}?token_id={tid}"
+            + ("&aplicar=1" if from_estudio.strip() == strategy_id else ""))
     return redirect(
-        f"/ui/strategies/{strategy_id}?token_id={tid}",
+        dest,
         flash=f"Estrategia '{strategy_id}' creada en CANDIDATE — el token "
               f"webhook aparece arriba UNA vez.",
     )

@@ -176,32 +176,31 @@ async def test_estrategias_sin_backstop_no_avisa(client: AsyncClient,
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_riesgo_badge_y_boton_con_viva(client: AsyncClient,
-                                             db: AsyncSession,
-                                             dirs: Path) -> None:
+async def test_riesgo_v1_redirige_al_detalle_con_strategy(
+    client: AsyncClient, db: AsyncSession, dirs: Path
+) -> None:
+    """L7b — la página v1 (badge + botón aplicar) se retiró: /ui/riesgo?strategy
+    redirige al detalle de Estrategias, donde vive el badge `luxy_deriva` y el
+    aplicar por Luxy (cubierto por test_luxy_aplicar_l5.py)."""
     _manifest_es(dirs)
     _seed_motor(dirs)
     await _viva(db)
     r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert r.status_code == 200
-    html = r.text
-    assert "Aplicar a la config viva…" in html
-    assert "SIN aplicar" in html                          # badge de deriva
-    assert "dar de alta en Estrategias" not in html       # ya hay viva
+    assert r.status_code == 302
+    assert r.headers["location"] == f"/ui/strategies/{SID}"
 
 
 @pytest.mark.asyncio
-async def test_riesgo_cta_promocion_sin_viva(client: AsyncClient,
-                                             dirs: Path) -> None:
+async def test_riesgo_v1_sin_strategy_redirige_a_estrategias(
+    client: AsyncClient, dirs: Path
+) -> None:
+    """L7b — sin `strategy`, /ui/riesgo redirige al índice de Estrategias (el
+    alta 'desde cero' es la puerta canónica; ya no hay CTA de promoción en v1)."""
     _manifest_es(dirs)
     _seed_motor(dirs)
-    r = await client.get(f"/ui/riesgo?strategy={SID}")
-    assert r.status_code == 200
-    html = r.text
-    assert "dar de alta en Estrategias" in html
-    assert f"from_estudio={SID}" in html
-    assert "Aplicar a la config viva…" not in html
-    assert "sin estrategia viva" in html                  # badge gris
+    r = await client.get("/ui/riesgo")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/ui/strategies"
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +350,8 @@ async def test_promocion_encadena_a_aplicar(client: AsyncClient,
         "timeframe": "5m", "from_estudio": SID})
     assert r.status_code == 303
     loc = r.headers["location"]
-    assert f"/ui/riesgo?strategy={SID}" in loc and "aplicar=1" in loc
+    # L7b — la promoción encadena al DETALLE de Estrategias (Luxy), no a v1.
+    assert f"/ui/strategies/{SID}" in loc and "aplicar=1" in loc
     # SEC-1b — el redirect lleva el id efímero, NO el token en claro
     assert "token_id=" in loc
     import re as _re
@@ -360,12 +360,13 @@ async def test_promocion_encadena_a_aplicar(client: AsyncClient,
     s = (await db.execute(select(Strategy).where(
         Strategy.strategy_id == SID))).scalar_one()
     assert s.status in ("candidate", "paper")
-    # la página de riesgo trae el banner de un solo uso (token por fetch, no en
-    # el HTML) + el diff listo (botón presente porque ya hay viva)
+    # L7b — la promoción aterriza en el DETALLE de Estrategias: trae el banner
+    # de un solo uso (token por fetch, no en el HTML). El aplicar por Luxy vive
+    # en la sub-pestaña Luxy (cubierto de punta a punta por test_luxy_aplicar_l5).
     r2 = await client.get(loc.replace(" ", "%20"))
     assert r2.status_code == 200
     assert 'id="token-once"' in r2.text                    # banner one-time
-    assert "Aplicar a la config viva…" in r2.text
+    assert SID in r2.text and ">Luxy<" in r2.text          # detalle + sub-pestaña
     # el token se obtiene UNA vez por el endpoint efímero (misma sesión)
     tk = await client.get(f"/ui/strategies/token-once/{tid}")
     assert tk.status_code == 200 and tk.json()["token"]

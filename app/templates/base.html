@@ -44,8 +44,10 @@
             {{ nav('/ui', 'Dashboard', exact=True) }}
             {{ nav('/ui/strategies', 'Estrategias') }}
             {{ nav('/ui/signals', 'Señales') }}
-            {{ nav('/ui/lab', 'Lab') }}
-            {{ nav('/ui/riesgo', 'Riesgo') }}
+            {# L7b — Riesgo v1 retirado del nav (redirect /ui/riesgo → detalle
+               Estrategias/Luxy). Lab fuera del nav (decisión del operador): su
+               acceso canónico es la sub-pestaña Lab del detalle; /ui/lab sigue
+               vivo para el iframe de L6 y bookmarks directos. #}
             {{ nav('/ui/positions', 'Posiciones') }}
             {{ nav('/ui/portfolio', 'Portafolio') }}
             {{ nav('/ui/assets', 'Activos') }}

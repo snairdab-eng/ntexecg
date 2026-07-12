@@ -46,8 +46,9 @@ async def test_lab_embebido_en_subpestana(client: AsyncClient, db) -> None:
 async def test_lab_global_sigue_vivo(client: AsyncClient) -> None:
     r = await client.get("/ui/lab?instrument=ES")
     assert r.status_code == 200                       # la casa global no se movió
-    # la entrada del nav se conserva (el Lab sigue accesible; bookmark intacto)
-    assert ">Lab<" in r.text
+    # L7b — el Lab sale del nav (decisión del operador): su acceso canónico es la
+    # sub-pestaña Lab del detalle; /ui/lab sigue vivo (iframe L6 + bookmark).
+    assert ">Lab<" not in r.text
 
 
 @pytest.mark.asyncio

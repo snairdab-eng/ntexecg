@@ -129,8 +129,9 @@ async def test_analytics_redirige_a_unificada(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_partials_siguen_sirviendo_app_wide(client: AsyncClient) -> None:
     """Los partials son load-bearing app-wide (base.html:72): el navbar de
-    OTRA página (Riesgo) sigue pidiendo bridge-badge y el endpoint sirve."""
-    r = await client.get("/ui/riesgo")
+    OTRA página (Posiciones) sigue pidiendo bridge-badge y el endpoint sirve.
+    (L7b — antes se usaba /ui/riesgo, hoy redirige; Posiciones sirve igual.)"""
+    r = await client.get("/ui/positions")
     assert r.status_code == 200
     assert 'hx-get="/ui/partials/bridge-badge"' in r.text
     for partial in ("/ui/partials/bridge-badge", "/ui/partials/bridge-status",
