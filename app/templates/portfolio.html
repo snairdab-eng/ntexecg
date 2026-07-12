@@ -29,17 +29,14 @@
                         {% if r.enabled %}
                         <span class="bg-green-800 text-green-100 text-xs px-2 py-0.5 rounded uppercase tracking-wide">ON</span>
                         {% else %}
-                        <span class="bg-gray-700 text-gray-300 text-xs px-2 py-0.5 rounded uppercase tracking-wide">OFF</span>
-                        {% endif %}
-                        {% if not r.implemented %}
-                        <span class="bg-gray-800 text-gray-500 text-xs px-2 py-0.5 rounded border border-gray-700"
-                              title="Codificada e inerte hasta P-B">inerte</span>
+                        <span class="bg-amber-900/60 text-amber-300 text-xs px-2 py-0.5 rounded border border-amber-800 uppercase tracking-wide"
+                              title="Codificada pero apagada — no protege nada hasta encenderla">inerte</span>
                         {% endif %}
                     </div>
                     <p class="text-xs text-gray-400 mt-1">{{ r.desc }}</p>
-                    {% if not r.implemented and r.enabled %}
-                    <p class="text-xs text-yellow-400/80 mt-1">
-                        ⚠ encendida pero aún no codificada (P-B) — no altera decisiones.
+                    {% if not r.enabled %}
+                    <p class="text-xs text-amber-400/80 mt-1">
+                        ⚠ apagada — codificada e INERTE: no altera ninguna decisión (fail-honest).
                     </p>
                     {% endif %}
                 </div>

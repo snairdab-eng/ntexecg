@@ -66,26 +66,26 @@ RULE_META: list[dict] = [
      "desc": "Una posición abierta por activo (MES/ES→ES) entre todas las "
              "estrategias, sin importar dirección. No bloquea las piernas de "
              "la escalera; solo entradas nuevas independientes."},
-    {"key": RULE_NO_STACK_GROUP, "n": 2, "implemented": False,
+    {"key": RULE_NO_STACK_GROUP, "n": 2, "implemented": True,
      "label": "No apilar el mismo grupo/clase",
      "desc": "Índices ES/NQ/RTY/YM · metales GC · FX 6E/6J · energía CL "
              "van en cardumen."},
-    {"key": RULE_MAX_RISK_USD, "n": 3, "implemented": False,
+    {"key": RULE_MAX_RISK_USD, "n": 3, "implemented": True,
      "label": "Tope de riesgo agregado ($)",
      "desc": "Suma del peor-caso de lo abierto ≤ tope configurable."},
-    {"key": RULE_MAX_MICROS, "n": 4, "implemented": False,
+    {"key": RULE_MAX_MICROS, "n": 4, "implemented": True,
      "label": "Tope de micros totales",
      "desc": "Suma de microcontratos abiertos ≤ N."},
-    {"key": RULE_MAX_DAILY_LOSS, "n": 5, "implemented": False,
+    {"key": RULE_MAX_DAILY_LOSS, "n": 5, "implemented": True,
      "label": "Tope de pérdida diaria del portafolio",
      "desc": "Pérdida realizada del día > X → se para todo."},
-    {"key": RULE_MAX_POSITIONS, "n": 6, "implemented": False,
+    {"key": RULE_MAX_POSITIONS, "n": 6, "implemented": True,
      "label": "Máx. nº de posiciones simultáneas",
      "desc": "Nº de posiciones abiertas ≤ N."},
-    {"key": RULE_COOLDOWN_LOSS, "n": 7, "implemented": False,
+    {"key": RULE_COOLDOWN_LOSS, "n": 7, "implemented": True,
      "label": "Enfriamiento tras pérdida grande",
      "desc": "Tras pegar el backstop, pausa entradas nuevas N minutos."},
-    {"key": RULE_GROUP_BIAS, "n": 8, "implemented": False,
+    {"key": RULE_GROUP_BIAS, "n": 8, "implemented": True,
      "label": "Sesgo direccional del grupo",
      "desc": "Si el cardumen ya va N en una dirección, no sumar más."},
 ]
@@ -113,6 +113,52 @@ async def load_rules(db: AsyncSession) -> dict[str, bool]:
 
     cfg = await get_portfolio_config(db)
     return merge_rules(cfg.rules_json if cfg is not None else None)
+
+
+# Grupos de correlación (P-B regla 2/8, confirmado por el operador 2026-07-10):
+# índices ES/NQ/RTY/YM (+micros vía raíz del Symbol Mapper) · metales GC ·
+# FX 6E/6J · energía CL. La raíz ya colapsa micros→padre (MES→ES).
+GROUPS: dict[str, set[str]] = {
+    "indices": {"ES", "NQ", "RTY", "YM"},
+    "metales": {"GC"},
+    "fx": {"6E", "6J"},
+    "energia": {"CL"},
+}
+_ROOT_TO_GROUP = {root: g for g, roots in GROUPS.items() for root in roots}
+
+
+def group_of(root: str | None) -> str | None:
+    """Grupo de correlación de un activo raíz (None si no está catalogado)."""
+    return _ROOT_TO_GROUP.get(root) if root else None
+
+
+# Parámetros por regla (inertes hasta que su regla se encienda). Merge sobre
+# esto lo persistido en PortfolioConfig.params_json.
+DEFAULT_PARAMS: dict = {
+    "rule_3_max_risk_usd": 10_000.0,        # tope del peor-caso agregado
+    "rule_4_max_micros": 10,                # tope de micros totales abiertos
+    "rule_5_max_daily_loss_usd": 2_000.0,   # pérdida realizada del día
+    "rule_6_max_positions": 3,              # posiciones simultáneas
+    "rule_7_cooldown_min": 30,              # enfriamiento tras pérdida grande
+    "rule_7_loss_threshold_usd": 1_000.0,   # qué cuenta como "pérdida grande"
+    "rule_8_group_bias_max": 2,             # posiciones del grupo en un lado
+}
+
+
+def merge_params(params_json: dict | None) -> dict:
+    merged = dict(DEFAULT_PARAMS)
+    if isinstance(params_json, dict):
+        for k, v in params_json.items():
+            if k in merged and isinstance(v, (int, float)):
+                merged[k] = v
+    return merged
+
+
+async def load_params(db: AsyncSession) -> dict:
+    from app.services.repositories import get_portfolio_config
+
+    cfg = await get_portfolio_config(db)
+    return merge_params(cfg.params_json if cfg is not None else None)
 
 
 @dataclass
@@ -175,6 +221,34 @@ async def _root_via_strategy(db: AsyncSession, pos: PositionState,
     return idx.root_for_ticker(strat.asset_symbol)
 
 
+def _incoming_qty(config: dict, signal: NormalizedSignal) -> int:
+    """Micros de la señal entrante: total del scale_entry (sin la pierna a 0) o
+    la cantidad de la señal, mínimo 1."""
+    qs = (config.get("scale_entry") or {}).get("quantities") or []
+    total = sum(int(q) for q in qs if q and int(q) > 0)
+    if total > 0:
+        return total
+    return max(1, int(getattr(signal, "quantity", None) or 1))
+
+
+def _incoming_direction(signal: NormalizedSignal) -> str:
+    return "long" if signal.action == "buy" else "short"
+
+
+def _incoming_worst_case(config: dict, qty: int) -> float | None:
+    """Peor-caso $ de la entrada nueva = qty micros parando en el backstop.
+    REUSA `position_sizing.worst_case_loss` (helper de L4 — no se duplica la
+    fórmula). None si falta backstop o el PV del catálogo (fail-closed)."""
+    sl = config.get("backstop_points")
+    tv = config.get("tick_value")
+    ts = config.get("tick_size")
+    if not sl or not tv or not ts:
+        return None
+    pv = float(tv) / float(ts)                 # $/punto del contrato despachado
+    from app.services.position_sizing import worst_case_loss
+    return worst_case_loss(float(sl), [0.0], [int(qty)], pv)
+
+
 class PortfolioGuard:
     """Guardarraíl de riesgo de portafolio (L3). Solo evalúa reglas encendidas."""
 
@@ -184,6 +258,7 @@ class PortfolioGuard:
         signal: NormalizedSignal,
         config: dict,
         rules: dict[str, bool] | None = None,
+        params: dict | None = None,
     ) -> dict:
         """Evalúa una señal de ENTRADA contra las reglas encendidas.
 
@@ -199,14 +274,218 @@ class PortfolioGuard:
         if rules is None:
             rules = await load_rules(db)
 
-        # Regla 1 — no apilar el mismo activo. Única regla viva en P-A.
+        # Regla 1 — no apilar el mismo activo.
         if rules.get(RULE_NO_STACK_ASSET):
             r1 = await self._rule_no_stack_asset(db, signal, config)
             if r1["failed"]:
                 return r1
 
-        # Reglas 2–8: inertes (P-B). No corren aunque estén encendidas.
+        # Reglas 2–8 (P-B): codificadas; corren SOLO si están encendidas. Al
+        # nacer todas OFF → este bloque no toca nada (decisión idéntica a P-A).
+        pos_rules = (RULE_NO_STACK_GROUP, RULE_MAX_RISK_USD, RULE_MAX_MICROS,
+                     RULE_MAX_POSITIONS, RULE_GROUP_BIAS)
+        hist_rules = (RULE_MAX_DAILY_LOSS, RULE_COOLDOWN_LOSS)
+        active = [k for k in pos_rules + hist_rules if rules.get(k)]
+        if not active:
+            return {"failed": False}
+        if params is None:
+            params = await load_params(db)
+
+        # Snapshot de lo abierto (una sola lectura) para las reglas de posición.
+        if any(k in active for k in pos_rules):
+            try:
+                snap = await self._snapshot(db, signal, config)
+            except Exception as exc:
+                logger.error("portfolio_snapshot_unreadable error={}", exc)
+                return {"failed": True, "reason": "portfolio_state_unreadable",
+                        "check": "3.5_portfolio",
+                        "message": "estado de posiciones/catálogo no legible "
+                                   "(fail-closed)"}
+            for k in pos_rules:
+                if k not in active:
+                    continue
+                r = self._POS_RULES[k](self, snap, signal, config, params)
+                if r["failed"]:
+                    return r
+
+        if RULE_MAX_DAILY_LOSS in active:
+            r = await self._rule_max_daily_loss(db, config, params)
+            if r["failed"]:
+                return r
+        if RULE_COOLDOWN_LOSS in active:
+            r = await self._rule_cooldown_after_loss(db, config, params)
+            if r["failed"]:
+                return r
         return {"failed": False}
+
+    # ── snapshot de exposición (reglas 2/3/4/6/8) ──
+    async def _snapshot(self, db: AsyncSession, signal: NormalizedSignal,
+                        config: dict) -> dict:
+        account_id = config.get("account_id", "paper_default")
+        own = signal.mapped_symbol
+        idx = await _build_root_index(db)
+        result = await db.execute(select(PositionState).where(
+            PositionState.account_id == account_id,
+            PositionState.state != _FLAT))
+        rows = []
+        for p in result.scalars().all():
+            if p.symbol == own:
+                continue                       # el propio símbolo lo ve symbol_busy
+            root = idx.root_for_position(p)
+            if root is None:
+                root = await _root_via_strategy(db, p, idx)
+            rows.append({
+                "symbol": p.symbol, "strategy_id": p.strategy_id,
+                "root": root, "group": group_of(root),
+                "qty": int(p.quantity or 0),
+                "direction": (p.direction or "").lower() or None,
+                "worst_case": ((p.risk_plan_json or {}) or {}).get(
+                    "worst_case_usd"),
+            })
+        return {"incoming_root": idx.root_for_ticker(signal.ticker_received),
+                "rows": rows}
+
+    @staticmethod
+    def _fail(rule: str, reason: str, message: str, **extra) -> dict:
+        return {"failed": True, "reason": reason, "check": "3.5_portfolio",
+                "rule": rule, "message": message, **extra}
+
+    # ── Regla 2 — no apilar el mismo GRUPO/clase ──
+    def _rule_no_stack_group(self, snap, signal, config, params) -> dict:
+        g = group_of(snap["incoming_root"])
+        if g is None:
+            return self._fail(RULE_NO_STACK_GROUP, "portfolio_group_unknown",
+                              "grupo del activo de la señal indeterminado "
+                              "(fail-closed)")
+        for r in snap["rows"]:
+            if r["group"] is None:
+                return self._fail(RULE_NO_STACK_GROUP, "portfolio_exposure_unknown",
+                                  f"posición abierta de grupo indeterminado "
+                                  f"({r['symbol']}) — fail-closed",
+                                  unknown_symbol=r["symbol"])
+            if r["group"] == g:
+                return self._fail(RULE_NO_STACK_GROUP, "portfolio_group_busy",
+                                  f"el grupo {g} ya tiene posición "
+                                  f"({r['root']})", group=g,
+                                  holder_symbol=r["symbol"])
+        return {"failed": False}
+
+    # ── Regla 3 — tope de riesgo agregado ($), peor-caso ──
+    def _rule_max_risk(self, snap, signal, config, params) -> dict:
+        tope = params["rule_3_max_risk_usd"]
+        total = 0.0
+        for r in snap["rows"]:
+            wc = r["worst_case"]
+            if wc is None:                     # no computable → fail-closed
+                return self._fail(RULE_MAX_RISK_USD, "portfolio_risk_unknown",
+                                  f"peor-caso de {r['symbol']} no disponible "
+                                  f"(fail-closed)", unknown_symbol=r["symbol"])
+            total += float(wc)
+        inc = _incoming_worst_case(config, _incoming_qty(config, signal))
+        if inc is None:
+            return self._fail(RULE_MAX_RISK_USD, "portfolio_risk_unknown",
+                              "peor-caso de la señal no computable (sin "
+                              "backstop/PV) — fail-closed")
+        if total + inc > tope:
+            return self._fail(RULE_MAX_RISK_USD, "portfolio_risk_cap",
+                              f"peor-caso agregado ${total + inc:,.0f} > tope "
+                              f"${tope:,.0f}", worst_case_open=round(total, 2),
+                              worst_case_incoming=round(inc, 2), cap=tope)
+        return {"failed": False}
+
+    # ── Regla 4 — tope de micros totales ──
+    def _rule_max_micros(self, snap, signal, config, params) -> dict:
+        cap = int(params["rule_4_max_micros"])
+        open_micros = sum(r["qty"] for r in snap["rows"])
+        inc = _incoming_qty(config, signal)
+        if open_micros + inc > cap:
+            return self._fail(RULE_MAX_MICROS, "portfolio_micros_cap",
+                              f"{open_micros}+{inc} micros > tope {cap}",
+                              open_micros=open_micros, incoming=inc, cap=cap)
+        return {"failed": False}
+
+    # ── Regla 6 — máx nº de posiciones simultáneas ──
+    def _rule_max_positions(self, snap, signal, config, params) -> dict:
+        cap = int(params["rule_6_max_positions"])
+        n_open = len(snap["rows"])
+        if n_open + 1 > cap:
+            return self._fail(RULE_MAX_POSITIONS, "portfolio_positions_cap",
+                              f"{n_open} posiciones abiertas + 1 > tope {cap}",
+                              open_positions=n_open, cap=cap)
+        return {"failed": False}
+
+    # ── Regla 8 — sesgo direccional del grupo ──
+    def _rule_group_bias(self, snap, signal, config, params) -> dict:
+        cap = int(params["rule_8_group_bias_max"])
+        g = group_of(snap["incoming_root"])
+        if g is None:
+            return self._fail(RULE_GROUP_BIAS, "portfolio_group_unknown",
+                              "grupo de la señal indeterminado (fail-closed)")
+        side = _incoming_direction(signal)
+        same = sum(1 for r in snap["rows"]
+                   if r["group"] == g and r["direction"] == side)
+        if same >= cap:
+            return self._fail(RULE_GROUP_BIAS, "portfolio_group_bias",
+                              f"el grupo {g} ya va {same} en {side} (tope {cap})",
+                              group=g, side=side, same_side=same, cap=cap)
+        return {"failed": False}
+
+    # ── Regla 5 — tope de pérdida diaria del portafolio ──
+    async def _rule_max_daily_loss(self, db, config, params) -> dict:
+        from datetime import datetime, timezone
+
+        from app.models.execution_result import ExecutionResult
+        cap = params["rule_5_max_daily_loss_usd"]
+        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0,
+                                                   microsecond=0)
+        try:
+            rows = (await db.execute(select(ExecutionResult.pnl).where(
+                ExecutionResult.exit_time >= start))).scalars().all()
+        except Exception as exc:
+            logger.error("portfolio_daily_loss_unreadable error={}", exc)
+            return self._fail(RULE_MAX_DAILY_LOSS, "portfolio_state_unreadable",
+                              "pérdida diaria no legible (fail-closed)")
+        realized = sum(float(p) for p in rows if p is not None)
+        if realized < -abs(cap):
+            return self._fail(RULE_MAX_DAILY_LOSS, "portfolio_daily_loss",
+                              f"pérdida realizada del día ${realized:,.0f} "
+                              f"supera el tope ${abs(cap):,.0f} — se para todo",
+                              realized_usd=round(realized, 2), cap=abs(cap))
+        return {"failed": False}
+
+    # ── Regla 7 — enfriamiento tras pérdida grande ──
+    async def _rule_cooldown_after_loss(self, db, config, params) -> dict:
+        from datetime import datetime, timedelta, timezone
+
+        from app.models.execution_result import ExecutionResult
+        mins = params["rule_7_cooldown_min"]
+        thr = abs(params["rule_7_loss_threshold_usd"])
+        since = datetime.now(timezone.utc) - timedelta(minutes=mins)
+        try:
+            rows = (await db.execute(select(
+                ExecutionResult.pnl, ExecutionResult.exit_time).where(
+                ExecutionResult.exit_time >= since))).all()
+        except Exception as exc:
+            logger.error("portfolio_cooldown_unreadable error={}", exc)
+            return self._fail(RULE_COOLDOWN_LOSS, "portfolio_state_unreadable",
+                              "historial de cierres no legible (fail-closed)")
+        for pnl, _t in rows:
+            if pnl is not None and float(pnl) <= -thr:
+                return self._fail(RULE_COOLDOWN_LOSS, "portfolio_cooldown",
+                                  f"enfriamiento: pérdida ≥ ${thr:,.0f} en los "
+                                  f"últimos {mins} min — pausa de entradas",
+                                  cooldown_min=mins, threshold=thr)
+        return {"failed": False}
+
+    # Despacho de las reglas basadas en el snapshot (sin await — el snapshot ya
+    # se leyó). Se define tras los métodos para referenciarlos.
+    _POS_RULES = {
+        RULE_NO_STACK_GROUP: _rule_no_stack_group,
+        RULE_MAX_RISK_USD: _rule_max_risk,
+        RULE_MAX_MICROS: _rule_max_micros,
+        RULE_MAX_POSITIONS: _rule_max_positions,
+        RULE_GROUP_BIAS: _rule_group_bias,
+    }
 
     async def _rule_no_stack_asset(
         self, db: AsyncSession, signal: NormalizedSignal, config: dict
