@@ -359,6 +359,13 @@ async def test_luxy_e2e_real(
     assert 'id="lx-chart-in"' not in html and 'id="lx-chart-oos"' not in html
     assert "in-sample · OOS" in html                  # rótulo del corte del split
     assert "BE: requiere recálculo del motor" in html
+    # LX-2 — el código de los switches por sesión/día viaja (el panel es
+    # JS-driven; el render visual lo valida el smoke del operador): CSS del
+    # switch, binding por zona/día y el payload de toggles al motor.
+    assert ".lx-sw{" in html                          # estilo del switch (dark)
+    assert "input[data-z]" in html and "input[data-d]" in html
+    assert "zones_off" in html and "days_off" in html  # recalc envía los toggles
+    assert "no persiste" in html                      # aviso conservado (criterio 5)
     assert "ET" in html                              # rango horario ET (R-T7)
     # L4 — el panel de Perfiles renderiza el sizing + Export (builder real)
     assert "Perfiles — sizing y peor-caso" in html
@@ -415,6 +422,42 @@ async def test_luxy_evaluar_parity_real(
     assert dash["cutoff_i"] == study["split"]["n_in_sample"]
     assert sum(1 for t in dash["trades"] if t["in"]) == dash["cutoff_i"]
     assert len(dash["trades"]) == study["split"]["n_total"]
+
+
+@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.asyncio
+async def test_luxy_toggles_motor_real(
+    client: AsyncClient, dirs: Path, db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LX-2 — evaluate_overrides acepta zones_off/days_off y excluye por
+    zona/día ANTES de evaluar CADA ventana (R-T7, mismo zone_of_hour): baja n
+    en las filas por ventana, NUNCA en el crudo; sin toggles = byte-igual (no
+    regresión LX-1) y determinista."""
+    import scripts.mr_luxy as mrl
+    import app.web.routes_riesgo as rr
+    monkeypatch.setenv("HOLC_DIR", "NINJATRADER/HOLC")
+    await _mk_strategy(db, "ES5m_Tog", "ES")
+    csv_real = Path(sorted(_ES_CSV)[-1])
+    r = await client.post(
+        "/ui/strategies/ES5m_Tog/integrar",
+        files={"file": (csv_real.name, csv_real.read_bytes(), "text/csv")})
+    clave = r.json()["clave"]
+
+    ev0 = mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {})
+    evD = mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {"days_off": [4]})   # sin viernes
+    evZ = mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {"zones_off": ["Asia"]})
+
+    # el crudo (base = 100% de trades) NUNCA se filtra por toggles
+    assert evD["base"] == ev0["base"] and evZ["base"] == ev0["base"]
+    # baja n SOLO en las filas por ventana (in-sample / OOS), cada una con lo suyo
+    assert evD["config"]["n"] <= ev0["config"]["n"]
+    assert evD["oos"]["n"] <= ev0["oos"]["n"]
+    assert (evD["config"]["n"] + evD["oos"]["n"]) < (ev0["config"]["n"] + ev0["oos"]["n"])
+    assert (evZ["config"]["n"] + evZ["oos"]["n"]) < (ev0["config"]["n"] + ev0["oos"]["n"])
+    # sin toggles: byte-igual a LX-1 (no regresión) + determinismo bit-a-bit
+    assert mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {}) == ev0
+    assert mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {"days_off": [4]}) == evD
 
 
 # ---------------------------------------------------------------------------

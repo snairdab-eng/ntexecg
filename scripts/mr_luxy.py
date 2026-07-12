@@ -422,8 +422,22 @@ def _card(m: dict) -> dict:
             "n": m.get("n")}                      # LX-1 #4: la tabla reactiva usa N
 
 
+def _entry_hour_et(tr, off) -> int:
+    """Hora ET de la entrada — FUENTE ÚNICA para los toggles de sesión (R-T7) y
+    para la nube del dashboard. Prioriza la que dejó el enriched
+    (`tr.hour = (entry_ts + offset).hour`, línea de `enrich_with_bars`); si un
+    trade no quedó enriquecido (`hour` None), la recompone con el MISMO offset ET
+    del enriched — NUNCA con la hora cruda del CSV (que no lleva offset)."""
+    from datetime import timedelta
+    h = getattr(tr, "hour", None)
+    if h is not None:
+        return h
+    return (tr.entry_ts + timedelta(minutes=int(off or 0))).hour
+
+
 def _dashboard_payload(sts: list[SimTrade], by_number: dict, levers_in: dict,
-                       ppt: float, crudo: dict, config_m: dict) -> dict:
+                       ppt: float, crudo: dict, config_m: dict,
+                       off: int = 0) -> dict:
     """Contrato §1 de la receta, derivado del estudio (presentación, sin
     recomputar nada pesado): nube de trades, base/config, reco con zonas/días de
     la partición ÚNICA (R-T7), time-stop, unidades. Determinista."""
@@ -433,9 +447,7 @@ def _dashboard_payload(sts: list[SimTrade], by_number: dict, levers_in: dict,
     rows = []
     for s in sts:
         tr = by_number.get(s.number)
-        hr = getattr(tr, "hour", None)
-        if hr is None and tr is not None:
-            hr = tr.entry_ts.hour
+        hr = _entry_hour_et(tr, off) if tr is not None else None
         dow = tr.entry_ts.weekday() if tr is not None else None
         dur = ((tr.exit_ts - tr.entry_ts).total_seconds() / 60.0
                if tr is not None and tr.exit_ts else None)
@@ -662,7 +674,7 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
     dashboard = None
     if intrabar and levers_in and sts:
         dashboard = _dashboard_payload(sts, by_number, levers_in, ppt,
-                                       crudo, fila_in)
+                                       crudo, fila_in, off=off)
         # L7a — Ventana de operación + rango/duración por lado NATIVAS en Luxy:
         # REUSO del helper de v1 (RIES-W `_listado_crudo`/`_ventana_operacion`)
         # sobre TODO el listado crudo + el offset ET del enriched → paridad
@@ -872,7 +884,7 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
 
     if cancel_after_s is not None:
         cancel_after_s = min(float(cancel_after_s), CANCEL_AFTER_MAX_S)
-    _man, trades, ppt, keys5, idx5, bars5, intrabar, _off = _load_master(
+    _man, trades, ppt, keys5, idx5, bars5, intrabar, off = _load_master(
         Path(motor_dir) / clave)
     split_in_out(trades, oos)
     sts = from_trades(trades, ppt)
@@ -898,14 +910,34 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
                                           cands, keys5, idx5, bars5)
                    for s in sts}
 
+    # LX-2 — toggles por sesión/día: excluir trades por ZONA canónica (R-T7,
+    # mismo `zone_of_hour` de sesiones_et) o por día (dow 0-6) ANTES de evaluar
+    # cada ventana. `zones_off` = nombres de zona; `days_off` = dow (0=lunes).
+    # No persiste ni entra en Aplicar (diagnóstico dentro de muestra).
+    zones_off = set(overrides.get("zones_off") or [])
+    days_off = set(int(d) for d in (overrides.get("days_off") or []))
+
+    def _passes(s) -> bool:
+        tr = by_number.get(s.number)
+        if tr is None:
+            return True
+        hr = _entry_hour_et(tr, off)          # hora ET (fuente única, con offset)
+        if zones_off and zone_of_hour(hr) in zones_off:
+            return False
+        if days_off and tr.entry_ts.weekday() in days_off:
+            return False
+        return True
+
+    sts_in_f = [s for s in sts_in if _passes(s)] if (zones_off or days_off) else sts_in
+    sts_oos_f = [s for s in sts_oos if _passes(s)] if (zones_off or days_off) else sts_oos
+
     # LX-1 #4 — R-T10: `config` (In-sample) se evalúa SOLO sobre el subconjunto
     # in-sample; la fila OOS es un ESPEJO con las MISMAS palancas sobre el
-    # subconjunto OOS. Jamás se mezclan (antes `config` corría sobre todos los
-    # sts). `touches` está cacheado por número → sirve a ambos subconjuntos.
-    config = eval_levers(sts_in, lev, ppt, cancel_after_s=cancel_after_s,
-                         touches=touches) if sts_in else {"n": 0}
-    oosm = eval_levers(sts_oos, lev, ppt, cancel_after_s=cancel_after_s,
-                       touches=touches) if sts_oos else {"n": 0}
+    # subconjunto OOS. Jamás se mezclan. `touches` está cacheado por número.
+    config = eval_levers(sts_in_f, lev, ppt, cancel_after_s=cancel_after_s,
+                         touches=touches) if sts_in_f else {"n": 0}
+    oosm = eval_levers(sts_oos_f, lev, ppt, cancel_after_s=cancel_after_s,
+                       touches=touches) if sts_oos_f else {"n": 0}
     crudo = metrics_usd([t.pnl_usd for t in trades])
     return {
         "validado": True, "clave": clave,

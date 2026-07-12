@@ -731,6 +731,15 @@
           window.LUXY = {{ luxy.dashboard | tojson }};
           window.LUXY_SID = {{ strategy.strategy_id | tojson }};
         </script>
+        <style>
+          /* LX-2 — switch por sesión/día (patrón sw/track/knob del prototipo, dark) */
+          .lx-sw{position:relative;display:inline-block;width:30px;height:17px;flex:none;cursor:pointer;vertical-align:middle}
+          .lx-sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+          .lx-sw .lx-tr{position:absolute;inset:0;background:#30363d;border-radius:17px;transition:background .15s}
+          .lx-sw .lx-kn{position:absolute;top:2px;left:2px;width:13px;height:13px;background:#8b949e;border-radius:50%;transition:transform .15s,background .15s}
+          .lx-sw input:checked + .lx-tr{background:rgba(63,185,80,.5)}
+          .lx-sw input:checked ~ .lx-kn{transform:translateX(13px);background:#e6edf3}
+        </style>
         <div id="lx-root" class="space-y-4"
              style="--lx-paper:#0d1117;--lx-panel:#161b22;--lx-ink:#e6edf3;--lx-muted:#8b949e;--lx-line:#30363d;--lx-tp:#3fb950;--lx-be:#a371f7;--lx-scin:#58a6ff;--lx-sl:#d29922;--lx-green:#3fb950;--lx-red:#f85149;">
 
@@ -840,6 +849,16 @@
           // LX-1 #2 — RECO0: copia INMUTABLE de las palancas del estudio. Restablecer
           // SIEMPRE vuelve aqui; Recalcular JAMAS la pisa.
           const RECO0 = JSON.parse(JSON.stringify(S));
+          // LX-2 — toggles por sesion/dia: ON = incluida (nacen todas ON). ZON[i]
+          // para D.reco.zones[i]; DON[dow] para cada dia. Estado del estudio (ZON0/
+          // DON0) para Restablecer. BH/BD = horas/dias bloqueados (recalc en refresh).
+          const ZON = (R.zones||[]).map(function(){return true;});
+          const DON = {}; (R.days||[]).forEach(function(z){ DON[z.dow]=true; });
+          const ZON0 = ZON.slice(), DON0 = Object.assign({}, DON);
+          let BH = new Set(), BD = new Set();
+          function rebuildBlk(){ BH=new Set(); (R.zones||[]).forEach(function(z,i){ if(!ZON[i]) (z.hours||[]).forEach(function(h){BH.add(h);}); });
+            BD=new Set(); Object.keys(DON).forEach(function(k){ if(!DON[k]) BD.add(+k); }); }
+          function anyOff(){ return ZON.some(function(b){return !b;}) || Object.keys(DON).some(function(k){return !DON[k];}); }
           // ---- filas VALIDADAS de la tabla reactiva (normalizadas a {net,pf,dd,worst,wr,part,n}) ----
           function norm(r){ if(r==null) return null; return {
             net: r.net!=null? r.net : r.net_usd, pf: r.pf,
@@ -869,7 +888,9 @@
           function estimateSubset(inSample){
             const dok=d=> S.dir==='both'?true:S.dir==='long'?d.long:!d.long;
             const sub=D.trades.filter(d=>!!d.in===inSample);
-            const kept=[]; for(const d of sub){ if(dok(d)) kept.push(lever(d)); }
+            // LX-2: bloquear una sesion (por zona ET) o un dia excluye esos trades;
+            // ntot = subconjunto COMPLETO → la participacion CAE honestamente.
+            const kept=[]; for(const d of sub){ if(dok(d) && !BH.has(d.hr) && !BD.has(d.dow)) kept.push(lever(d)); }
             return statsCard(kept, sub.length); }
           // ---- tabla reactiva de 3 filas (Crudo fija · In-sample · OOS espejo) ----
           function renderTable(mode){
@@ -906,11 +927,16 @@
             ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fillRect(xCut,0,Math.max(0,W-pad-xCut),H);
             const mfeOn=el('lx-t-mfe').checked, maeOn=el('lx-t-mae').checked, clsOn=el('lx-t-cls').checked;
             rows.forEach(function(d,i){ const x=pad+i*step, oos=!d.in, aF=oos?0.13:0.28;
+              // LX-2: los trades de una sesion/dia bloqueado NO desaparecen — se
+              // ATENUAN (el operador debe ver que esta descartando).
+              const excl = BH.has(d.hr) || BD.has(d.dow);
+              ctx.save(); if(excl) ctx.globalAlpha=0.22;
               if(mfeOn && d.mfe>0){ ctx.fillStyle='rgba(63,185,80,'+aF+')'; ctx.fillRect(x,yUp(d.mfe),bw,midY-yUp(d.mfe)); }
               if(maeOn && d.mae<0){ ctx.fillStyle='rgba(248,81,73,'+aF+')'; ctx.fillRect(x,midY,bw,yDn(d.mae)-midY); }
               if(clsOn){ const c=d.pnl>=0?yUp(d.pnl):yDn(d.pnl);
                 ctx.fillStyle=d.pnl>=0?(oos?'rgba(63,185,80,.5)':'#3fb950'):(oos?'rgba(248,81,73,.5)':'#f85149');
-                ctx.fillRect(x,Math.min(midY,c),bw,Math.abs(c-midY)); } });
+                ctx.fillRect(x,Math.min(midY,c),bw,Math.abs(c-midY)); }
+              ctx.restore(); });
             // linea vertical de corte del split
             if(cut>0 && cut<rows.length){ ctx.strokeStyle='#8b949e'; ctx.setLineDash([3,3]);
               ctx.beginPath(); ctx.moveTo(xCut,0); ctx.lineTo(xCut,H); ctx.stroke(); ctx.setLineDash([]);
@@ -933,10 +959,13 @@
               ['C2','#58a6ff',-S.l2], ['C3','#58a6ff',-S.l3], ['SL','#d29922',-S.slV]
             ].filter(function(x){return x[2]!=null;}).map(function(x){return '<span><span style="color:'+x[1]+'">■</span> '+x[0]+' '+money(x[2])+ptf(x[2])+'</span>';}).join('');
           }
-          // ---- diagnosticos (sin cambios funcionales) ----
+          // ---- diagnosticos + LX-2 switches (se pintan y enganchan UNA vez) ----
+          function swHtml(kind,i,on){ return '<label class="lx-sw"><input type="checkbox" data-'+kind+'="'+i+'" '+(on?'checked':'')+'><span class="lx-tr"></span><span class="lx-kn"></span></label>'; }
           function diag(){
-            el('lx-zones').innerHTML=(R.zones||[]).map(function(z){return '<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">'+z.name+' <span style="color:var(--lx-muted)">'+z.et+'</span></span><span class="font-mono" style="color:'+(z.losing?'#d29922':'var(--lx-muted)')+'">'+z.n+'·'+money(z.net)+(z.losing?' pierde':'')+'</span></div>';}).join('');
-            el('lx-days').innerHTML=(R.days||[]).map(function(z){return '<div class="flex justify-between gap-2"><span style="color:var(--lx-ink)">'+z.name+'</span><span class="font-mono" style="color:'+(z.losing?'#d29922':'var(--lx-muted)')+'">'+z.n+'·'+money(z.net)+(z.losing?' pierde':'')+'</span></div>';}).join('');
+            el('lx-zones').innerHTML=(R.zones||[]).map(function(z,i){return '<div class="flex items-center justify-between gap-2"><span class="flex items-center gap-2" style="color:var(--lx-ink)">'+swHtml('z',i,ZON[i])+'<span>'+z.name+' <span style="color:var(--lx-muted)">'+z.et+'</span></span></span><span class="font-mono" style="color:'+(z.losing?'#d29922':'var(--lx-muted)')+'">'+z.n+'·'+money(z.net)+(z.losing?' pierde':'')+'</span></div>';}).join('');
+            el('lx-days').innerHTML=(R.days||[]).map(function(z){return '<div class="flex items-center justify-between gap-2"><span class="flex items-center gap-2" style="color:var(--lx-ink)">'+swHtml('d',z.dow,DON[z.dow])+'<span>'+z.name+'</span></span><span class="font-mono" style="color:'+(z.losing?'#d29922':'var(--lx-muted)')+'">'+z.n+'·'+money(z.net)+(z.losing?' pierde':'')+'</span></div>';}).join('');
+            el('lx-zones').querySelectorAll('input[data-z]').forEach(function(inp){ inp.addEventListener('change',function(){ ZON[+inp.dataset.z]=inp.checked; refresh(); }); });
+            el('lx-days').querySelectorAll('input[data-d]').forEach(function(inp){ inp.addEventListener('change',function(){ DON[+inp.dataset.d]=inp.checked; refresh(); }); });
             const ts=D.timestop||{};
             el('lx-ts').innerHTML=(ts.buckets||[]).map(function(b){return '<div class="flex justify-between gap-2"><span style="color:var(--lx-muted)">'+b.range+'m</span><span class="font-mono" style="color:'+(b.net<0?'#f85149':'var(--lx-muted)')+'">'+b.n+'·'+money(b.net)+'</span></div>';}).join('');
             el('lx-ts-why').textContent=ts.why||'';
@@ -958,7 +987,7 @@
             w.innerHTML=h;
           }
           // ---- chips / estado ----
-          function dirty(){ return JSON.stringify(S)!==JSON.stringify(RECO0); }
+          function dirty(){ return JSON.stringify(S)!==JSON.stringify(RECO0) || anyOff(); }
           function setChips(mode){
             const m=el('lx-mode'); if(mode==='val'){ m.textContent='validado · motor'; m.style.background='rgba(63,185,80,.16)'; m.style.color='#3fb950'; }
             else { m.textContent='estimacion · aprox'; m.style.background='rgba(210,153,34,.18)'; m.style.color='#d29922'; }
@@ -967,6 +996,7 @@
             el('lx-notes').textContent=(D.notes||[]).join(' · ');
           }
           function refresh(){
+            rebuildBlk();                              // LX-2: BH/BD antes de tabla/diagrama
             el('lx-v-tp').textContent=money(S.tpV); el('lx-v-sl').textContent=money(-S.slV);
             el('lx-v-be').textContent=S.be?money(S.beV):'—'; el('lx-v-l2').textContent=money(-S.l2); el('lx-v-l3').textContent=money(-S.l3);
             el('lx-alloc').textContent=A.join('/'); el('lx-why').textContent=R.why_alloc||'';
@@ -997,9 +1027,16 @@
             el('lx-r-l2').value=Math.round(S.l2); el('lx-r-l3').value=Math.round(S.l3); el('lx-r-sl').value=Math.round(S.slV);
             [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(function(pair){ el(pair[0]).checked=S[pair[1]]; });
             syncDir();
+            // LX-2: sincroniza los switches de sesion/dia con ZON/DON
+            el('lx-zones').querySelectorAll('input[data-z]').forEach(function(inp){ inp.checked=ZON[+inp.dataset.z]; });
+            el('lx-days').querySelectorAll('input[data-d]').forEach(function(inp){ inp.checked=DON[+inp.dataset.d]; });
           }
-          // LX-1 #2: Restablecer SIEMPRE vuelve a RECO0 (+ numeros validados del estudio)
-          el('lx-reset').addEventListener('click',function(){ Object.assign(S,RECO0); VLAST=V0; setValues(); refresh(); });
+          // LX-1 #2 / LX-2: Restablecer vuelve a RECO0 (palancas) + toggles todo ON
+          // (estado del estudio) + numeros validados del estudio.
+          el('lx-reset').addEventListener('click',function(){ Object.assign(S,RECO0);
+            for(var i=0;i<ZON.length;i++) ZON[i]=ZON0[i];
+            Object.keys(DON).forEach(function(k){ DON[k]=DON0[k]; });
+            VLAST=V0; setValues(); refresh(); });
           // ---- RECALCULAR = JOB del motor (numeros validados; JAMAS pisa RECO0) ----
           function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(function(r){return r.json();}).then(function(j){
               if(j.status==='running'){ setTimeout(pollEval,2000); return; }
@@ -1013,9 +1050,14 @@
           el('lx-recalc').addEventListener('click',function(){ el('lx-recalc').textContent='Calculando…'; el('lx-recalc').disabled=true;
             const ov={sl_usd:S.sl?S.slV:0, tp_usd:S.tp?S.tpV:null, dir:S.dir, l2_usd:S.l2, l3_usd:S.l3};
             if(S.be) ov.be_usd=S.beV; else ov.be_off=true;
+            // LX-2: sesiones/dias apagados → el motor los excluye por zona/dia
+            const zoff=[]; (R.zones||[]).forEach(function(z,i){ if(!ZON[i]) zoff.push(z.name); });
+            const doff=Object.keys(DON).filter(function(k){return !DON[k];}).map(Number);
+            if(zoff.length) ov.zones_off=zoff; if(doff.length) ov.days_off=doff;
             fetch('/ui/strategies/'+SID+'/luxy/evaluar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ov)})
               .then(function(r){return r.json().then(function(j){return {s:r.status,j:j};});}).then(function(o){ if(o.s===202) pollEval(); else { el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false; } }); });
-          bindOnce(); setValues(); diag(); winDiag(); refresh();
+          // LX-2: diag() ANTES de setValues() — crea los switches que setValues sincroniza.
+          bindOnce(); diag(); setValues(); winDiag(); refresh();
         })();
         </script>
         {% endif %}
