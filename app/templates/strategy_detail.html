@@ -760,9 +760,13 @@
             <div id="lx-notes" class="text-xs mt-2" style="color:var(--lx-muted)"></div>
           </div>
 
-          <!-- LX-1 #4 — Tabla reactiva: Crudo (fija) · In-sample · OOS (espejo),
-               cada fila recalculada sobre SU subconjunto por separado (R-T10,
-               jamás mezclados). Reemplaza las teselas. -->
+          <!-- LX-3b — banner ámbar de muestra (trades fuera de la cobertura HOLC)
+               + semáforo de robustez (SOLO de la fila OOS validada). -->
+          <div id="lx-muestra-banner" class="rounded p-2 text-xs mb-2" style="display:none;background:rgba(210,153,34,.14);color:#d29922"></div>
+          <div id="lx-robustez" class="text-xs mb-1"></div>
+          <!-- LX-3 — Tabla reactiva: Crudo (lista base, fija) · Crudo+ (palancas
+               sobre el 100% de la muestra simulable) · OOS (espejo sobre la
+               muestra apartada, R-T10). Cada fila aislada. Reemplaza las teselas. -->
           <div id="lx-table3" class="rounded overflow-x-auto" style="background:var(--lx-panel);border:1px solid var(--lx-line)"></div>
 
           <!-- LX-1 #3 — UN solo diagrama a todo el ancho: 100% de trades en orden
@@ -867,8 +871,12 @@
             wr: r.wr!=null? r.wr : r.wr_pct,
             part: r.part!=null? r.part : r.participacion_pct, n: r.n }; }
           const T3 = D.table3 || {};
-          const V0 = { crudo:norm(T3.crudo), in:norm(T3.in), oos:norm(T3.oos) };
+          const V0 = { crudo:norm(T3.crudo), crudo_plus:norm(T3.crudo_plus), oos:norm(T3.oos) };
           let VLAST = V0;                       // ultimo validado (Recalcular lo actualiza; NO toca RECO0)
+          // LX-3b — semáforo de robustez VALIDADO (solo motor): Recalcular lo
+          // actualiza, Restablecer vuelve al del estudio; la estimacion NO lo enciende.
+          let VROB = D.robustez;
+          function ept(c){ return (c && c.n) ? c.net/c.n : null; }   // $/trade
           // ---- estimacion client-side POR SUBCONJUNTO (BE nunca acredita beneficio) ----
           const MES = PV/10;
           function lever(d){ let e=d.pnl;
@@ -885,33 +893,59 @@
             return {net:a.reduce((x,y)=>x+y,0), pf:gl!==0?gp/Math.abs(gl):Infinity, dd,
                     worst:Math.min.apply(null,a), wr:a.filter(x=>x>0).length/a.length*100,
                     part: ntot? a.length/ntot*100 : 0, n:a.length}; }
-          function estimateSubset(inSample){
+          // LX-3 — estimacion por FILA, aislada (comparten solo la nube base):
+          //  'all' = Crudo+ sobre el 100% de la muestra simulable (consistente con
+          //  el diagrama); 'oos' = espejo sobre el subconjunto apartado (R-T10).
+          function estimateRows(scope){
             const dok=d=> S.dir==='both'?true:S.dir==='long'?d.long:!d.long;
-            const sub=D.trades.filter(d=>!!d.in===inSample);
+            const sub = scope==='oos' ? D.trades.filter(d=>!d.in) : D.trades;
             // LX-2: bloquear una sesion (por zona ET) o un dia excluye esos trades;
-            // ntot = subconjunto COMPLETO → la participacion CAE honestamente.
+            // ntot = conjunto COMPLETO de la fila → la participacion CAE honestamente.
             const kept=[]; for(const d of sub){ if(dok(d) && !BH.has(d.hr) && !BD.has(d.dow)) kept.push(lever(d)); }
             return statsCard(kept, sub.length); }
-          // ---- tabla reactiva de 3 filas (Crudo fija · In-sample · OOS espejo) ----
+          // ---- tabla reactiva de 3 filas (Crudo fija · Crudo+ · OOS espejo) ----
           function renderTable(mode){
-            const crudo=V0.crudo;                       // FIJA: 100% de trades, sin palancas
-            const inR = mode==='val'? VLAST.in  : estimateSubset(true);
-            const oosR= mode==='val'? VLAST.oos : estimateSubset(false);
-            const filas=[['Crudo',crudo,'text-gray-300',''],
-                         ['In-sample',inR,'text-emerald-300',''],
-                         ['OOS',oosR,'text-amber-300','espejo — no es la config a usar']];
-            const body=filas.map(function(f){ const name=f[0]; const c=f[1]||{}; const cls=f[2]; const note=f[3];
-              const cells=[money(c.net),pf(c.pf),money(c.dd),money(c.worst),pct(c.part),pct(c.wr),(c.n!=null?c.n:'—')];
-              return '<tr class="border-b border-gray-800 last:border-0"><td class="px-3 py-2 font-medium '+cls+'">'+name
+            // LX-3 — Crudo (fija) · Crudo+ (100% simulable, palancas) · OOS (espejo).
+            // Cada fila AISLADA: comparten solo la lista base; mover una palanca no
+            // toca Crudo, y Crudo+ y OOS se computan por separado.
+            const crudo=V0.crudo;
+            const cpR = mode==='val'? VLAST.crudo_plus : estimateRows('all');
+            const oosR= mode==='val'? VLAST.oos        : estimateRows('oos');
+            // LX-3b — retención OOS = $/trade OOS ÷ $/trade Crudo+ (guarda de
+            // división); muestra chica si n_oos < 10.
+            var oosNote='espejo — no es la config a usar';
+            var eo=ept(oosR), ec=ept(cpR);
+            if(eo!=null && ec){ oosNote+=' · retiene '+Math.round(100*eo/ec)+'% del $/trade de Crudo+';
+              if((oosR.n||0) < 10) oosNote+=' · muestra chica (n='+(oosR.n||0)+')'; }
+            const filas=[['Crudo',crudo,'text-gray-300','','lista de operaciones base, sin palancas'],
+                         ['Crudo+',cpR,'text-emerald-300','','Crudo + palancas'],
+                         ['OOS',oosR,'text-amber-300',oosNote,'palancas del in-sample evaluadas SOLO sobre la muestra apartada (R-T10)']];
+            const body=filas.map(function(f){ const name=f[0]; const c=f[1]||{}; const cls=f[2]; const note=f[3]; const tip=f[4];
+              // LX-3b — columna $/trade (expectativa = neto ÷ n), comparable entre muestras
+              const cells=[money(c.net),money(ept(c)),pf(c.pf),money(c.dd),money(c.worst),pct(c.part),pct(c.wr),(c.n!=null?c.n:'—')];
+              return '<tr class="border-b border-gray-800 last:border-0"><td class="px-3 py-2 font-medium '+cls+'" title="'+tip+'">'+name
                 + (note?' <span class="text-amber-500/80 text-xs font-normal">'+note+'</span>':'')
                 + '</td>'+cells.map(function(v){return '<td class="px-3 py-2 font-mono">'+v+'</td>';}).join('')+'</tr>'; }).join('');
             el('lx-table3').innerHTML =
               '<div class="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">Metricas — <span id="lx-t3-mode">validado</span></div>'
               + '<table class="w-full text-sm"><thead><tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">'
-              + '<th class="px-3 py-2">Fila</th><th class="px-3 py-2">Neto</th><th class="px-3 py-2">PF</th><th class="px-3 py-2">Max DD</th><th class="px-3 py-2">Peor</th><th class="px-3 py-2">Particip.</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">N</th>'
+              + '<th class="px-3 py-2">Fila</th><th class="px-3 py-2">Neto</th><th class="px-3 py-2">$/trade</th><th class="px-3 py-2">PF</th><th class="px-3 py-2">Max DD</th><th class="px-3 py-2">Peor</th><th class="px-3 py-2">Particip.</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">N</th>'
               + '</tr></thead><tbody>'+body+'</tbody></table>';
             const tm=el('lx-t3-mode'); if(tm){ tm.textContent = mode==='val'?'validado · motor':'estimacion · aprox'; tm.style.color = mode==='val'?'#3fb950':'#d29922'; }
+            semaforo(mode);
           }
+          // LX-3b — semáforo de robustez: SOLO de la fila OOS validada (motor).
+          function semaforo(mode){
+            const r=el('lx-robustez'); if(!r) return;
+            const v=(VROB&&VROB.verdict)||'rojo';
+            const map={verde:['🟢','#3fb950','robusto'],amarillo:['🟡','#d29922','frágil'],rojo:['🔴','#f85149','no generaliza']};
+            const m=map[v]||map.rojo; const dim=(mode==='est');
+            r.style.opacity=dim?'0.5':'1';
+            r.innerHTML='<span title="OOS = palancas probadas en datos que no participaron en derivarlas; si esto se degrada, la estrategia se está degradando">'+m[0]+' <b style="color:'+m[1]+'">robustez OOS</b> <span style="color:var(--lx-muted)">'+m[2]+(VROB&&VROB.pf!=null?' · PF '+(+VROB.pf).toFixed(2):'')+'</span></span>'+(dim?' <span style="color:#d29922">— pendiente de Recalcular</span>':'');
+          }
+          // LX-3b — banner ámbar de muestra (estático del estudio; se pinta una vez).
+          function banner(){ const b=el('lx-muestra-banner'); if(!b) return;
+            if(D.muestra_banner){ b.textContent='⚠ '+D.muestra_banner; b.style.display=''; } else { b.style.display='none'; } }
           // ---- LX-1 #3: UN diagrama a todo el ancho, corte del split + OOS tenue ----
           function drawChart(){
             const cv=el('lx-chart'); if(!cv) return; const ctx=cv.getContext('2d');
@@ -1036,13 +1070,14 @@
           el('lx-reset').addEventListener('click',function(){ Object.assign(S,RECO0);
             for(var i=0;i<ZON.length;i++) ZON[i]=ZON0[i];
             Object.keys(DON).forEach(function(k){ DON[k]=DON0[k]; });
-            VLAST=V0; setValues(); refresh(); });
+            VLAST=V0; VROB=D.robustez; setValues(); refresh(); });   // LX-3b: semáforo del estudio
           // ---- RECALCULAR = JOB del motor (numeros validados; JAMAS pisa RECO0) ----
           function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(function(r){return r.json();}).then(function(j){
               if(j.status==='running'){ setTimeout(pollEval,2000); return; }
               el('lx-recalc').textContent='Recalcular (motor)';
               if(j.status==='done' && j.result){
-                VLAST={ crudo:norm(j.result.base), in:norm(j.result.config), oos:norm(j.result.oos) };
+                VLAST={ crudo:norm(j.result.base), crudo_plus:norm(j.result.config), oos:norm(j.result.oos) };
+                VROB=j.result.robustez;           // LX-3b: semáforo del OOS revalidado
                 renderTable('val'); setChips('val'); el('lx-hint').style.display='none';
                 el('lx-recalc').disabled=true;
               } else { el('lx-recalc').disabled=false; }
@@ -1057,16 +1092,16 @@
             fetch('/ui/strategies/'+SID+'/luxy/evaluar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ov)})
               .then(function(r){return r.json().then(function(j){return {s:r.status,j:j};});}).then(function(o){ if(o.s===202) pollEval(); else { el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false; } }); });
           // LX-2: diag() ANTES de setValues() — crea los switches que setValues sincroniza.
-          bindOnce(); diag(); setValues(); winDiag(); refresh();
+          bindOnce(); diag(); setValues(); winDiag(); banner(); refresh();
         })();
         </script>
         {% endif %}
 
-        {# LX-1 #4 — Tabla A ESTÁTICA retirada: la tabla reactiva de arriba
-           (#lx-table3) la reemplaza (Crudo/In-sample/OOS por subconjunto,
-           validada por el motor y estimable al mover palancas). La Tabla A
-           aplicaba las palancas a TODA la muestra; el payload conserva
-           `luxy.tabla_a` por si hace falta. #}
+        {# LX-1/LX-3 — Tabla A ESTÁTICA retirada: la tabla reactiva de arriba
+           (#lx-table3) la reemplaza. Su fila Crudo+ tiene la MISMA semántica que
+           la vieja fila In-sample de la Tabla A (palancas sobre toda la muestra),
+           validada por el motor y estimable al mover palancas. El payload
+           conserva `luxy.tabla_a` por si hace falta. #}
 
         <!-- Tabla B -->
         <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">

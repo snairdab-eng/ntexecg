@@ -422,6 +422,60 @@ def _card(m: dict) -> dict:
             "n": m.get("n")}                      # LX-1 #4: la tabla reactiva usa N
 
 
+# ── LX-3b — semáforo de robustez + $/trade + nota de muestra ────────────────
+# El semáforo mide SOLO la fila OOS VALIDADA (palancas probadas en datos que no
+# participaron en derivarlas): si la OOS se degrada, la estrategia se degrada.
+ROBUSTEZ_PF_VERDE = 1.3       # 🟢 neto>0 y PF ≥ 1.3
+ROBUSTEZ_PF_MIN = 1.0        # 🟡 neto>0 y PF en [1.0, 1.3) · 🔴 neto≤0 o PF < 1.0
+RETENCION_N_MIN = 10        # OOS con menos trades → "muestra chica"
+
+
+def _expectativa(m: dict):
+    """$/trade = neto ÷ n (expectativa por operación). None si no computable
+    (guarda de división: sin n → no hay expectativa)."""
+    net, n = m.get("net_usd"), m.get("n")
+    return (net / n) if (net is not None and n) else None
+
+
+def robustez_semaforo(oos: dict) -> dict:
+    """Semáforo de robustez desde la fila OOS VALIDADA (net/pf):
+    🟢 verde neto>0 y PF≥1.3 · 🟡 amarillo neto>0 y PF 1.0–1.3 · 🔴 rojo neto≤0
+    o PF<1.0. Sobre métricas nulas/sin muestra → rojo (fail-honest)."""
+    net, pf = oos.get("net_usd"), oos.get("pf")
+    if net is None or pf is None or net <= 0 or pf < ROBUSTEZ_PF_MIN:
+        verd = "rojo"
+    elif pf >= ROBUSTEZ_PF_VERDE:
+        verd = "verde"
+    else:
+        verd = "amarillo"
+    return {"verdict": verd, "net_usd": net, "pf": pf, "n": oos.get("n")}
+
+
+def retencion_oos(oos: dict, crudo_plus: dict) -> dict:
+    """Retención = $/trade OOS ÷ $/trade Crudo+ (la métrica comparable entre
+    muestras de distinto tamaño). Guarda de división → pct None. Marca muestra
+    chica si n_oos < RETENCION_N_MIN."""
+    e_oos, e_cp = _expectativa(oos), _expectativa(crudo_plus)
+    pct = (round(100.0 * e_oos / e_cp, 1)
+           if (e_oos is not None and e_cp not in (None, 0)) else None)
+    n_oos = oos.get("n") or 0
+    return {"expectativa_oos": e_oos, "expectativa_crudo_plus": e_cp,
+            "pct": pct, "muestra_chica": n_oos < RETENCION_N_MIN, "n_oos": n_oos}
+
+
+def muestra_banner(n_total: int, n_simulable: int):
+    """Nota de muestra (LX-3b): trades fuera de la cobertura HOLC almacenada en
+    NTEXECG. None si toda la muestra es simulable (n_simulable == n_total). El
+    HOLC vive en NTEXECG, NO viaja en la lista: por eso 'cobertura almacenada'.
+    (La distinción fina cola/inicio con el manifest llega en LX-4.)"""
+    fuera = int(n_total) - int(n_simulable)
+    if fuera <= 0:
+        return None
+    return (f"{fuera} de {n_total} trades fuera de la cobertura HOLC almacenada "
+            f"en NTEXECG (cola posterior a la última barra, o previos al inicio) "
+            f"— Crudo+ los excluye de la simulación.")
+
+
 def _entry_hour_et(tr, off) -> int:
     """Hora ET de la entrada — FUENTE ÚNICA para los toggles de sesión (R-T7) y
     para la nube del dashboard. Prioriza la que dejó el enriched
@@ -683,21 +737,28 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         _lc = _listado_crudo(trades, off)
         dashboard["ventana_operacion"] = _lc["ventana_operacion"]
         dashboard["duracion_h_por_lado"] = _lc["duracion_h_por_lado"]
-        # LX-1 #4 — filas VALIDADAS de la tabla reactiva: Crudo (100%, sin
-        # palancas), In-sample y OOS cada una sobre SU subconjunto POR SEPARADO
-        # (R-T10: jamás mezclados). Difiere de la Tabla A, cuya fila In-sample
-        # aplica las palancas a TODA la muestra. `cutoff_i` = nº de trades
-        # in-sample en la nube (para la línea vertical de corte del diagrama).
-        fila_in_sub = (eval_levers(sts_in, levers_in, ppt,
-                                   cancel_after_s=cancel_after_s,
-                                   touches=touches_all)
-                       if levers_in and sts_in else {"n": 0})
+        # LX-3 — filas VALIDADAS de la tabla reactiva:
+        #  · Crudo    = lista base, SIN palancas, n = TODOS los trades (121 ES).
+        #  · Crudo+   = TODAS las palancas sobre el 100% de la muestra SIMULABLE
+        #               (todos los `sts`, viejos+recientes) — la semántica de la
+        #               vieja fila In-sample de la Tabla A (`fila_in`).
+        #  · OOS      = espejo: palancas del in-sample SOLO sobre la muestra
+        #               apartada (R-T10, `fila_oos`).
+        # `n_total`/`n_simulable` alimentan la nota honesta de muestra (los trades
+        # sin intrabar quedan fuera de los sims pero dentro del crudo).
         dashboard["table3"] = {
             "crudo": _rowA("Crudo", crudo),
-            "in": _rowA("In-sample", fila_in_sub),
+            "crudo_plus": _rowA("Crudo+", fila_in),
             "oos": _rowA("OOS", fila_oos),
         }
         dashboard["cutoff_i"] = len(sts_in)
+        dashboard["n_total"] = len(trades)
+        dashboard["n_simulable"] = len(sts)
+        # LX-3b — semáforo de robustez (OOS validada), retención $/trade y banner
+        # de muestra (todo del payload; la estimación NO enciende semáforo).
+        dashboard["robustez"] = robustez_semaforo(fila_oos)
+        dashboard["retencion"] = retencion_oos(fila_oos, fila_in)
+        dashboard["muestra_banner"] = muestra_banner(len(trades), len(sts))
 
     return {
         "version": 3,               # v3: BE same_bar recortado (walk aditivo)
@@ -928,20 +989,26 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
             return False
         return True
 
-    sts_in_f = [s for s in sts_in if _passes(s)] if (zones_off or days_off) else sts_in
-    sts_oos_f = [s for s in sts_oos if _passes(s)] if (zones_off or days_off) else sts_oos
+    _filt = bool(zones_off or days_off)
+    sts_f = [s for s in sts if _passes(s)] if _filt else sts
+    sts_oos_f = [s for s in sts_oos if _passes(s)] if _filt else sts_oos
 
-    # LX-1 #4 — R-T10: `config` (In-sample) se evalúa SOLO sobre el subconjunto
-    # in-sample; la fila OOS es un ESPEJO con las MISMAS palancas sobre el
-    # subconjunto OOS. Jamás se mezclan. `touches` está cacheado por número.
-    config = eval_levers(sts_in_f, lev, ppt, cancel_after_s=cancel_after_s,
-                         touches=touches) if sts_in_f else {"n": 0}
+    # LX-3 — `config` es CRUDO+ : las palancas movidas sobre el 100% de la
+    # muestra SIMULABLE (TODOS los sts, viejos+recientes juntos). La fila OOS es
+    # el ESPEJO con las MISMAS palancas SOLO sobre el subconjunto apartado
+    # (R-T10). Los toggles LX-2 (zonas/días) aplican a AMBAS por igual.
+    # `touches` está cacheado por número → sirve a ambos conjuntos.
+    crudo_plus = eval_levers(sts_f, lev, ppt, cancel_after_s=cancel_after_s,
+                             touches=touches) if sts_f else {"n": 0}
     oosm = eval_levers(sts_oos_f, lev, ppt, cancel_after_s=cancel_after_s,
                        touches=touches) if sts_oos_f else {"n": 0}
     crudo = metrics_usd([t.pnl_usd for t in trades])
     return {
         "validado": True, "clave": clave,
-        "base": _card(crudo), "config": _card(config), "oos": _card(oosm),
+        "base": _card(crudo), "config": _card(crudo_plus), "oos": _card(oosm),
+        # LX-3b — Recalcular refresca el semáforo (OOS validada) y la retención.
+        "robustez": robustez_semaforo(oosm),
+        "retencion": retencion_oos(oosm, crudo_plus),
         "levers": _lever_summary(lev),
     }
 

@@ -51,6 +51,51 @@ def test_activacion_from_study_ignora_toggles():
     assert act["tp_nominal_long"] == 6.0
 
 
+# ── LX-3b — semáforo de robustez · $/trade / retención · banner de muestra ──
+
+def test_robustez_semaforo_tres_estados():
+    R = mrl.robustez_semaforo
+    assert R({"net_usd": 1000, "pf": 1.5, "n": 20})["verdict"] == "verde"     # 🟢
+    assert R({"net_usd": 1000, "pf": 1.30, "n": 20})["verdict"] == "verde"    # umbral incl.
+    assert R({"net_usd": 500, "pf": 1.15, "n": 15})["verdict"] == "amarillo"  # 🟡
+    assert R({"net_usd": 500, "pf": 1.00, "n": 15})["verdict"] == "amarillo"  # borde inf.
+    assert R({"net_usd": -1, "pf": 2.0, "n": 9})["verdict"] == "rojo"         # 🔴 neto≤0
+    assert R({"net_usd": 100, "pf": 0.9, "n": 9})["verdict"] == "rojo"        # 🔴 PF<1.0
+    assert R({"net_usd": None, "pf": None, "n": 0})["verdict"] == "rojo"      # fail-honest
+    # umbrales como constantes nombradas
+    assert mrl.ROBUSTEZ_PF_VERDE == 1.3 and mrl.ROBUSTEZ_PF_MIN == 1.0
+
+
+def test_expectativa_y_retencion_con_guardas():
+    # $/trade = neto ÷ n
+    assert mrl._expectativa({"net_usd": 340, "n": 17}) == 20.0
+    assert mrl._expectativa({"net_usd": 100, "n": 0}) is None      # guarda división
+    assert mrl._expectativa({"net_usd": None, "n": 5}) is None
+    # retención = $/trade OOS ÷ $/trade Crudo+
+    r = mrl.retencion_oos({"net_usd": 340, "n": 17}, {"net_usd": 2040, "n": 102})
+    assert r["pct"] == 100.0 and r["muestra_chica"] is False       # n_oos 17 ≥ 10
+    # muestra chica: n_oos < 10
+    assert mrl.retencion_oos({"net_usd": 50, "n": 5},
+                             {"net_usd": 2040, "n": 102})["muestra_chica"] is True
+    # división por cero / sin muestra → pct None (no revienta)
+    assert mrl.retencion_oos({"net_usd": 340, "n": 17},
+                             {"net_usd": 0, "n": 102})["pct"] is None
+    assert mrl.retencion_oos({"net_usd": 340, "n": 0},
+                             {"net_usd": 2040, "n": 102})["pct"] is None
+
+
+def test_muestra_banner_on_off_y_texto():
+    # OFF: toda la muestra simulable → sin banner
+    assert mrl.muestra_banner(120, 120) is None
+    assert mrl.muestra_banner(120, 130) is None                    # nunca negativo
+    # ON: texto corregido (el HOLC vive en NTEXECG, no viaja en la lista)
+    b = mrl.muestra_banner(121, 102)
+    assert b is not None
+    assert "19 de 121" in b
+    assert "cobertura HOLC almacenada en NTEXECG" in b
+    assert "Crudo+ los excluye de la simulación" in b
+
+
 def test_zone_of_hour_es_la_fuente_unica_de_los_toggles():
     """El motor excluye por la MISMA partición que el front pinta (R-T7): las
     zonas de los switches son las de sesiones_et y cubren 0..23 sin huecos."""

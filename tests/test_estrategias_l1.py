@@ -348,7 +348,7 @@ async def test_luxy_e2e_real(
     r = await client.get("/ui/strategies/ES5m_LuxReal")
     assert r.status_code == 200
     html = r.text
-    assert 'id="lx-table3"' in html                   # tabla reactiva (Crudo/In/OOS)
+    assert 'id="lx-table3"' in html                   # tabla reactiva (Crudo/Crudo+/OOS)
     assert "Tabla A — métricas" not in html           # estática retirada
     assert "espejo" in html.lower()
     # dashboard portado (dark): raíz, payload inyectado, Recalcular motor,
@@ -366,6 +366,16 @@ async def test_luxy_e2e_real(
     assert "input[data-z]" in html and "input[data-d]" in html
     assert "zones_off" in html and "days_off" in html  # recalc envía los toggles
     assert "no persiste" in html                      # aviso conservado (criterio 5)
+    # LX-3 — resemántica de la tabla: fila Crudo+ + nota honesta de muestra
+    # (la lógica y el texto exacto viajan en el JS; se pinta solo si aplica).
+    assert "'Crudo+'" in html                         # fila Crudo+ (JS renderTable)
+    # LX-3b — semáforo de robustez (OOS), columna $/trade, retención y banner:
+    # su código/wording viaja en el JS (el render lo valida el smoke del operador).
+    assert "robustez OOS" in html
+    assert "$/trade" in html and "retiene " in html
+    assert "pendiente de Recalcular" in html
+    # (el texto del banner de muestra vive en el payload/Python — se testea en
+    #  test_luxy_toggles_lx2::test_muestra_banner_on_off_y_texto; ES no lo dispara.)
     assert "ET" in html                              # rango horario ET (R-T7)
     # L4 — el panel de Perfiles renderiza el sizing + Export (builder real)
     assert "Perfiles — sizing y peor-caso" in html
@@ -391,9 +401,9 @@ async def test_luxy_evaluar_parity_real(
 ) -> None:
     """RECALCULAR (/luxy/evaluar) usa el evaluador de L2 → mismos números que
     el estudio. LX-1 #4: `config` se evalúa SOLO sobre el subconjunto in-sample
-    (R-T10), así que evaluar sin overrides reproduce la fila In-sample de la
-    TABLA REACTIVA (dashboard.table3.in = in-sample subset), y la fila OOS es el
-    espejo con las mismas palancas sobre el subconjunto OOS. BE no reco en ES."""
+    (R-T10). LX-3: evaluar sin overrides reproduce la fila CRUDO+ de la tabla
+    reactiva (dashboard.table3.crudo_plus = palancas sobre TODOS los sts) y la
+    fila OOS es el espejo sobre el subconjunto apartado. BE no reco en ES."""
     import scripts.mr_luxy as mrl
     import app.web.routes_riesgo as rr
     monkeypatch.setenv("HOLC_DIR", "NINJATRADER/HOLC")
@@ -407,18 +417,40 @@ async def test_luxy_evaluar_parity_real(
     study = mrl.run_for_clave(clave, rr.MOTOR_DIR)
     ev = mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {})
     t3 = study["dashboard"]["table3"]
+    dash = study["dashboard"]
     assert study["levers_in_sample"]["breakeven"]["be_atr"] is None   # BE no reco
-    # config == In-sample SUBCONJUNTO (no toda la muestra)
-    assert round(ev["config"]["net"]) == round(t3["in"]["net_usd"]), \
-        (ev["config"]["net"], t3["in"]["net_usd"])
-    # OOS-espejo con las MISMAS palancas sobre el subconjunto OOS
+    # LX-3: config = CRUDO+ (palancas sobre TODOS los sts, viejos+recientes);
+    # oos = espejo con las MISMAS palancas SOLO sobre el subconjunto apartado.
+    assert round(ev["config"]["net"]) == round(t3["crudo_plus"]["net_usd"]), \
+        (ev["config"]["net"], t3["crudo_plus"]["net_usd"])
     assert round(ev["oos"]["net"]) == round(t3["oos"]["net_usd"]), \
         (ev["oos"]["net"], t3["oos"]["net_usd"])
-    # y los subconjuntos NO se mezclan: in + oos = total del split
-    assert t3["in"]["n"] + t3["oos"]["n"] == study["split"]["n_total"]
+    # Crudo+ == la VIEJA fila In-sample de la Tabla A (misma semántica: palancas
+    # sobre toda la muestra simulable) — con las mismas palancas del estudio.
+    fila_in = next(f for f in study["tabla_a"] if f["fila"] == "In-sample")
+    assert t3["crudo_plus"]["net_usd"] == fila_in["net_usd"]
+    assert t3["crudo_plus"]["n"] == fila_in["n"]
+    # LX-3 Ns: Crudo = lista base (n_total) · Crudo+ = simulable · OOS = subconj.
+    assert t3["crudo"]["n"] == dash["n_total"]
+    assert t3["crudo_plus"]["n"] == dash["n_simulable"] == study["split"]["n_total"]
+    assert t3["oos"]["n"] == study["split"]["n_oos"]
+    # el payload EXPONE ambos N para la nota honesta de muestra (se pinta solo si
+    # n_simulable < n_total; este export de ES está 100% cubierto → n iguales).
+    assert isinstance(dash["n_total"], int) and isinstance(dash["n_simulable"], int)
+    assert dash["n_simulable"] <= dash["n_total"]
+    # ES 100% cubierto por el HOLC → sin banner de muestra
+    assert dash["muestra_banner"] is None
+    # LX-3b — semáforo de robustez SOLO de la fila OOS validada, con los umbrales
+    oos_net, oos_pf = t3["oos"]["net_usd"], t3["oos"]["pf"]
+    exp = ("rojo" if (oos_net is None or oos_pf is None or oos_net <= 0 or oos_pf < 1.0)
+           else "verde" if oos_pf >= 1.3 else "amarillo")
+    assert dash["robustez"]["verdict"] == exp
+    assert ev["robustez"]["verdict"] == exp           # Recalcular refresca el mismo
+    # retención $/trade: expuesta con el n del OOS (guarda de división adentro)
+    assert dash["retencion"]["n_oos"] == t3["oos"]["n"]
+    assert "pct" in dash["retencion"] and "pct" in ev["retencion"]
     # LX-1 #3 — cutoff para el corte visual: coincide con el nº in-sample y con
-    # la frontera in→oos de la nube (orden cronológico, 100% de trades).
-    dash = study["dashboard"]
+    # la frontera in→oos de la nube (orden cronológico, 100% de la muestra simulable).
     assert dash["cutoff_i"] == study["split"]["n_in_sample"]
     assert sum(1 for t in dash["trades"] if t["in"]) == dash["cutoff_i"]
     assert len(dash["trades"]) == study["split"]["n_total"]
@@ -450,11 +482,15 @@ async def test_luxy_toggles_motor_real(
 
     # el crudo (base = 100% de trades) NUNCA se filtra por toggles
     assert evD["base"] == ev0["base"] and evZ["base"] == ev0["base"]
-    # baja n SOLO en las filas por ventana (in-sample / OOS), cada una con lo suyo
+    # LX-3: los toggles aplican a Crudo+ (config, todos los sts) Y a OOS por igual
     assert evD["config"]["n"] <= ev0["config"]["n"]
     assert evD["oos"]["n"] <= ev0["oos"]["n"]
     assert (evD["config"]["n"] + evD["oos"]["n"]) < (ev0["config"]["n"] + ev0["oos"]["n"])
     assert (evZ["config"]["n"] + evZ["oos"]["n"]) < (ev0["config"]["n"] + ev0["oos"]["n"])
+    # LX-3 aislamiento (criterio 2): mover una palanca NO altera el Crudo (base)
+    ev_sl = mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {"sl_usd": 3000.0})
+    assert ev_sl["base"] == ev0["base"]
+    assert ev_sl["config"] != ev0["config"]           # Crudo+ sí reacciona
     # sin toggles: byte-igual a LX-1 (no regresión) + determinismo bit-a-bit
     assert mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {}) == ev0
     assert mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {"days_off": [4]}) == evD
