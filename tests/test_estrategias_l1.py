@@ -468,6 +468,11 @@ async def test_luxy_evaluar_parity_real(
     assert ev["config"]["n_perdedores"] is not None and ev["oos"]["n_perdedores"] is not None
     assert t3["crudo_plus"]["n_perdedores"] is not None
     assert t3["crudo_plus"]["n_perdedores"] >= 3      # ES completo: PF con sentido
+    # LX-9 — el payload lleva la identidad del estudio (fecha:sha) para que el
+    # navegador invalide la exploración guardada si el estudio cambia. La
+    # persistencia es SOLO localStorage: cero endpoints/escrituras en el server.
+    assert isinstance(dash["estudio_id"], str) and ":" in dash["estudio_id"]
+    assert dash["estudio_id"].startswith(study["fecha"])
     # LX-1 #3 — cutoff para el corte visual: coincide con el nº in-sample y con
     # la frontera in→oos de la nube (orden cronológico, 100% de la muestra simulable).
     assert dash["cutoff_i"] == study["split"]["n_in_sample"]

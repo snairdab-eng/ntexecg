@@ -1123,6 +1123,12 @@ def run_for_clave(clave: str, motor_dir, *, oos: float = 0.3,
     study["master"] = {"integrado": man.get("integrado"),
                        "sha256": (man.get("export") or {}).get("sha256_master"),
                        "n_trades": (man.get("trades") or {}).get("n")}
+    # LX-9 — identidad estable del estudio (fecha + sha del master): el navegador
+    # la guarda junto a la exploración; si cambia (reintegrar/recalcular otro
+    # día), la exploración vieja se descarta. Sin efecto en el server.
+    if study.get("dashboard"):
+        _sha = (man.get("export") or {}).get("sha256_master") or ""
+        study["dashboard"]["estudio_id"] = f"{fecha}:{_sha[:12]}"
     runs = base_dir / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     out = runs / f"luxy_{fecha}.json"

@@ -886,6 +886,23 @@
           const ZON = (R.zones||[]).map(function(){return true;});
           const DON = {}; (R.days||[]).forEach(function(z){ DON[z.dow]=true; });
           const ZON0 = ZON.slice(), DON0 = Object.assign({}, DON);
+          // LX-9 — persistencia SOLO navegador de la exploración (palancas+toggles).
+          // NADA viaja al server; los puentes (Aplicar/Ventanas) son el único camino
+          // a producción. Se guarda con la identidad del estudio; si el estudio
+          // cambió, se descarta. VLAST (validados del motor) JAMÁS se restaura.
+          const LS_KEY='ntexecg_luxy_explore_'+SID; var _saveT=null;
+          function saveExplore(){ if(_saveT) clearTimeout(_saveT);
+            _saveT=setTimeout(function(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(
+              {eid:D.estudio_id, S:S, ZON:ZON, DON:DON})); }catch(e){} }, 400); }
+          function restoreExplore(){ try{
+            const raw=localStorage.getItem(LS_KEY); if(!raw) return;
+            const st=JSON.parse(raw);
+            if(!st || st.eid!==D.estudio_id){ localStorage.removeItem(LS_KEY); return; } // estudio cambió
+            if(st.S) Object.assign(S, st.S);
+            if(Array.isArray(st.ZON) && st.ZON.length===ZON.length) for(var i=0;i<ZON.length;i++) ZON[i]=!!st.ZON[i];
+            if(st.DON) Object.keys(DON).forEach(function(k){ if(st.DON[k]!==undefined) DON[k]=!!st.DON[k]; });
+          }catch(e){ try{localStorage.removeItem(LS_KEY);}catch(_){} } }
+          function clearExplore(){ try{localStorage.removeItem(LS_KEY);}catch(e){} }
           let BH = new Set(), BD = new Set();
           function rebuildBlk(){ BH=new Set(); (R.zones||[]).forEach(function(z,i){ if(!ZON[i]) (z.hours||[]).forEach(function(h){BH.add(h);}); });
             BD=new Set(); Object.keys(DON).forEach(function(k){ if(!DON[k]) BD.add(+k); }); }
@@ -1076,6 +1093,7 @@
             legend(); drawChart();
             const mode = d?'est':'val';
             renderTable(mode); setChips(mode);
+            saveExplore();                            // LX-9: persiste la exploración (debounce)
           }
           // ---- LX-1 #2: bind UNA vez (bindOnce) · set de valores idempotente (setValues) ----
           function setupRng(id, max, set){ const e=el(id); e.min=0; e.max=Math.round(Math.max(1,max)); e.step=Math.max(1,Math.round(max/200));
@@ -1107,6 +1125,7 @@
           el('lx-reset').addEventListener('click',function(){ Object.assign(S,RECO0);
             for(var i=0;i<ZON.length;i++) ZON[i]=ZON0[i];
             Object.keys(DON).forEach(function(k){ DON[k]=DON0[k]; });
+            clearExplore();                           // LX-9: borra el estado guardado
             VLAST=V0; VROB=D.robustez; setValues(); refresh(); });   // LX-3b: semáforo del estudio
           // ---- RECALCULAR = JOB del motor (numeros validados; JAMAS pisa RECO0) ----
           function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(function(r){return r.json();}).then(function(j){
@@ -1159,7 +1178,9 @@
             el('lx-vent-x').addEventListener('click',function(){el('lx-vent-modal').style.display='none';});
             el('lx-vent-cancel').addEventListener('click',function(){el('lx-vent-modal').style.display='none';});
             el('lx-vent-ok').addEventListener('click',ventApply); }
-          bindOnce(); diag(); setValues(); winDiag(); banner(); refresh();
+          // LX-9: restoreExplore ANTES de setValues (setValues sincroniza los
+          // controles/switches con el estado restaurado). VLAST se queda en V0.
+          bindOnce(); diag(); restoreExplore(); setValues(); winDiag(); banner(); refresh();
         })();
         </script>
         {% endif %}
