@@ -125,12 +125,35 @@ def load_model(symbol: str, timeframe: str) -> dict | None:
     return obj
 
 
-async def train_symbol(db, symbol: str, timeframe: str | None = None) -> dict | None:
-    """Read history from ohlcv_bars, fit + save a model for one symbol."""
-    timeframe = timeframe or settings.HMM_REGIME_TIMEFRAME
-    from app.services.bar_store import get_training_bars
+def _training_bars_from_csv(symbol: str, timeframe: str
+                            ) -> tuple[list[float], list[float]]:
+    """(closes, volumes) oldest→newest desde el HOLC CSV master (CSV-only).
 
-    closes, volumes = await get_training_bars(db, symbol, timeframe)
+    Reemplaza la lectura de `ohlcv_bars` (jubilada): el CSV es la única fuente de
+    historia. Sin CSV del símbolo/tf → ([], []) y el entrenamiento se salta
+    limpio (no revienta el job)."""
+    from scripts.lab_analyze import load_holc
+
+    try:
+        bars = load_holc(symbol, timeframe)
+    except (FileNotFoundError, OSError, SystemExit):
+        return [], []
+    closes: list[float] = []
+    volumes: list[float] = []
+    for ts in sorted(bars):
+        o, h, lo, c, v = bars[ts]
+        closes.append(float(c))
+        volumes.append(float(v or 0))
+    return closes, volumes
+
+
+async def train_symbol(db, symbol: str, timeframe: str | None = None) -> dict | None:
+    """Read history from the HOLC CSV master (CSV-only), fit + save a model.
+
+    `db` se conserva por compat de la firma (train_active_symbols / el job lo
+    pasan) pero YA NO se usa: la historia sale del CSV, no de `ohlcv_bars`."""
+    timeframe = timeframe or settings.HMM_REGIME_TIMEFRAME
+    closes, volumes = _training_bars_from_csv(symbol, timeframe)
     obj = train_model(closes, volumes)
     if obj is not None:
         save_model(obj, symbol, timeframe)

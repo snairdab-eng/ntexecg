@@ -12,13 +12,18 @@ REUSA el núcleo YA PROBADO del Lab (Directiva 1 — no reconstruir):
   - agregación (WR/PF/net/maxDD/peor — unit-agnóstica): `lab_metrics.aggregate`
   - instrumento desde el nombre del CSV: `scripts/lab_manifest.csv_instrument`
 
+CSV-ONLY (costura jubilada): el HOLC del CSV master es la ÚNICA fuente de
+historia. `ohlcv_bars`/stitch_from_db están retirados; el guardarraíl de
+FRESCURA (`_guardar_frescura`) exige que el HOLC cubra la lista antes de
+integrar (sin coser cola dudosa). El precio en vivo (ATR/régimen) usa el bridge.
+
 Comandos (MR-1):
-  integrar <export.csv> --codigo <codigo> [--activo SYM] [--stitch-db]
-                        [--fecha YYYY-MM-DD]
+  integrar <export.csv> --codigo <codigo> [--activo SYM] [--fecha YYYY-MM-DD]
       Sobrescribe master, archiva snapshot inmutable, enriquece con ATR,
       escribe manifest reforzado y CUADRA la línea base al dólar contra el
       `PyG acumuladas USD` final del export (bloqueante si no coincide).
-  calcular <clave> [--stitch-db] [--oos 0.3] [--fecha] [--comision]
+      FALLA si el HOLC no cubre hasta el último trade (refresca el HOLC).
+  calcular <clave> [--oos 0.3] [--fecha] [--comision]
                    [--slip-pts] [--gap-pts]                       (MR-2)
       Corre los estudios de riesgo (scripts/mr_sims.py: backstop sweep,
       escalera por MAE con alta participación, TP nominal por encima del
@@ -33,7 +38,7 @@ Comandos (MR-1):
       última integración, última corrida.
 
 Uso (NTDEV):  .venv\\Scripts\\python.exe -m scripts.nt_riesgo integrar ...
-Uso (server): .venv/bin/python -m scripts.nt_riesgo integrar ... --stitch-db
+Uso (server): .venv/bin/python -m scripts.nt_riesgo integrar ...
 """
 from __future__ import annotations
 
@@ -74,7 +79,6 @@ from scripts.lab_analyze import (
     parse_luxalgo_csv,
     pullback_study,
     split_in_out,
-    stitch_from_db,
 )
 from scripts.lab_manifest import csv_instrument
 # ── Simuladores MR-2 (núcleo puro del motor — scripts/mr_sims.py) ──
@@ -135,7 +139,8 @@ def read_export_footer(path: Path) -> tuple[float | None, float | None]:
 
 # ---------------------------------------------------------------------------
 # ATR estimado para la cola sin HOLC (SPEC §9.2): ATR de la ÚLTIMA barra —
-# marcado en enriched/manifest; la costura --stitch-db lo hace innecesario
+# marcado en enriched/manifest. CSV-only: el guardarraíl de frescura exige que
+# el HOLC cubra la lista, así que esta estimación de cola casi nunca aplica.
 # ---------------------------------------------------------------------------
 
 def estimate_tail_atr(trades: list[Trade], bars: dict, offset_min: int) -> list[Trade]:
@@ -294,7 +299,7 @@ _ENRICHED_COLS = ("number", "side", "entry_ts", "exit_ts", "duracion_min",
 
 
 def _write_holc_snapshot(path: Path, bars: dict) -> None:
-    """LX-4 — escribe el HOLC (cosido si hubo stitch) a CSV en el formato de
+    """LX-4 — escribe el HOLC (CSV master) a CSV en el formato de
     `load_holc` (DateTime,Open,High,Low,Close,Volume), para que el estudio Luxy
     lo lea por-clave y herede la cobertura de la cola (R-T2, reproducible)."""
     with open(path, "w", encoding="utf-8", newline="") as fh:
@@ -361,18 +366,18 @@ def _git_commit() -> str | None:
 # Carga compartida (integrar y calcular): HOLC + costura + TZ + ATR
 # ---------------------------------------------------------------------------
 
-async def _enriquecer(trades: list[Trade], activo: str, stitch: bool,
+async def _enriquecer(trades: list[Trade], activo: str,
                       ) -> tuple[dict, int, dict, int, list[Trade]]:
-    """(bars, offset, tz_detail, sin_cobertura, estimados) — HOLC + costura
-    opcional, validación TZ BLOQUEANTE, ATR(14) vivo y ATR estimado de cola.
-    Todo del núcleo del Lab."""
+    """(bars, offset, tz_detail, sin_cobertura, estimados) — HOLC del CSV
+    master (load_holc), validación TZ BLOQUEANTE, ATR(14) vivo y ATR estimado
+    de cola. CSV-ONLY: la costura desde `ohlcv_bars` está JUBILADA — el CSV es
+    la única fuente de historia y el guardarraíl de frescura (`_guardar_frescura`
+    en integrar) exige que cubra la lista antes de integrar (nada de coser cola
+    dudosa). Sigue async por compatibilidad del flujo (asyncio.run)."""
     bars = load_holc(activo, "5m")
-    stitch_stats = None
-    if stitch:
-        bars, stitch_stats = await stitch_from_db(bars, activo, "5m")
     off, sanity, tz_detail = detect_tz_offset(trades, bars)
     print(f"· TZ offset {off:+d} min · sanity {sanity*100:.0f}% · "
-          f"HOLC hasta {max(bars)}{' (+costura DB)' if stitch else ''}")
+          f"HOLC hasta {max(bars)}")
     if sanity < _MIN_SANITY:
         raise SystemExit(
             f"⛔ BLOQUEADO: sanity TZ {sanity*100:.0f}% < "
@@ -382,13 +387,12 @@ async def _enriquecer(trades: list[Trade], activo: str, stitch: bool,
     sin_cobertura = uncovered - len(estimated)
     if estimated:
         print(f"⚠ {len(estimated)} trade(s) posteriores al HOLC → ATR "
-              f"ESTIMADO (última barra {estimated[0].atr_entry:.2f})."
-              + ("" if stitch else " Con --stitch-db la cola se cose y el "
-                                   "caveat desaparece."))
+              f"ESTIMADO (última barra {estimated[0].atr_entry:.2f}). "
+              f"Refresca el HOLC para cubrir la lista (el guardarraíl lo exige).")
     if sin_cobertura:
         print(f"⚠ {sin_cobertura} trade(s) sin cobertura de barras "
               f"(inicio del HOLC): sin ATR.")
-    return bars, off, tz_detail, sin_cobertura, estimated, stitch_stats
+    return bars, off, tz_detail, sin_cobertura, estimated
 
 
 # ---------------------------------------------------------------------------
@@ -414,8 +418,33 @@ def _superset_faltantes(old_master: Path, new_trades: list[Trade]) -> list[str]:
         if (t.entry_ts.isoformat(), t.side, t.entry_price) not in new_keys)
 
 
+# Margen del guardarraíl de frescura: el HOLC debe llegar al menos a la barra
+# 5m que contiene el último trade (esa barra cubre su ventana [t, t+5m)).
+_FRESCURA_MARGEN = timedelta(minutes=5)
+
+
+def _guardar_frescura(trades: list[Trade], bars: dict, off: int,
+                      activo: str) -> None:
+    """Guardarraíl de FRESCURA (reemplaza el fail-closed de la costura jubilada):
+    el CSV/HOLC master debe cubrir hasta el ÚLTIMO trade de la lista. Si el HOLC
+    se quedó viejo, NO se cose una cola dudosa desde `ohlcv_bars` — se FALLA con
+    un mensaje accionable pidiendo refrescar el HOLC. Offset-aware (alinea la
+    hora del CSV de trades con la rejilla del HOLC, igual que enrich_with_bars)."""
+    delta = timedelta(minutes=off)
+    ult = max((t.exit_ts or t.entry_ts) for t in trades)
+    ult_alineado = ult + delta
+    holc_last = max(bars)
+    if ult_alineado > holc_last + _FRESCURA_MARGEN:
+        raise SystemExit(
+            f"⛔ HOLC DESACTUALIZADO: el HOLC de {activo} llega hasta "
+            f"{holc_last} pero la lista tiene trades hasta {ult} "
+            f"(offset {off:+d} min → {ult_alineado}). Refresca el HOLC de "
+            f"{activo} (re-expórtalo hasta cubrir la lista) y reintegra — "
+            f"NO se cose cola dudosa.")
+
+
 async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
-                   stitch: bool = False, fecha: str | None = None,
+                   fecha: str | None = None,
                    degradado: bool = False) -> dict:
     if not csv_path.exists():
         raise SystemExit(f"⛔ No existe el export: {csv_path}")
@@ -487,16 +516,16 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
         bars = None
         off = 0
         tz_detail = None
-        stitched = False
         sin_cobertura = len(trades)
         estimated = []
         estimated_ids = set()
         holc_last = None
-        stitch_stats = None
     else:
-        bars, off, tz_detail, sin_cobertura, estimated, stitch_stats = \
-            await _enriquecer(trades, activo, stitch)
-        stitched = stitch
+        bars, off, tz_detail, sin_cobertura, estimated = \
+            await _enriquecer(trades, activo)
+        # Guardarraíl de FRESCURA (fail-closed, reemplaza la costura): el HOLC
+        # debe cubrir hasta el último trade o se pide refrescarlo (nunca coser).
+        _guardar_frescura(trades, bars, off, activo)
         holc_last = max(bars)
         estimated_ids = {t.number for t in estimated}
 
@@ -515,7 +544,7 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
     # pendiente de proveer el HOLC.
     if not degradado:
         write_enriched(base_dir / "enriched.csv", trades, off, estimated_ids)
-        # LX-4 — snapshot del HOLC (cosido si stitch) por-clave: el estudio Luxy
+        # LX-4 — snapshot del HOLC (CSV master) por-clave: el estudio Luxy
         # lo hereda por R-T2 (lee este archivo, no el HOLC global mutable), así
         # la cobertura de la cola llega a Luxy al reintegrar con costura.
         _write_holc_snapshot(base_dir / "holc_5m.csv", bars)
@@ -545,8 +574,8 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
             "archivo": None if degradado else f"{activo}_5m.csv",
             "snapshot": None if degradado else "holc_5m.csv",   # LX-4 (por-clave)
             "ultima_barra": None if degradado else holc_last.isoformat(),
-            "stitch_db": stitched,
-            "stitch": stitch_stats,                             # LX-4 (added/checked/pct/last_stitched)
+            "stitch_db": False,        # costura JUBILADA (CSV-only) — nunca cose
+            "stitch": None,            # (campo conservado por compat de mr_report/recrear)
             "sin_cobertura": sin_cobertura,
             "atr_estimado": len(estimated),
             "degradado": degradado,
@@ -675,7 +704,7 @@ def _avisos_master(man: dict, activo: str, hoy: date,
     return avisos
 
 
-async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
+async def calcular(clave: str, oos: float = 0.3,
                    fecha: str | None = None,
                    hc: HaircutCfg | None = None,
                    cancel_after_s: float | None = CANCEL_AFTER_MAX_S) -> dict:
@@ -708,8 +737,8 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
     print("└────────────────────────────────────────────────────────────")
 
     trades = parse_luxalgo_csv(base_dir / "master.csv")
-    bars, off, tz_detail, sin_cobertura, estimated, _stitch_stats = \
-        await _enriquecer(trades, activo, stitch)
+    bars, off, tz_detail, sin_cobertura, estimated = \
+        await _enriquecer(trades, activo)
     split_in_out(trades, oos)
 
     # Pullback del Lab (ventana 180 min) — reconciliación de fill-rates Y
@@ -733,7 +762,7 @@ async def calcular(clave: str, stitch: bool = False, oos: float = 0.3,
         "fecha": fecha, "oos": oos, "usd_por_punto": ppt,
         "master_sha256": man["export"]["sha256_master"],
         "holc_ultima_barra": max(bars).isoformat(),
-        "stitch_db": stitch,
+        "stitch_db": False,        # costura jubilada (CSV-only)
         "n_trades_listado": len(trades),
         "sin_cobertura": sin_cobertura,
         "atr_estimado": len(estimated),
@@ -982,8 +1011,8 @@ async def recrear(clave: str, fecha: str) -> dict:
 
     hc = HaircutCfg(**orig["haircut"])
     trades = parse_luxalgo_csv(snap)
-    bars, off, tz_detail, sin_cobertura, estimated, _stitch_stats = \
-        await _enriquecer(trades, mo["activo"], mo["stitch_db"])
+    bars, off, tz_detail, sin_cobertura, estimated = \
+        await _enriquecer(trades, mo["activo"])
     holc_last = max(bars).isoformat()
     if holc_last != mo["holc_ultima_barra"]:
         print(f"⚠ El HOLC cambió desde la corrida original "
@@ -1142,8 +1171,6 @@ def main() -> None:
                             "carpeta MotorRiesgo/<ACTIVO>_<codigo>)")
     p_int.add_argument("--activo", default=None,
                        help="instrumento (default: del nombre del CSV)")
-    p_int.add_argument("--stitch-db", action="store_true",
-                       help="coser la cola HOLC desde Postgres (solo lectura)")
     p_int.add_argument("--fecha", default=None,
                        help="fecha del export (default: del nombre del CSV)")
     p_int.add_argument("--degradado", action="store_true",
@@ -1154,8 +1181,6 @@ def main() -> None:
     p_cal = sub.add_parser("calcular",
                            help="correr los estudios de riesgo (MR-2)")
     p_cal.add_argument("clave", help="carpeta, p.ej. ES_ConfNormal_TC_TSR")
-    p_cal.add_argument("--stitch-db", action="store_true",
-                       help="coser la cola HOLC desde Postgres (solo lectura)")
     p_cal.add_argument("--oos", type=float, default=0.3,
                        help="fracción out-of-sample (default 0.3, como el Lab)")
     p_cal.add_argument("--fecha", default=None,
@@ -1187,7 +1212,7 @@ def main() -> None:
     args = ap.parse_args()
     if args.cmd == "integrar":
         asyncio.run(integrar(args.csv, args.codigo, args.activo,
-                             args.stitch_db, args.fecha, args.degradado))
+                             args.fecha, args.degradado))
     elif args.cmd == "calcular":
         hc = HaircutCfg(comision_rt_usd=args.comision,
                         slip_pts=args.slip_pts, gap_pts=args.gap_pts)
@@ -1196,7 +1221,7 @@ def main() -> None:
             print(f"⚠ --cancel-after {ca:.0f}s > máximo duro de TradersPost "
                   f"({CANCEL_AFTER_MAX_S:.0f}s) — topado a 3600.")
             ca = CANCEL_AFTER_MAX_S
-        asyncio.run(calcular(args.clave, args.stitch_db, args.oos,
+        asyncio.run(calcular(args.clave, args.oos,
                              args.fecha, hc, ca))
     elif args.cmd == "recrear":
         asyncio.run(recrear(args.clave, args.fecha))

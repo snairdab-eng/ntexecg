@@ -74,6 +74,42 @@ def test_grids_fingerprint_estable():
     assert fp == grids_fingerprint()            # determinista
 
 
+# ── Guardarraíl de FRESCURA (reemplaza el fail-closed de la costura jubilada) ──
+
+def _bars_hasta(last: datetime, n: int = 20) -> dict:
+    from datetime import timedelta
+    return {last - timedelta(minutes=5 * i): (1.0, 1.0, 1.0, 1.0, 0.0)
+            for i in range(n)}
+
+
+def test_frescura_rechaza_holc_viejo():
+    """El HOLC más viejo que el último trade → FALLA con mensaje accionable
+    (no cose cola dudosa)."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from scripts.nt_riesgo import _guardar_frescura
+
+    last_bar = datetime(2026, 7, 1, 11, 35)
+    bars = _bars_hasta(last_bar)
+    trades = [SimpleNamespace(entry_ts=datetime(2026, 7, 1, 10, 0),
+                              exit_ts=last_bar + timedelta(hours=2))]
+    with pytest.raises(SystemExit, match="HOLC DESACTUALIZADO"):
+        _guardar_frescura(trades, bars, 0, "ES")
+
+
+def test_frescura_pasa_si_el_holc_cubre_la_lista():
+    """El HOLC que cubre hasta el último trade (dentro del margen 5m) → OK."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from scripts.nt_riesgo import _guardar_frescura
+
+    last_bar = datetime(2026, 7, 1, 11, 35)
+    bars = _bars_hasta(last_bar)
+    trades = [SimpleNamespace(entry_ts=datetime(2026, 7, 1, 10, 0),
+                              exit_ts=last_bar - timedelta(minutes=30))]
+    _guardar_frescura(trades, bars, 0, "ES")            # no levanta
+
+
 # ---------------------------------------------------------------------------
 # Integración con datos reales (se salta limpio sin data — CI)
 # ---------------------------------------------------------------------------
@@ -90,7 +126,7 @@ class TestIntegrarESReal:
         nr.MOTOR_DIR = motor_dir
         try:
             manifest = asyncio.run(nr.integrar(
-                Path(_ES_CSV[-1]), codigo="test", stitch=False))
+                Path(_ES_CSV[-1]), codigo="test"))
         finally:
             nr.MOTOR_DIR = original
         return motor_dir, manifest
@@ -178,7 +214,7 @@ class TestIntegrarESReal:
         nr.MOTOR_DIR = motor_dir
         try:
             m2 = asyncio.run(nr.integrar(
-                Path(_ES_CSV[-1]), codigo="test", stitch=False))
+                Path(_ES_CSV[-1]), codigo="test"))
         finally:
             nr.MOTOR_DIR = original
         assert m2["trades"]["superconjunto_ok"] is True

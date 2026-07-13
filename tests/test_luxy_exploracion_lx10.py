@@ -200,7 +200,11 @@ def test_migracion_aplica_y_revierte(tmp_path: Path) -> None:
                            cwd=root, env=env, capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
 
-    _alembic("upgrade", "head")
+    # Se ancla a ESTA revisión (no a `head`) para aislar la migración de LX-10 de
+    # cualquier migración apilada encima (p.ej. b8c9d0e1f2a3): así `downgrade -1`
+    # revierte SIEMPRE la de luxy_exploracion y el test no es frágil al orden.
+    _LX10_REV = "a7b8c9d0e1f2"
+    _alembic("upgrade", _LX10_REV)
     con = sqlite3.connect(dbfile)
     try:
         assert con.execute("select name from sqlite_master where type='table' "

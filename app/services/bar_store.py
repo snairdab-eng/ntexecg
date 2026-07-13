@@ -1,5 +1,13 @@
 """bar_store — persist OHLCV bars into the ohlcv_bars table (idempotent).
 
+⚠ JUBILADO (CSV-only, retiro NO destructivo estilo P3). `ohlcv_bars` ya no tiene
+consumidores de producción: el estudio lee el CSV master directo (sin costura),
+el entrenamiento HMM lee el CSV, y el precio en vivo usa el bridge. El
+MarketBarsUpdater ya no se arranca (app/main.py). Estas funciones se conservan
+(no se borra la tabla en este lote) pero NO se invocan en el flujo vivo. Ver el
+informe del lote CSV-only y scripts/audit_ohlcv_tz.py para el diagnóstico de la
+corrupción de TZ que motivó el retiro.
+
 Source of truth for HMM training (Fase 6) and future backtests. Two writers,
 one table:
   - scripts/backfill_market_bars.py : one-time load of the NinjaTrader HOLC CSVs.
@@ -20,14 +28,14 @@ LX-6 — CONVENCIÓN CANÓNICA: ET-naive wall-clock (la del CSV) en TODO el cicl
     símbolo entra en UTC (verificar con scripts/audit_ohlcv_tz.py), el escritor
     debe convertir a ET ANTES de persistir — el desalineo envenena el intrabar
     de la costura (ver diagnóstico LX-6).
-  · ALMACÉN: la columna es DateTime(timezone=FALSE) = `timestamp` naive (migración
-    b8c9d0e1f2a3). Postgres guarda el wall-clock LITERAL — no impone un instante
-    según el `TimeZone` de la sesión. Guardar naive en la columna timestamptz
-    anterior fue la causa de la corrupción heterogénea (mezcla ET/UTC por época
-    de ingesta): el mismo naive daba instantes distintos según la sesión.
-  · LECTURA: _et_naive(bar_time) queda como passthrough para valores naive
-    (sigue convirtiendo aware→America/New_York→naive por si Postgres devolviera
-    tz-aware histórico), NUNCA .replace(tzinfo=None) a ciegas.
+  · ALMACÉN: la columna original era `timestamptz` (DateTime(timezone=True)):
+    guardar un naive ahí dejaba que Postgres impusiera un instante según el
+    `TimeZone` de la sesión → corrupción heterogénea (mezcla ET/UTC por época de
+    ingesta). La migración b8c9d0e1f2a3 (Pieza 1) la pasó a `timestamp` naive y
+    YA ESTÁ APLICADA en producción — se CONSERVA en el repo (el alembic_version
+    del server apunta a ella). Con la tabla ahora JUBILADA (CSV-only) el tipo de
+    columna deja de importar: la patología queda inerte al no leerse la tabla.
+  · LECTURA (retirada): _et_naive(bar_time) normalizaba aware→NY→naive.
 """
 from __future__ import annotations
 

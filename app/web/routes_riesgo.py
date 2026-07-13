@@ -814,10 +814,10 @@ async def riesgo_page(strategy: str | None = None) -> RedirectResponse:
 
 def _integrar_cmd(csv_path: Path, codigo: str, activo: str,
                   degradado: bool = False) -> list[str]:
+    # CSV-only: la costura desde ohlcv_bars está JUBILADA. El motor lee el HOLC
+    # del CSV master y falla-closed por FRESCURA si no cubre la lista (no cose).
     cmd = [sys.executable, "-m", "scripts.nt_riesgo", "integrar",
            str(csv_path), "--codigo", codigo, "--activo", activo]
-    if _stitch():
-        cmd.append("--stitch-db")
     if degradado:
         cmd.append("--degradado")
     return cmd
@@ -832,24 +832,8 @@ def holc_disponible(instrument: str) -> bool:
 
 
 def _calc_cmd(clave: str) -> list[str]:
-    cmd = [sys.executable, "-m", "scripts.nt_riesgo", "calcular", clave]
-    if _stitch():
-        cmd.append("--stitch-db")
-    return cmd
-
-
-def _stitch() -> bool:
-    """LX-4 — costura DB por DEFAULT en el flujo web (integrar/calcular del
-    panel): la cola reciente de `ohlcv_bars` se cose al vuelo. Se APAGA en
-    APP_ENV=test (la suite no exige Postgres). La env var
-    MR_CALC_STITCH/LAB_RECALC_STITCH sigue como override explícito. El CLI
-    conserva su bandera `--stitch-db` aparte."""
-    env = (os.environ.get("MR_CALC_STITCH")
-           or os.environ.get("LAB_RECALC_STITCH") or "")
-    if env:
-        return env.lower() in ("1", "true")
-    from app.core.config import settings
-    return settings.APP_ENV != "test"
+    # CSV-only: sin --stitch-db (costura jubilada). El estudio lee el CSV master.
+    return [sys.executable, "-m", "scripts.nt_riesgo", "calcular", clave]
 
 
 def _motor_env() -> dict:

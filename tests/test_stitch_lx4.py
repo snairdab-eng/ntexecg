@@ -98,30 +98,15 @@ async def test_stitch_procede_por_debajo_del_umbral(monkeypatch):
     assert stats["mismatched"] == 1 and stats["pct"] == 0.01
 
 
-# ── gate del flujo web (default ON salvo APP_ENV=test) ──────────────────────
+# ── CSV-only: la costura está JUBILADA — el flujo web NO añade --stitch-db ──
+# (antes: gate _stitch() + flags en los cmds; retirado en el lote CSV-only)
 
-def test_stitch_gate_default_on_salvo_test(monkeypatch):
-    import app.web.routes_riesgo as rr
-    from app.core.config import settings
-    monkeypatch.delenv("MR_CALC_STITCH", raising=False)
-    monkeypatch.delenv("LAB_RECALC_STITCH", raising=False)
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-    assert rr._stitch() is False                        # test → apagada
-    monkeypatch.setattr(settings, "APP_ENV", "production")
-    assert rr._stitch() is True                         # prod → costura por default
-    monkeypatch.setenv("MR_CALC_STITCH", "0")
-    assert rr._stitch() is False                        # env = override explícito
-
-
-def test_integrar_y_calcular_cmd_llevan_stitch(monkeypatch):
+def test_cmds_web_no_llevan_stitch_db():
     import app.web.routes_riesgo as rr
     from pathlib import Path
-    monkeypatch.setattr(rr, "_stitch", lambda: True)
-    assert "--stitch-db" in rr._integrar_cmd(Path("x.csv"), "cod", "ES")
-    assert "--stitch-db" in rr._calc_cmd("ES_x")
-    monkeypatch.setattr(rr, "_stitch", lambda: False)
     assert "--stitch-db" not in rr._integrar_cmd(Path("x.csv"), "cod", "ES")
     assert "--stitch-db" not in rr._calc_cmd("ES_x")
+    assert not hasattr(rr, "_stitch")                   # gate de costura retirado
 
 
 # ── banner con datos del manifest (cola vs inicio) ──────────────────────────
@@ -140,13 +125,11 @@ def test_banner_distingue_cola_e_inicio():
     assert mrl.muestra_banner(120, 120, 0, 0) is None
 
 
-# ── criterio 6 — verificación del updater (sin arreglar aquí) ───────────────
+# ── CSV-only: el MarketBarsUpdater está JUBILADO (no se arranca) ────────────
 
-def test_market_bars_updater_cubre_catalogo_activo():
+def test_market_bars_updater_no_se_arranca_en_el_lifespan():
     import inspect
-    from app.core.scheduler import MarketBarsUpdater
-    assert MarketBarsUpdater._TIMEFRAMES == ("5m", "15m", "1h", "4h")
-    src = inspect.getsource(MarketBarsUpdater._run)
-    assert "SymbolMap.active.is_(True)" in src          # itera SOLO activos
-    assert "resolve_market_data_symbol" in src          # resuelve símbolo de datos
-    assert "market_bars_fetch_failed" in src            # reporta fallos (no dropea)
+    import app.main as main
+    src = inspect.getsource(main.lifespan)
+    assert "MarketBarsUpdater(" not in src              # no se instancia
+    assert "bars_updater" not in src                    # ni se arranca/detiene

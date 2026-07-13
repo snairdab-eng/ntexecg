@@ -264,7 +264,13 @@ def _et_naive(dt: datetime) -> datetime:
 
 async def stitch_from_db(bars: dict[datetime, tuple], sym: str, tf: str
                          ) -> tuple[dict, dict]:
-    """Cose la cola reciente desde OhlcvBar (Postgres, SOLO lectura) — FAIL-CLOSED
+    """⚠ JUBILADA (CSV-only) — YA NO SE LLAMA en el flujo vivo (ni el motor ni el
+    Lab cosen; el CSV master es la única fuente de historia). Se conserva como
+    código muerto retirado (patrón P3) junto con sus tests; el guardarraíl de
+    frescura de `nt_riesgo` reemplaza su fail-closed. NO reintroducir sin revertir
+    la decisión de arquitectura del lote CSV-only.
+
+    Cose la cola reciente desde OhlcvBar (Postgres, SOLO lectura) — FAIL-CLOSED
     (LX-6). Normaliza cada `bar_time` a ET-naive (`_et_naive`), valida el solape
     (mismo cierre ±0.1%), y SOLO añade la cola si:
       (a) hay solape suficiente (`checked ≥ STITCH_MIN_OVERLAP_BARS`) — si no,
@@ -1143,11 +1149,9 @@ async def run(instrument: str, csv_path: Path | None, oos: float,
     print(f"· {len(trades)} trades de {csv_path.name}")
 
     bars = load_holc(instrument, "5m")
-    stitched = False
-    if stitch:
-        bars, _stitch_stats = await stitch_from_db(bars, instrument, "5m")
-        stitched = True
-    holc_range = (min(bars), max(bars), stitched)
+    # Costura JUBILADA (CSV-only): el HOLC del CSV master es la única fuente de
+    # historia. `stitch` se ignora (bandera vestigial); ver stitch_from_db.
+    holc_range = (min(bars), max(bars), False)
     print(f"· {len(bars)} barras 5m ({holc_range[0]} → {holc_range[1]})")
 
     off, sanity, tz_detail = detect_tz_offset(trades, bars, sample=sample)

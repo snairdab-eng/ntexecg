@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.services.market_data_service import get_market_data_service
     from app.core.scheduler import (
-        HeartbeatMonitor, ExitManagerJob, MarketBarsUpdater, HMMTrainerJob,
+        HeartbeatMonitor, ExitManagerJob, HMMTrainerJob,
     )
 
     market_data = get_market_data_service(settings)
@@ -42,11 +42,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     exit_manager = ExitManagerJob(settings)
     exit_manager.start()
 
-    bars_updater = MarketBarsUpdater(
-        market_data, interval_minutes=settings.MARKET_BARS_UPDATE_MINUTES
-    )
-    bars_updater.start()
-
+    # MarketBarsUpdater JUBILADO (CSV-only): el bridge deja de persistir barras
+    # en ohlcv_bars (era la 2ª historia duplicada). El bridge sigue intacto para
+    # ATR/régimen/heartbeat/ejecución en vivo; la historia la aporta el CSV master.
     hmm_trainer_job = HMMTrainerJob(settings)
     hmm_trainer_job.start()
 
@@ -54,7 +52,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     monitor.stop()
     exit_manager.stop()
-    bars_updater.stop()
     hmm_trainer_job.stop()
 
 

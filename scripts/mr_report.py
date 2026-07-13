@@ -145,9 +145,8 @@ def render_md(res: dict) -> str:
     L.append("")
     cobertura = ("✓ HOLC completo" if not meta["atr_estimado"]
                  else f"⚠ HOLC hasta {meta['holc_ultima_barra'][:10]} → "
-                      f"{meta['atr_estimado']} trade(s) con ATR estimado"
-                      + ("" if meta["stitch_db"] else
-                         " (correr con --stitch-db en el server lo cose)"))
+                      f"{meta['atr_estimado']} trade(s) con ATR estimado "
+                      f"(refresca el HOLC para cubrir la lista y reintegra)")
     hc = res["haircut"]
     hc_txt = ("sin comisiones/slippage (paridad referencia)"
               if not any(hc.values()) else

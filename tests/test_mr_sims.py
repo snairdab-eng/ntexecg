@@ -790,8 +790,7 @@ class TestESReal:
         original = nr.MOTOR_DIR
         nr.MOTOR_DIR = motor_dir
         try:
-            asyncio.run(nr.integrar(Path(_ES_CSV[-1]), codigo="test",
-                                    stitch=False))
+            asyncio.run(nr.integrar(Path(_ES_CSV[-1]), codigo="test"))
             res = asyncio.run(nr.calcular("ES_test", fecha="2026-07-04"))
         finally:
             nr.MOTOR_DIR = original

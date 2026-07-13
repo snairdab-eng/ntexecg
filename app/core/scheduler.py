@@ -203,12 +203,14 @@ class ExitManagerJob:
 
 
 class MarketBarsUpdater:
-    """Keeps the ohlcv_bars history current from the live bridge feed.
+    """JUBILADO (CSV-only) — YA NO SE ARRANCA (ver app/main.py lifespan).
 
-    Every `interval_minutes`, reads the latest bridge bars for each active data
-    symbol and timeframe and upserts them into ohlcv_bars (idempotent). The HOLC
-    CSV backfill seeds the long history; this job appends new bars going forward
-    so the store is always up to date for HMM training / backtests.
+    Persistía la ventana rodante del bridge en `ohlcv_bars` cada
+    `interval_minutes`, construyendo una SEGUNDA historia que duplicaba/competía
+    con el CSV master (y mezclaba convenciones de TZ → corrupción, ver LX-6).
+    Retirado de forma NO destructiva (patrón P3): la clase se conserva pero no se
+    instancia. La historia la aporta el CSV master (refresco semanal del
+    operador); el bridge sigue SOLO para precio en vivo (ATR/régimen/heartbeat).
     """
 
     _TIMEFRAMES = ("5m", "15m", "1h", "4h")
