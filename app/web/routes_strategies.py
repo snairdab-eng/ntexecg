@@ -854,6 +854,141 @@ async def luxy_aplicar(
     })
 
 
+# ---------------------------------------------------------------------------
+# LX-8 — Puente de ventanas: toggles de Luxy (sesiones/días) → ventanas L2
+# (supervisado). El COMPILADOR (scripts.sesiones_et.compilar_ventanas_l2) es
+# puro; aquí solo se calcula el preview (diff + %fuera + por lado + avisos) y se
+# CONFIRMA escribiendo en el MISMO store que la pestaña Ventanas + AuditLog.
+# NO toca dirección, mode/dry_run/kill-switch; los toggles NO persisten en Luxy.
+# ---------------------------------------------------------------------------
+
+def _fuera_por_lado(nube: list, ventanas: list | None) -> dict:
+    """Conteo de trades de la nube FUERA de las ventanas propuestas, por lado
+    (hora ET del trade vs las ventanas, misma lógica que SessionValidator)."""
+    from datetime import time as _time
+    from app.services.session_validator import SessionValidator
+    sv = SessionValidator()
+    res = {"long": [0, 0], "short": [0, 0]}          # [fuera, total]
+    for t in (nube or []):
+        k = "long" if t.get("long") else "short"
+        res[k][1] += 1
+        dow_w = (int(t.get("dow", 0)) + 1) % 7       # weekday() → %w (store)
+        tt = _time(int(t.get("hr", 0)), 0)
+        inside = bool(ventanas) and any(
+            sv._window_matches(w, dow_w, tt) for w in ventanas)
+        if not inside:
+            res[k][0] += 1
+    return {"long_fuera": res["long"][0], "long_total": res["long"][1],
+            "short_fuera": res["short"][0], "short_total": res["short"][1]}
+
+
+def _compilar_desde_toggles(dash: dict, zones_off, days_off):
+    """(dashboard, zonas OFF por nombre, días OFF en weekday()) → ventanas L2
+    compiladas. Los días PRESENTES salen del estudio (`reco.days`)."""
+    from scripts.sesiones_et import LUXY_ZONES, compilar_ventanas_l2
+    off = set(zones_off or [])
+    zonas_on = {name: name not in off for name, _e, _h in LUXY_ZONES}
+    dias_on_w: dict[int, bool] = {}
+    for d in ((dash.get("reco") or {}).get("days") or []):
+        dias_on_w[(int(d["dow"]) + 1) % 7] = True    # presentes (weekday→%w)
+    for d in (days_off or []):
+        dias_on_w[(int(d) + 1) % 7] = False
+    return compilar_ventanas_l2(zonas_on, dias_on_w)
+
+
+async def _luxy_ventanas_ctx(db: AsyncSession, strategy_id: str):
+    """(srow, dashboard) del estudio Luxy o (None, JSONResponse error)."""
+    import app.web.routes_riesgo as rr
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return None, JSONResponse({"error": "estrategia no encontrada"}, 404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    clave = rr.clave_de(strategy_id, instrument) if instrument else None
+    study = _luxy_latest(clave) if clave else None
+    if not study or not study.get("dashboard"):
+        return None, JSONResponse(
+            {"error": "sin estudio Luxy — córrelo (pestaña Luxy) primero"}, 409)
+    return (srow, study["dashboard"]), None
+
+
+@router.post("/ui/strategies/{strategy_id}/luxy/ventanas/preview")
+async def luxy_ventanas_preview(
+    strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    from app.services.config_resolver import ConfigResolver
+    ctx, err = await _luxy_ventanas_ctx(db, strategy_id)
+    if err:
+        return err
+    srow, dash = ctx
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    propuestas = _compilar_desde_toggles(dash, body.get("zones_off"),
+                                         body.get("days_off"))
+    cfg = await ConfigResolver().resolve(db, strategy_id, srow.asset_symbol)
+    scfg = cfg.get("session_config_json") or {}
+    muestras = ((dash.get("ventana_operacion") or {}).get("muestras")) or []
+    pct_prop = (100.0 if propuestas is None
+                else rr._pct_trades_fuera({"windows": propuestas}, muestras))
+    return JSONResponse({
+        "actuales": scfg.get("windows") or [],
+        "propuestas": propuestas,
+        "invalido": propuestas is None,             # todo-OFF → no aplicable
+        "pct_fuera_actual": rr._pct_trades_fuera(scfg, muestras),
+        "pct_fuera_propuesta": pct_prop,
+        "por_lado": _fuera_por_lado(dash.get("trades"), propuestas),
+        "avisos": [
+            "El estudio validó que el filtro de sesión/hora NO aporta edge "
+            "(2026-07-04) — esto es una DECISIÓN DE RIESGO del operador, no una "
+            "optimización.",
+            "Un PF alto en la muestra filtrada NO es evidencia (LX-7): los "
+            "filtros pueden dejar la muestra casi sin perdedores.",
+        ],
+    })
+
+
+@router.post("/ui/strategies/{strategy_id}/luxy/ventanas/aplicar")
+async def luxy_ventanas_aplicar(
+    strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    from app.services.audit_service import AuditService
+    ctx, err = await _luxy_ventanas_ctx(db, strategy_id)
+    if err:
+        return err
+    _srow, dash = ctx
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    propuestas = _compilar_desde_toggles(dash, body.get("zones_off"),
+                                         body.get("days_off"))
+    if not propuestas:
+        return JSONResponse(
+            {"error": "ventana vacía (todo-OFF) — no se aplica"}, status_code=400)
+    prof = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == strategy_id))).scalar_one_or_none()
+    if prof is None:
+        prof = StrategyProfile(strategy_id=strategy_id)
+        db.add(prof)
+    before = dict(prof.pipeline_config_json or {})
+    antes = before.get("windows")
+    cfg = dict(before)
+    cfg["windows"] = propuestas                     # REEMPLAZA el set completo
+    prof.pipeline_config_json = cfg
+    await AuditService().log(
+        db, actor="admin", action="APPLY_LUXY_VENTANAS",
+        object_type="StrategyProfile", object_id=strategy_id,
+        old_value={"windows": antes}, new_value={"windows": propuestas},
+        reason="ventanas L2 compiladas desde los toggles de sesiones/días de "
+               "Luxy (atajo supervisado; el editor canónico es la pestaña "
+               "Ventanas)")
+    await db.commit()
+    return JSONResponse({"ok": True, "n": len(propuestas), "ventanas": propuestas})
+
+
 @router.get("/ui/strategies/token-once/{tid}")
 async def token_once_read(tid: str) -> JSONResponse:
     """SEC-1b — entrega UNA vez el token guardado por el alta/rotación/promoción

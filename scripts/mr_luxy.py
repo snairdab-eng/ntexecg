@@ -419,7 +419,8 @@ def _card(m: dict) -> dict:
     return {"net": m.get("net_usd"), "pf": m.get("pf"),
             "dd": -(m.get("max_dd_usd") or 0.0), "worst": m.get("peor_trade_usd"),
             "wr": m.get("wr_pct"), "part": m.get("participacion_pct"),
-            "n": m.get("n")}                      # LX-1 #4: la tabla reactiva usa N
+            "n": m.get("n"),                      # LX-1 #4: la tabla reactiva usa N
+            "n_perdedores": m.get("n_perdedores")}  # LX-7: PF honesto
 
 
 # ── LX-3b — semáforo de robustez + $/trade + nota de muestra ────────────────
@@ -741,7 +742,8 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
                 "pf": m.get("pf"), "max_dd_usd": m.get("max_dd_usd"),
                 "peor_trade_usd": m.get("peor_trade_usd"),
                 "participacion_pct": m.get("participacion_pct"),
-                "wr_pct": m.get("wr_pct"), "n": m.get("n")}
+                "wr_pct": m.get("wr_pct"), "n": m.get("n"),
+                "n_perdedores": m.get("n_perdedores")}   # LX-7
 
     tabla_a = [_rowA("Crudo", crudo), _rowA("In-sample", fila_in),
                _rowA("OOS", fila_oos)]

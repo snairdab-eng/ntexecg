@@ -835,6 +835,23 @@
             </div>
           </div>
 
+          <!-- LX-8 — Puente de ventanas: compila los toggles de sesiones/días a
+               ventanas L2 (supervisado; el editor canónico es la pestaña Ventanas). -->
+          <div>
+            <button id="lx-vent-btn" type="button" class="text-xs px-3 py-1.5 rounded" style="background:#21262d;color:var(--lx-ink);border:1px solid var(--lx-line)">Proponer ventanas L2 desde estos filtros…</button>
+            <span class="text-xs ml-2" style="color:var(--lx-muted)">atajo: escribe la ventana L2 (participación real). Dirección y kill-switch NO se tocan.</span>
+          </div>
+          <div id="lx-vent-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50" class="flex items-center justify-center p-4">
+            <div class="rounded p-4 max-w-2xl w-full text-xs" style="background:var(--lx-panel);border:1px solid var(--lx-line);max-height:85vh;overflow:auto">
+              <div class="flex items-center justify-between mb-2"><b style="color:var(--lx-ink)">Proponer ventanas L2 desde los filtros</b><button id="lx-vent-x" type="button" style="color:var(--lx-muted)">✕</button></div>
+              <div id="lx-vent-body" style="color:var(--lx-muted)"></div>
+              <div class="flex gap-2 justify-end mt-3">
+                <button id="lx-vent-cancel" type="button" class="px-3 py-1.5 rounded" style="background:#21262d;color:var(--lx-muted)">Cancelar</button>
+                <button id="lx-vent-ok" type="button" class="px-3 py-1.5 rounded text-white" style="background:var(--lx-scin)">Confirmar y escribir en Ventanas</button>
+              </div>
+            </div>
+          </div>
+
           <!-- L7a — Ventana de operación NATIVA en Luxy (rango/duración por lado
                + ventana mínima de cobertura + comparación con la L2 vigente).
                Paridad numérica con Riesgo v1 (reusa el helper RIES-W). -->
@@ -848,6 +865,13 @@
           const money = v => (v==null?'—':(v<0?'−$':'$')+Math.abs(Math.round(v)).toLocaleString('en-US'));
           const pct = v => (v==null?'—':(+v).toFixed(1)+'%');
           const pf  = v => (v==null?'—':(isFinite(v)?(+v).toFixed(2):'∞'));
+          // LX-7 — PF honesto: con menos de MIN_PERDEDORES_PF perdedores el PF es
+          // aritméticamente correcto pero estadísticamente vacío (cherry-picking).
+          const MIN_PERDEDORES_PF = 3;
+          function pfCell(c){
+            if(c && c.nl!=null && c.nl < MIN_PERDEDORES_PF)
+              return '<span class="text-amber-500" title="PF sin significado: los filtros dejaron casi sin perdedores la muestra (posible cherry-picking)">n/s ('+c.nl+' perdedor'+(c.nl===1?'':'es')+')</span>';
+            return pf(c.pf); }
           const dLbl = {both:'ambos',long:'largos',short:'cortos'};
           // ---- Estado ACTUAL de palancas (USD) ----
           const S = { tp:R.tp_usd!=null, be:false, sc:(A[1]+A[2])>0, sl:R.sl_usd!=null,
@@ -872,7 +896,8 @@
             dd: r.dd!=null? r.dd : -(r.max_dd_usd||0),
             worst: r.worst!=null? r.worst : r.peor_trade_usd,
             wr: r.wr!=null? r.wr : r.wr_pct,
-            part: r.part!=null? r.part : r.participacion_pct, n: r.n }; }
+            part: r.part!=null? r.part : r.participacion_pct, n: r.n,
+            nl: r.n_perdedores }; }               // LX-7: nº de perdedores
           const T3 = D.table3 || {};
           const V0 = { crudo:norm(T3.crudo), crudo_plus:norm(T3.crudo_plus), oos:norm(T3.oos) };
           let VLAST = V0;                       // ultimo validado (Recalcular lo actualiza; NO toca RECO0)
@@ -890,12 +915,13 @@
             if(!S.sc) return e;
             const lv=[[0,A[0]],[S.l2,A[1]],[S.l3,A[2]]], ep=e/PV; let t=0;
             for(const pair of lv){ const L=pair[0], q=pair[1]; if(L===0||d.mae<=-L) t+=q*(ep+L/PV)*MES; } return t; }
-          function statsCard(a, ntot){ if(!a.length) return {net:0,pf:null,dd:0,worst:0,wr:0,part:0,n:0};
+          function statsCard(a, ntot){ if(!a.length) return {net:0,pf:null,dd:0,worst:0,wr:0,part:0,n:0,nl:0};
             const gp=a.filter(x=>x>0).reduce((x,y)=>x+y,0), gl=a.filter(x=>x<0).reduce((x,y)=>x+y,0);
             let eq=0,pk=0,dd=0; for(const x of a){eq+=x;pk=Math.max(pk,eq);dd=Math.min(dd,eq-pk);}
             return {net:a.reduce((x,y)=>x+y,0), pf:gl!==0?gp/Math.abs(gl):Infinity, dd,
                     worst:Math.min.apply(null,a), wr:a.filter(x=>x>0).length/a.length*100,
-                    part: ntot? a.length/ntot*100 : 0, n:a.length}; }
+                    part: ntot? a.length/ntot*100 : 0, n:a.length,
+                    nl:a.filter(x=>x<0).length}; }     // LX-7: perdedores de la muestra
           // LX-3 — estimacion por FILA, aislada (comparten solo la nube base):
           //  'all' = Crudo+ sobre el 100% de la muestra simulable (consistente con
           //  el diagrama); 'oos' = espejo sobre el subconjunto apartado (R-T10).
@@ -918,14 +944,15 @@
             // división); muestra chica si n_oos < 10.
             var oosNote='espejo — no es la config a usar';
             var eo=ept(oosR), ec=ept(cpR);
-            if(eo!=null && ec){ oosNote+=' · retiene '+Math.round(100*eo/ec)+'% del $/trade de Crudo+';
-              if((oosR.n||0) < 10) oosNote+=' · muestra chica (n='+(oosR.n||0)+')'; }
+            if(eo!=null && ec){ oosNote+=' · retiene '+Math.round(100*eo/ec)+'% del $/trade de Crudo+'; }
             const filas=[['Crudo',crudo,'text-gray-300','','lista de operaciones base, sin palancas'],
                          ['Crudo+',cpR,'text-emerald-300','','Crudo + palancas'],
                          ['OOS',oosR,'text-amber-300',oosNote,'palancas del in-sample evaluadas SOLO sobre la muestra apartada (R-T10)']];
-            const body=filas.map(function(f){ const name=f[0]; const c=f[1]||{}; const cls=f[2]; const note=f[3]; const tip=f[4];
-              // LX-3b — columna $/trade (expectativa = neto ÷ n), comparable entre muestras
-              const cells=[money(c.net),money(ept(c)),pf(c.pf),money(c.dd),money(c.worst),pct(c.part),pct(c.wr),(c.n!=null?c.n:'—')];
+            const body=filas.map(function(f){ const name=f[0]; const c=f[1]||{}; const cls=f[2]; var note=f[3]; const tip=f[4];
+              // LX-7 — nota "muestra chica (n<10)" GENÉRICA: cualquier fila, no solo OOS.
+              if(c.n!=null && c.n < 10) note = (note?note+' · ':'') + 'muestra chica (n='+c.n+')';
+              // LX-3b $/trade + LX-7 PF honesto (n/s si <3 perdedores)
+              const cells=[money(c.net),money(ept(c)),pfCell(c),money(c.dd),money(c.worst),pct(c.part),pct(c.wr),(c.n!=null?c.n:'—')];
               return '<tr class="border-b border-gray-800 last:border-0"><td class="px-3 py-2 font-medium '+cls+'" title="'+tip+'">'+name
                 + (note?' <span class="text-amber-500/80 text-xs font-normal">'+note+'</span>':'')
                 + '</td>'+cells.map(function(v){return '<td class="px-3 py-2 font-mono">'+v+'</td>';}).join('')+'</tr>'; }).join('');
@@ -1102,6 +1129,36 @@
             fetch('/ui/strategies/'+SID+'/luxy/evaluar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ov)})
               .then(function(r){return r.json().then(function(j){return {s:r.status,j:j};});}).then(function(o){ if(o.s===202) pollEval(); else { el('lx-recalc').textContent='Recalcular (motor)'; el('lx-recalc').disabled=false; } }); });
           // LX-2: diag() ANTES de setValues() — crea los switches que setValues sincroniza.
+          // LX-8 — Puente de ventanas: toggles (sesiones/días) → ventanas L2 (supervisado).
+          function ventOff(){
+            const zoff=[]; (R.zones||[]).forEach(function(z,i){ if(!ZON[i]) zoff.push(z.name); });
+            const doff=Object.keys(DON).filter(function(k){return !DON[k];}).map(Number);
+            return {zones_off:zoff, days_off:doff}; }
+          function ventFmt(w){ return (w.days||[]).map(function(d){return ['D','L','M','X','J','V','S'][d];}).join('')+' '+w.start+'–'+w.end+(w.next_day_end?' (+1 día)':''); }
+          function ventPreview(){
+            fetch('/ui/strategies/'+SID+'/luxy/ventanas/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ventOff())})
+              .then(function(r){return r.json();}).then(function(j){
+                const b=el('lx-vent-body'), ok=el('lx-vent-ok');
+                if(j.error){ b.innerHTML='<span style="color:#f85149">'+j.error+'</span>'; ok.disabled=true; el('lx-vent-modal').style.display=''; return; }
+                ok.disabled=!!j.invalido;
+                var h='';
+                if(j.invalido) h+='<div class="mb-2" style="color:#f85149">⛔ Todo apagado → ventana vacía, no aplicable.</div>';
+                h+='<div class="mb-2"><b style="color:var(--lx-ink)">Actuales:</b> '+((j.actuales||[]).map(ventFmt).join(' · ')||'— (sin ventanas: 7/7 completo)')+'</div>';
+                h+='<div class="mb-2"><b style="color:var(--lx-green)">Propuestas:</b> '+((j.propuestas||[]).map(ventFmt).join(' · ')||'—')+'</div>';
+                h+='<div class="mb-2 rounded p-2" style="background:rgba(210,153,34,.1)"><b style="color:#d29922">EL COSTO EN LA CARA — % de trades del backtest FUERA:</b> actual '+(j.pct_fuera_actual==null?'—':j.pct_fuera_actual+'%')+' → propuesta <b>'+(j.pct_fuera_propuesta==null?'—':j.pct_fuera_propuesta+'%')+'</b>';
+                const pl=j.por_lado||{}; h+=' · por lado: largos '+pl.long_fuera+'/'+pl.long_total+' fuera · cortos '+pl.short_fuera+'/'+pl.short_total+' fuera</div>';
+                h+=(j.avisos||[]).map(function(a){return '<div class="mb-1" style="color:#d29922">⚠ '+a+'</div>';}).join('');
+                b.innerHTML=h; el('lx-vent-modal').style.display=''; }); }
+          function ventApply(){
+            const ok=el('lx-vent-ok'); ok.disabled=true; ok.textContent='Escribiendo…';
+            fetch('/ui/strategies/'+SID+'/luxy/ventanas/aplicar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ventOff())})
+              .then(function(r){return r.json();}).then(function(j){
+                if(j.ok){ el('lx-vent-body').innerHTML='<div style="color:var(--lx-green)">✓ '+j.n+' ventana(s) escritas en la pestaña Ventanas. Recargando…</div>'; setTimeout(function(){location.reload();},800); }
+                else { ok.disabled=false; ok.textContent='Confirmar y escribir en Ventanas'; el('lx-vent-body').innerHTML+='<div style="color:#f85149">'+(j.error||'error')+'</div>'; } }); }
+          if(el('lx-vent-btn')){ el('lx-vent-btn').addEventListener('click',ventPreview);
+            el('lx-vent-x').addEventListener('click',function(){el('lx-vent-modal').style.display='none';});
+            el('lx-vent-cancel').addEventListener('click',function(){el('lx-vent-modal').style.display='none';});
+            el('lx-vent-ok').addEventListener('click',ventApply); }
           bindOnce(); diag(); setValues(); winDiag(); banner(); refresh();
         })();
         </script>

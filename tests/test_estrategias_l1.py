@@ -376,6 +376,8 @@ async def test_luxy_e2e_real(
     assert "pendiente de Recalcular" in html
     # LX-6 — tripwire de plausibilidad: banner rojo + "sin veredicto" en el JS
     assert 'id="lx-implausible"' in html and "números implausibles" in html
+    # LX-7 — PF honesto: la lógica "n/s (perdedores)" + cherry-picking viaja en el JS
+    assert "MIN_PERDEDORES_PF" in html and "n/s (" in html and "cherry-picking" in html
     # (el texto del banner de muestra vive en el payload/Python — se testea en
     #  test_luxy_toggles_lx2::test_muestra_banner_on_off_y_texto; ES no lo dispara.)
     assert "ET" in html                              # rango horario ET (R-T7)
@@ -461,6 +463,11 @@ async def test_luxy_evaluar_parity_real(
     # retención $/trade: expuesta con el n del OOS (guarda de división adentro)
     assert dash["retencion"]["n_oos"] == t3["oos"]["n"]
     assert "pct" in dash["retencion"] and "pct" in ev["retencion"]
+    # LX-7 — el motor expone n_perdedores por fila (validado y en table3) para el
+    # rotulado honesto del PF; con muestra completa hay ≥ MIN_PERDEDORES_PF.
+    assert ev["config"]["n_perdedores"] is not None and ev["oos"]["n_perdedores"] is not None
+    assert t3["crudo_plus"]["n_perdedores"] is not None
+    assert t3["crudo_plus"]["n_perdedores"] >= 3      # ES completo: PF con sentido
     # LX-1 #3 — cutoff para el corte visual: coincide con el nº in-sample y con
     # la frontera in→oos de la nube (orden cronológico, 100% de la muestra simulable).
     assert dash["cutoff_i"] == study["split"]["n_in_sample"]

@@ -70,6 +70,7 @@ def metrics_usd(pnls: list[float]) -> dict:
     return {
         "n": m["n"],
         "ganadores": len(wins),
+        "n_perdedores": len(losses),          # LX-7: PF honesto en muestras filtradas
         "wr_pct": m["wr"],
         "pf": m["pf"],
         "ganancia_bruta_usd": round(sum(wins), 2),
