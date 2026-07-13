@@ -20,6 +20,7 @@ from app.models.market_data_status import MarketDataStatus
 from app.models.ohlcv_bar import OhlcvBar
 from app.models.execution_result import ExecutionResult
 from app.models.portfolio_config import PortfolioConfig
+from app.models.luxy_exploracion import LuxyExploracion
 
 __all__ = [
     "RawSignal",
@@ -40,4 +41,5 @@ __all__ = [
     "OhlcvBar",
     "ExecutionResult",
     "PortfolioConfig",
+    "LuxyExploracion",
 ]

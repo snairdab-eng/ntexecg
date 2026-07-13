@@ -753,7 +753,11 @@
                 <span id="lx-frag" class="px-2 py-0.5 rounded-full" style="background:rgba(210,153,34,.18);color:#d29922"></span>
                 <span id="lx-hint" class="text-amber-400/80" style="display:none">cambios sin aplicar — pulsa Recalcular</span>
               </div>
-              <div class="flex gap-2">
+              <div class="flex gap-2 items-center flex-wrap">
+                <!-- LX-10 — sello del snapshot server-side + guardar/borrar -->
+                <span id="lx-expl-sello" class="text-xs" style="color:var(--lx-muted)"></span>
+                <button id="lx-expl-save" type="button" class="text-gray-200 px-3 py-1.5 rounded text-sm" style="background:#21262d" title="Guarda esta exploración en el server (diagnóstico, no toca config)">Guardar exploración</button>
+                <button id="lx-expl-del" type="button" class="text-xs px-2 py-1.5 rounded" style="background:transparent;color:var(--lx-muted);border:1px solid var(--lx-line);display:none" title="Borra el snapshot guardado en el server">borrar guardada</button>
                 <button id="lx-recalc" disabled class="text-white px-3 py-1.5 rounded text-sm disabled:opacity-40" style="background:var(--lx-scin)">Recalcular (motor)</button>
                 <button id="lx-reset" class="text-gray-200 px-3 py-1.5 rounded text-sm" style="background:#21262d">Restablecer</button>
               </div>
@@ -894,15 +898,50 @@
           function saveExplore(){ if(_saveT) clearTimeout(_saveT);
             _saveT=setTimeout(function(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(
               {eid:D.estudio_id, S:S, ZON:ZON, DON:DON})); }catch(e){} }, 400); }
-          function restoreExplore(){ try{
-            const raw=localStorage.getItem(LS_KEY); if(!raw) return;
-            const st=JSON.parse(raw);
-            if(!st || st.eid!==D.estudio_id){ localStorage.removeItem(LS_KEY); return; } // estudio cambió
+          function applyState(st){ if(!st) return;    // aplica S/ZON/DON de un snapshot (local o server)
             if(st.S) Object.assign(S, st.S);
             if(Array.isArray(st.ZON) && st.ZON.length===ZON.length) for(var i=0;i<ZON.length;i++) ZON[i]=!!st.ZON[i];
-            if(st.DON) Object.keys(DON).forEach(function(k){ if(st.DON[k]!==undefined) DON[k]=!!st.DON[k]; });
-          }catch(e){ try{localStorage.removeItem(LS_KEY);}catch(_){} } }
+            if(st.DON) Object.keys(DON).forEach(function(k){ if(st.DON[k]!==undefined) DON[k]=!!st.DON[k]; }); }
+          function restoreExplore(){ try{             // → true si restauró de localStorage
+            const raw=localStorage.getItem(LS_KEY); if(!raw) return false;
+            const st=JSON.parse(raw);
+            if(!st || st.eid!==D.estudio_id){ localStorage.removeItem(LS_KEY); return false; } // estudio cambió
+            applyState(st); return true;
+          }catch(e){ try{localStorage.removeItem(LS_KEY);}catch(_){} return false; } }
           function clearExplore(){ try{localStorage.removeItem(LS_KEY);}catch(e){} }
+          // LX-10 — snapshot SERVER-SIDE (sobrevive navegador/equipo). Almacén
+          // propio; NO es config. Precedencia de carga: localStorage (LX-9) →
+          // este snapshot. Misma invalidación por estudio_id; la restauración
+          // JAMÁS se presenta como validada (VLAST intacto → chip 'estimación').
+          const EXPL_URL='/ui/strategies/'+SID+'/luxy/exploracion';
+          function setSello(iso, stale){ var e=el('lx-expl-sello'), d=el('lx-expl-del');
+            if(!iso){ if(e) e.textContent=''; if(d) d.style.display='none'; return; }
+            var f; try{ f=new Date(iso).toLocaleString(); }catch(_){ f=iso; }
+            if(e){ e.textContent = stale ? ('guardada · '+f+' · de un estudio anterior')
+                                         : ('guardada · '+f);
+                   e.style.color = stale ? '#d29922' : 'var(--lx-muted)'; }
+            if(d) d.style.display=''; }
+          function loadServer(canRestore){ try{         // siempre pinta el sello si hay snapshot
+            fetch(EXPL_URL).then(function(r){return r.json();}).then(function(j){
+              if(!j || !j.existe) return;
+              var stale = (j.estudio_id!==D.estudio_id);
+              setSello(j.updated_at, stale);           // el sello queda visible si hay snapshot
+              if(!canRestore || stale) return;         // local ganó, o estudio nuevo → NO restaura
+              applyState(j.estado); setValues(); refresh();  // VLAST intacto → dirty() → 'estimación'
+            }).catch(function(){});
+          }catch(e){} }
+          function saveServer(){ try{
+            var b=JSON.stringify({estado:{S:S, dir:S.dir, ZON:ZON, DON:DON}, estudio_id:D.estudio_id});
+            var btn=el('lx-expl-save'); if(btn) btn.disabled=true;
+            fetch(EXPL_URL,{method:'PUT',headers:{'Content-Type':'application/json'},body:b})
+              .then(function(r){return r.json();}).then(function(j){
+                if(btn) btn.disabled=false;
+                if(j && j.ok) setSello(j.updated_at, false);
+              }).catch(function(){ if(btn) btn.disabled=false; });
+          }catch(e){} }
+          function delServer(){ if(!window.confirm('¿Borrar la exploración guardada en el server?')) return;
+            fetch(EXPL_URL,{method:'DELETE'}).then(function(r){return r.json();})
+              .then(function(){ setSello(null,false); }).catch(function(){}); }
           let BH = new Set(), BD = new Set();
           function rebuildBlk(){ BH=new Set(); (R.zones||[]).forEach(function(z,i){ if(!ZON[i]) (z.hours||[]).forEach(function(h){BH.add(h);}); });
             BD=new Set(); Object.keys(DON).forEach(function(k){ if(!DON[k]) BD.add(+k); }); }
@@ -1178,9 +1217,16 @@
             el('lx-vent-x').addEventListener('click',function(){el('lx-vent-modal').style.display='none';});
             el('lx-vent-cancel').addEventListener('click',function(){el('lx-vent-modal').style.display='none';});
             el('lx-vent-ok').addEventListener('click',ventApply); }
+          // LX-10: guardar/borrar snapshot server-side.
+          if(el('lx-expl-save')) el('lx-expl-save').addEventListener('click',saveServer);
+          if(el('lx-expl-del')) el('lx-expl-del').addEventListener('click',delServer);
           // LX-9: restoreExplore ANTES de setValues (setValues sincroniza los
           // controles/switches con el estado restaurado). VLAST se queda en V0.
-          bindOnce(); diag(); restoreExplore(); setValues(); winDiag(); banner(); refresh();
+          // LX-10: precedencia de carga = localStorage → snapshot del server
+          // (solo si no había estado local, para no pisar la actividad reciente).
+          var _local = restoreExplore();
+          bindOnce(); diag(); setValues(); winDiag(); banner(); refresh();
+          loadServer(!_local);     // siempre para el sello; restaura solo si no había local
         })();
         </script>
         {% endif %}

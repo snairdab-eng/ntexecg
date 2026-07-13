@@ -989,6 +989,113 @@ async def luxy_ventanas_aplicar(
     return JSONResponse({"ok": True, "n": len(propuestas), "ventanas": propuestas})
 
 
+# ── LX-10 — snapshot server-side de la exploración Luxy (diagnóstico) ────────
+# Almacén PROPIO (tabla luxy_exploracion), JAMÁS pipeline_config_json. Guardar
+# aquí no cambia ninguna decisión de producción; los puentes (Aplicar, Proponer
+# ventanas) siguen siendo el único camino al motor. Uno por estrategia.
+
+_LUXY_EXPL_MAX_BYTES = 8192               # es un JSON chico — rechaza cualquier abuso
+_LUXY_EXPL_KEYS = {"S", "dir", "ZON", "DON"}
+
+
+def _luxy_expl_parse(raw: bytes):
+    """Valida el cuerpo del PUT: tamaño acotado + shape conocido. Devuelve
+    (estado, estudio_id, None) o (None, None, JSONResponse 400)."""
+    if raw is not None and len(raw) > _LUXY_EXPL_MAX_BYTES:
+        return None, None, JSONResponse(
+            {"error": f"payload demasiado grande (>{_LUXY_EXPL_MAX_BYTES}B)"},
+            status_code=400)
+    try:
+        body = json.loads(raw or b"{}")
+    except Exception:
+        return None, None, JSONResponse({"error": "JSON inválido"},
+                                        status_code=400)
+    if not isinstance(body, dict):
+        return None, None, JSONResponse({"error": "cuerpo no es objeto"},
+                                        status_code=400)
+    estado = body.get("estado")
+    estudio_id = body.get("estudio_id")
+    if not isinstance(estado, dict):
+        return None, None, JSONResponse({"error": "estado ausente o inválido"},
+                                        status_code=400)
+    if set(estado) - _LUXY_EXPL_KEYS:            # llaves desconocidas → rechaza
+        return None, None, JSONResponse(
+            {"error": f"llaves no permitidas en estado (solo {sorted(_LUXY_EXPL_KEYS)})"},
+            status_code=400)
+    if estudio_id is not None and (not isinstance(estudio_id, str)
+                                   or len(estudio_id) > 80):
+        return None, None, JSONResponse({"error": "estudio_id inválido"},
+                                        status_code=400)
+    return estado, estudio_id, None
+
+
+@router.get("/ui/strategies/{strategy_id}/luxy/exploracion")
+async def luxy_exploracion_get(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    """Entrega el snapshot guardado tal cual (o {existe:false}). El front decide
+    la invalidación por estudio_id (estudio nuevo → lo descarta con nota
+    discreta). NUNCA se presenta como validado — la restauración cae en
+    'estimación · aprox' (VLAST jamás viaja)."""
+    from app.models.luxy_exploracion import LuxyExploracion
+    row = (await db.execute(select(LuxyExploracion).where(
+        LuxyExploracion.strategy_id == strategy_id))).scalar_one_or_none()
+    if row is None:
+        return JSONResponse({"existe": False})
+    return JSONResponse({
+        "existe": True,
+        "estado": row.estado_json or {},
+        "estudio_id": row.estudio_id,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    })
+
+
+@router.put("/ui/strategies/{strategy_id}/luxy/exploracion")
+async def luxy_exploracion_put(
+    strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    """Guarda (sobreescribe) el snapshot de exploración. Valida shape/tamaño.
+    NO toca pipeline_config_json — esto es diagnóstico, no config."""
+    from app.models.luxy_exploracion import LuxyExploracion
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return JSONResponse({"error": "estrategia no encontrada"},
+                            status_code=404)
+    estado, estudio_id, err = _luxy_expl_parse(await request.body())
+    if err is not None:
+        return err
+    row = (await db.execute(select(LuxyExploracion).where(
+        LuxyExploracion.strategy_id == strategy_id))).scalar_one_or_none()
+    if row is None:
+        row = LuxyExploracion(strategy_id=strategy_id)
+        db.add(row)
+    row.estado_json = estado
+    row.estudio_id = estudio_id
+    row.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(row)
+    return JSONResponse({
+        "ok": True,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    })
+
+
+@router.delete("/ui/strategies/{strategy_id}/luxy/exploracion")
+async def luxy_exploracion_delete(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    """Borra el snapshot guardado (botón 'borrar guardada'). Restablecer NO
+    llega aquí — solo limpia lo local (LX-9)."""
+    from app.models.luxy_exploracion import LuxyExploracion
+    row = (await db.execute(select(LuxyExploracion).where(
+        LuxyExploracion.strategy_id == strategy_id))).scalar_one_or_none()
+    if row is not None:
+        await db.delete(row)
+        await db.commit()
+    return JSONResponse({"ok": True, "borrada": row is not None})
+
+
 @router.get("/ui/strategies/token-once/{tid}")
 async def token_once_read(tid: str) -> JSONResponse:
     """SEC-1b — entrega UNA vez el token guardado por el alta/rotación/promoción
