@@ -20,7 +20,11 @@ class OhlcvBar(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     symbol: Mapped[str] = mapped_column(String(50), nullable=False)
     timeframe: Mapped[str] = mapped_column(String(20), nullable=False)
-    bar_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # LX-6 fix — bar_time es ET-naive (wall-clock del exchange, la convención
+    # canónica del CSV/trades). Columna SIN timezone: Postgres guarda el
+    # wall-clock LITERAL, sin imponer un instante según el TimeZone de sesión
+    # (la causa de la corrupción heterogénea previa). Ver app/services/bar_store.py.
+    bar_time: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
     open: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
     high: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
     low: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))

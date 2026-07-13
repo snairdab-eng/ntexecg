@@ -90,13 +90,13 @@
               @submit.prevent="busy=true;err=null;out=null;
                   fetch('/ui/strategies/'+sid+'/integrar',{method:'POST',body:new FormData($event.target)})
                     .then(r=>r.json().then(j=>({s:r.status,j})))
-                    .then(({s,j})=>{ busy=false; if(j.ok){ out='Integrado '+(j.integrado||'ok')+(j.degradado?' (degradado)':'')+' — recargando…'; setTimeout(()=>location.reload(),900);} else if(j.holc_missing){ err='Sin HOLC — sube el HOLC arriba o marca «integrar degradado».';} else { err=j.error||('error '+s);} })
+                    .then(({s,j})=>{ busy=false; if(j.ok){ out='Integrado '+(j.integrado||'ok')+(j.degradado?' (degradado)':'')+' — recargando…'; setTimeout(()=>location.reload(),900);} else if(j.holc_missing){ err='Sin HOLC — sube el HOLC arriba o marca «integrar degradado».';} else { err=(j.error||('error '+s))+(j.detalle?' — '+j.detalle:'');} })
                     .catch(e=>{busy=false;err=String(e);})">
             <input type="file" name="file" accept=".csv" required class="text-xs text-gray-300">
             <label class="flex items-center gap-1 text-xs text-gray-400"><input type="checkbox" name="degradado" value="true" class="rounded bg-gray-800 border-gray-700"> integrar degradado (sin HOLC)</label>
             <button :disabled="busy" class="bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded text-sm" x-text="busy?'Integrando…':'Subir lista e integrar'"></button>
         </form>
-        <p x-show="err" x-text="err" x-cloak class="text-red-400 text-xs"></p>
+        <p x-show="err" x-text="err" x-cloak class="text-red-400 text-xs whitespace-pre-line break-words"></p>
         <p x-show="out" x-text="out" x-cloak class="text-green-400 text-xs"></p>
     </div>
 

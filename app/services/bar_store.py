@@ -20,9 +20,14 @@ LX-6 — CONVENCIÓN CANÓNICA: ET-naive wall-clock (la del CSV) en TODO el cicl
     símbolo entra en UTC (verificar con scripts/audit_ohlcv_tz.py), el escritor
     debe convertir a ET ANTES de persistir — el desalineo envenena el intrabar
     de la costura (ver diagnóstico LX-6).
-  · LECTURA: la columna es DateTime(timezone=True) y Postgres puede devolver el
-    valor tz-aware; stitch_from_db lo normaliza con _et_naive (aware →
-    America/New_York → naive), NUNCA .replace(tzinfo=None) a ciegas.
+  · ALMACÉN: la columna es DateTime(timezone=FALSE) = `timestamp` naive (migración
+    b8c9d0e1f2a3). Postgres guarda el wall-clock LITERAL — no impone un instante
+    según el `TimeZone` de la sesión. Guardar naive en la columna timestamptz
+    anterior fue la causa de la corrupción heterogénea (mezcla ET/UTC por época
+    de ingesta): el mismo naive daba instantes distintos según la sesión.
+  · LECTURA: _et_naive(bar_time) queda como passthrough para valores naive
+    (sigue convirtiendo aware→America/New_York→naive por si Postgres devolviera
+    tz-aware histórico), NUNCA .replace(tzinfo=None) a ciegas.
 """
 from __future__ import annotations
 
