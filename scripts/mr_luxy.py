@@ -433,13 +433,26 @@ RETENCION_N_MIN = 10        # OOS con menos trades → "muestra chica"
 # absurdo para una estrategia real → delata intrabar desalineado (cola mal-TZ).
 PF_ABSURDO = 50.0
 PART_MIN_PLAUSIBLE = 90.0    # con C1 al mercado y sin corte de lado, debe ~100%
+# LX-7 — el PF solo es EVALUABLE con al menos estos perdedores. Por debajo, un PF
+# alto está disparado por aritmética (muestra sin apenas pérdidas), NO por
+# corrupción → el tripwire NO debe declararlo "implausible". Mismo umbral que el
+# front (MIN_PERDEDORES_PF en strategy_detail.html) — una sola regla, dos capas.
+MIN_PERDEDORES_PF = 3
 
 
-def tripwire_implausible(legs, lado_accion, participacion, pf):
-    """LX-6 — (implausible, mensaje) del estudio. Con C1 al mercado (una pierna a
-    profundidad ≤0) y SIN corte de lado, la participación DEBE ser ~100%
-    (`leg_filled(0)=True` siempre); una participación baja o una PF absurda
-    delatan joins intrabar desalineados (cola mal-TZ)."""
+def tripwire_implausible(legs, lado_accion, participacion, pf, n_perdedores=None):
+    """LX-6/LX-7 — (implausible, mensaje, aviso_muestra) del estudio.
+
+    Con C1 al mercado (una pierna a profundidad ≤0) y SIN corte de lado, la
+    participación DEBE ser ~100% (`leg_filled(0)=True` siempre); una participación
+    baja delata joins intrabar desalineados (cola mal-TZ) → IMPLAUSIBLE.
+
+    Un PF > PF_ABSURDO solo delata corrupción si es EVALUABLE (LX-7: la muestra
+    tiene ≥ MIN_PERDEDORES_PF perdedores). Con menos perdedores el PF está
+    disparado por aritmética, no corrupto: el tripwire NO declara "implausible" —
+    devuelve `aviso_muestra` (estado propio "no evaluable por muestra"), coherente
+    con la fila Crudo que ya rotula "n/s (N perdedor)". La participación anómala y
+    el PF alto CON perdedores suficientes siguen disparando el tripwire."""
     c1_market = any(d <= 0 and w > 0 for d, w in (legs or ()))
     dir_both = lado_accion != "cortar"
     impl = []
@@ -447,11 +460,18 @@ def tripwire_implausible(legs, lado_accion, participacion, pf):
             and participacion < PART_MIN_PLAUSIBLE:
         impl.append(f"participación {participacion}% con C1 al mercado "
                     f"(debería ~100%)")
+    aviso_muestra = None
     if pf is not None and pf != float("inf") and pf > PF_ABSURDO:
-        impl.append(f"PF {round(pf, 1)} > {PF_ABSURDO}")
+        # LX-7: ¿es el PF evaluable? (None = caller sin dato → se juzga, retrocompat)
+        if n_perdedores is not None and n_perdedores < MIN_PERDEDORES_PF:
+            aviso_muestra = (
+                f"muestra con muy pocos perdedores ({n_perdedores}) — el PF no es "
+                f"evaluable; el estudio de riesgo tiene poco que decir aquí")
+        else:
+            impl.append(f"PF {round(pf, 1)} > {PF_ABSURDO}")
     msg = ("números implausibles: revisa alineación/cobertura intrabar — "
            + " · ".join(impl)) if impl else None
-    return bool(impl), msg
+    return bool(impl), msg, aviso_muestra
 
 
 def _expectativa(m: dict):
@@ -818,12 +838,17 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         # a profundidad ≤0) y SIN corte de lado, la participación DEBE ser ~100%
         # (leg_filled(0)=True siempre); una PF absurda o participación baja delatan
         # joins intrabar desalineados (cola mal-TZ). El semáforo NO se enciende.
-        _impl, _msg = tripwire_implausible(
+        _impl, _msg, _aviso_muestra = tripwire_implausible(
             (levers_in.get("ladder") or {}).get("legs") or (),
             (levers_in.get("lado") or {}).get("accion"),
-            fila_in.get("participacion_pct"), fila_in.get("pf"))
+            fila_in.get("participacion_pct"), fila_in.get("pf"),
+            fila_in.get("n_perdedores"))                 # LX-7: PF evaluable o no
         dashboard["implausible"] = _impl
         dashboard["implausible_msg"] = _msg
+        # LX-7 — estado PROPIO "no evaluable por muestra" (≠ implausible): PF alto
+        # con muy pocos perdedores no es corrupción, es muestra sin significado.
+        dashboard["pf_no_evaluable"] = bool(_aviso_muestra)
+        dashboard["pf_no_evaluable_msg"] = _aviso_muestra
         # LX-3b — semáforo de robustez (OOS validada), retención $/trade y banner
         # de muestra (todo del payload; la estimación NO enciende semáforo).
         dashboard["robustez"] = robustez_semaforo(fila_oos)

@@ -378,6 +378,8 @@ async def test_luxy_e2e_real(
     assert 'id="lx-implausible"' in html and "números implausibles" in html
     # LX-7 — PF honesto: la lógica "n/s (perdedores)" + cherry-picking viaja en el JS
     assert "MIN_PERDEDORES_PF" in html and "n/s (" in html and "cherry-picking" in html
+    # LX-7 (tripwire) — estado PROPIO "no evaluable por muestra" (ámbar, ≠ implausible)
+    assert 'id="lx-pf-noeval"' in html and "no evaluable por muestra" in html
     # (el texto del banner de muestra vive en el payload/Python — se testea en
     #  test_luxy_toggles_lx2::test_muestra_banner_on_off_y_texto; ES no lo dispara.)
     assert "ET" in html                              # rango horario ET (R-T7)
@@ -454,6 +456,9 @@ async def test_luxy_evaluar_parity_real(
     assert dash["muestra_banner"] is None
     # LX-6 — el estudio LIMPIO del ES NO es implausible (tripwire OFF)
     assert dash["implausible"] is False
+    # LX-7 — ES tiene perdedores de sobra → el PF SÍ es evaluable (no el estado
+    # nuevo "no evaluable por muestra"); el semáforo queda con veredicto real.
+    assert dash.get("pf_no_evaluable") is False
     # LX-3b — semáforo de robustez SOLO de la fila OOS validada, con los umbrales
     oos_net, oos_pf = t3["oos"]["net_usd"], t3["oos"]["pf"]
     exp = ("rojo" if (oos_net is None or oos_pf is None or oos_net <= 0 or oos_pf < 1.0)

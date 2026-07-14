@@ -94,15 +94,37 @@ async def test_stitch_db_vacia_sin_cola_no_aborta(monkeypatch):
 def test_tripwire_on_off():
     legs = ((0.0, 0.5), (1.6, 0.3), (3.2, 0.2))        # C1 al mercado (depth 0)
     # sano: dir both, participación 100, PF 2.0 → plausible
-    impl, msg = mrl.tripwire_implausible(legs, None, 100.0, 2.0)
-    assert impl is False and msg is None
-    # PF absurda → implausible
-    impl, msg = mrl.tripwire_implausible(legs, None, 100.0, 184.8)
-    assert impl is True and "PF 184.8" in msg
+    impl, msg, aviso = mrl.tripwire_implausible(legs, None, 100.0, 2.0, 20)
+    assert impl is False and msg is None and aviso is None
+    # PF absurda CON perdedores suficientes (≥3) → implausible (corrupción)
+    impl, msg, aviso = mrl.tripwire_implausible(legs, None, 100.0, 184.8, 12)
+    assert impl is True and "PF 184.8" in msg and aviso is None
     # participación baja con C1 al mercado y sin corte → implausible
-    impl, msg = mrl.tripwire_implausible(legs, None, 52.1, 2.0)
+    impl, msg, aviso = mrl.tripwire_implausible(legs, None, 52.1, 2.0, 20)
     assert impl is True and "52.1%" in msg
     # participación baja PERO con corte de lado → NO dispara (es legítimo)
-    impl, _ = mrl.tripwire_implausible(legs, "cortar", 52.1, 2.0)
+    impl, _m, _a = mrl.tripwire_implausible(legs, "cortar", 52.1, 2.0, 20)
     assert impl is False
-    assert mrl.PF_ABSURDO == 50.0 and mrl.PART_MIN_PLAUSIBLE == 90.0
+    assert (mrl.PF_ABSURDO == 50.0 and mrl.PART_MIN_PLAUSIBLE == 90.0
+            and mrl.MIN_PERDEDORES_PF == 3)
+
+
+def test_tripwire_pf_no_evaluable_por_muestra_lx7():
+    """LX-7 — PF alto con < 3 perdedores: el PF NO es evaluable → el tripwire NO
+    declara 'implausible'; devuelve el aviso honesto de muestra insuficiente
+    (caso 6J real: 1 perdedor en 63 trades, PF 58.7 por aritmética, no corrupción)."""
+    legs = ((0.0, 0.5), (1.6, 0.3), (3.2, 0.2))
+    # 1 perdedor y PF 58.7 (el caso 6J) → NO implausible, sí aviso de muestra
+    impl, msg, aviso = mrl.tripwire_implausible(legs, None, 100.0, 58.7, 1)
+    assert impl is False and msg is None
+    assert aviso is not None and "muy pocos perdedores (1)" in aviso
+    assert "no es evaluable" in aviso
+    # 2 perdedores igual → tampoco implausible
+    impl2, _m2, aviso2 = mrl.tripwire_implausible(legs, None, 100.0, 120.0, 2)
+    assert impl2 is False and aviso2 is not None and "(2)" in aviso2
+    # 3 perdedores (umbral) con PF>50 → SÍ implausible (protege contra corrupción)
+    impl3, msg3, aviso3 = mrl.tripwire_implausible(legs, None, 100.0, 58.7, 3)
+    assert impl3 is True and "PF 58.7" in msg3 and aviso3 is None
+    # participación anómala SIGUE disparando aunque haya pocos perdedores
+    implP, msgP, avisoP = mrl.tripwire_implausible(legs, None, 40.0, 58.7, 1)
+    assert implP is True and "40.0%" in msgP
