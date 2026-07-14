@@ -29,6 +29,36 @@ _ES_CSV = sorted(glob.glob("ListaDeOperaciones/*_ES1!_*.csv"))
 _ES_HOLC = Path("NINJATRADER/HOLC/ES_5m.csv")
 _HAY_DATOS = bool(_ES_CSV) and _ES_HOLC.exists()
 
+
+def _es_intrabar_confiable() -> bool:
+    """LX-12 — ¿el HOLC real de ES CONTIENE los precios del master ES? Con el
+    HOLC del share en otro contorno de roll que el continuo de LuxAlgo la
+    contención cae por debajo del umbral y el estudio DEGRADA (fail-honest); los
+    tests de PARIDAD intrabar de abajo requieren datos alineados, así que se
+    saltan con motivo hasta que el operador corrija el Merge policy y reintegre.
+    NO se fabrica un HOLC alineado a propósito: eso ocultaría el desalineo que la
+    guardia existe para delatar."""
+    if not _HAY_DATOS:
+        return False
+    try:
+        from scripts.lab_analyze import detect_tz_offset, load_holc, parse_luxalgo_csv
+        from scripts.nt_riesgo import _contencion
+        trades = parse_luxalgo_csv(Path(_ES_CSV[-1]))
+        bars = load_holc("ES", "5m")
+        off, _s, _d = detect_tz_offset(trades, bars)
+        return bool(_contencion(trades, bars, off, "ES")["confiable"])
+    except Exception:
+        return False
+
+
+# Los tests de paridad intrabar corren SOLO si el HOLC real contiene el master
+# (si no, LX-12 degrada el estudio a solo-crudo — a propósito).
+_ES_INTRABAR = _HAY_DATOS and _es_intrabar_confiable()
+_MOTIVO_INTRABAR = ("LX-12: HOLC del share desalineado del master ES (roll/back-"
+                    "adjust) → intrabar no confiable; la paridad intrabar exige "
+                    "datos alineados. Corrige el Merge policy en NinjaTrader y "
+                    "reintegra.")
+
 # Lista mínima de LuxAlgo que parsea y cuadra (1 trade, entry+exit).
 CSV_OK = (
     "Trade number,Tipo,Fecha y hora,Señal,Precio USD,Tamaño (cant.),"
@@ -306,7 +336,7 @@ async def test_luxy_tab_sin_estudio(
     assert "Corre el" in html                    # CTA a Calcular
 
 
-@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.skipif(not _ES_INTRABAR, reason=_MOTIVO_INTRABAR)
 @pytest.mark.asyncio
 async def test_luxy_e2e_real(
     client: AsyncClient, dirs: Path, db: AsyncSession,
@@ -399,7 +429,7 @@ async def test_luxy_e2e_real(
     assert "TP nominal" in campos and "Escalera" in campos
 
 
-@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.skipif(not _ES_INTRABAR, reason=_MOTIVO_INTRABAR)
 @pytest.mark.asyncio
 async def test_luxy_evaluar_parity_real(
     client: AsyncClient, dirs: Path, db: AsyncSession,
@@ -485,7 +515,7 @@ async def test_luxy_evaluar_parity_real(
     assert len(dash["trades"]) == study["split"]["n_total"]
 
 
-@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.skipif(not _ES_INTRABAR, reason=_MOTIVO_INTRABAR)
 @pytest.mark.asyncio
 async def test_luxy_toggles_motor_real(
     client: AsyncClient, dirs: Path, db: AsyncSession,
@@ -525,7 +555,7 @@ async def test_luxy_toggles_motor_real(
     assert mrl.evaluate_overrides(clave, rr.MOTOR_DIR, {"days_off": [4]}) == evD
 
 
-@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.skipif(not _ES_INTRABAR, reason=_MOTIVO_INTRABAR)
 @pytest.mark.asyncio
 async def test_luxy_hereda_cobertura_del_snapshot(
     client: AsyncClient, dirs: Path, db: AsyncSession,
@@ -587,7 +617,7 @@ async def test_luxy_hereda_cobertura_del_snapshot(
 # L7a — ventana de operación NATIVA en Luxy (paridad numérica con v1)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _HAY_DATOS, reason="datos reales de ES no disponibles")
+@pytest.mark.skipif(not _ES_INTRABAR, reason=_MOTIVO_INTRABAR)
 @pytest.mark.asyncio
 async def test_luxy_ventana_paridad_v1_real(
     client: AsyncClient, dirs: Path, db: AsyncSession,

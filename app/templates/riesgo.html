@@ -122,12 +122,21 @@
                 {% if motor.holc.ultima_barra %}
                 <div class="text-gray-200">{{ motor.holc.ultima_barra[:16] }}</div>
                 <div class="text-gray-500">{% if motor.holc.atr_estimado %}⚠ {{ motor.holc.atr_estimado }} ATR estimado{% else %}✓ completo{% endif %}</div>
+                {% if motor.contencion %}
+                <div class="{% if motor.intrabar_no_confiable %}text-red-400 font-semibold{% else %}text-gray-500{% endif %}">contención {{ motor.contencion.pct }}%{% if motor.intrabar_no_confiable %} ⛔ &lt;{{ motor.contencion.umbral_pct }}%{% else %} ✓{% endif %}</div>
+                {% endif %}
                 {% else %}
                 <div class="text-amber-400">⚠ degradado (sin HOLC)</div>
                 <div class="text-gray-500">sube el HOLC y reintegra</div>
                 {% endif %}
             </div>
         </div>
+        {% if motor and motor.intrabar_no_confiable %}
+        {# LX-12 — banner ROJO: HOLC en otro contorno de contrato (roll/back-adjust) #}
+        <div class="bg-red-900/40 border border-red-600 rounded p-2 text-xs text-red-200">
+            ⛔ <b>intrabar NO confiable</b> — contención {{ motor.contencion.pct }}% (±1 barra {{ motor.contencion.pct_pm1 }}%) &lt; {{ motor.contencion.umbral_pct }}%: master y HOLC no comparten contorno de contrato (¿roll/back-adjust?). El estudio será <b>degradado</b> (solo crudo). Corrige el Merge policy en NinjaTrader (mismo continuo que LuxAlgo) y reintegra.
+        </div>
+        {% endif %}
         {% for a in avisos %}
         <div class="bg-amber-900/30 border border-amber-700 rounded p-2 text-xs text-amber-200">⚠ {{ a }}</div>
         {% endfor %}

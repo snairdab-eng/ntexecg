@@ -671,11 +671,26 @@ def _dashboard_payload(sts: list[SimTrade], by_number: dict, levers_in: dict,
     }
 
 
+# LX-12 — banners de degradado por MOTIVO (el front pinta rojo el de contención).
+_AVISO_SIN_HOLC = ("master DEGRADADO (sin HOLC): fills con corte y BREAKEVEN "
+                   "no disponibles; solo crudo + palancas sin intrabar.")
+_AVISO_NO_CONFIABLE = ("master y HOLC no comparten contorno de contrato "
+                       "(¿roll/back-adjust?) — corrige el Merge policy en "
+                       "NinjaTrader y reintegra. Estudio DEGRADADO: solo crudo, "
+                       "sin palancas intrabar (fail-honest LX-12).")
+
+
+def _avisos_degradado(motivo: str | None) -> list[str]:
+    return [_AVISO_NO_CONFIABLE if motivo == "intrabar_no_confiable"
+            else _AVISO_SIN_HOLC]
+
+
 def luxy_study(trades, ppt: float, *, oos: float = 0.3,
                cancel_after_s: float | None = CANCEL_AFTER_MAX_S,
                keys5=None, idx5=None, bars5=None,
                has_intrabar: bool = True,
-               fecha: str | None = None, off: int = 0) -> dict:
+               fecha: str | None = None, off: int = 0,
+               degradado_motivo: str | None = None) -> dict:
     """Estudio Luxy completo (Tablas A/B) sobre los `trades` enriquecidos del
     master. `keys5/idx5/bars5` = HOLC del motor (para el intrabar del BE, R-T2);
     ausentes o has_intrabar=False → estudio DEGRADADO/limitado honesto.
@@ -863,6 +878,9 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         "dashboard": dashboard,     # L3: nube + reco + zonas/días/time-stop
         "fecha": fecha,
         "degradado": not intrabar,
+        # LX-12 — por qué degrada: "intrabar_no_confiable" (roll/back-adjust) o
+        # None/sin_holc. El front pinta el banner rojo específico de contención.
+        "degradado_motivo": (degradado_motivo if not intrabar else None),
         "usd_por_punto": ppt,                       # R-T9 (del master)
         "cancel_after_s": cancel_after_s,
         "oos_frac": oos,
@@ -877,9 +895,7 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         "tabla_b": tabla_b,
         "levers_in_sample": levers_in,
         "levers_oos": levers_oos,
-        "avisos": ([] if intrabar else
-                   ["master DEGRADADO (sin HOLC): fills con corte y BREAKEVEN "
-                    "no disponibles; solo crudo + palancas sin intrabar."]),
+        "avisos": ([] if intrabar else _avisos_degradado(degradado_motivo)),
     }
 
 
@@ -968,8 +984,12 @@ def _load_master(base_dir):
     man = json.loads((base_dir / "manifest.json").read_text(encoding="utf-8"))
     ppt = float(man["usd_por_punto"]["usado"])          # R-T9: del master
     activo = man["activo"]
+    # LX-12 — intrabar NO confiable (HOLC no contiene los precios: roll/back-
+    # adjust) degrada IGUAL que la ausencia de HOLC: solo-crudo, sin palancas
+    # intrabar (fail-honest — jamás derivar de un intrabar que no los contiene).
     degradado = bool(man.get("degradado")
-                     or (man.get("holc") or {}).get("degradado"))
+                     or (man.get("holc") or {}).get("degradado")
+                     or man.get("intrabar_no_confiable"))
     trades = parse_luxalgo_csv(base_dir / "master.csv")
     keys5 = idx5 = bars5 = None
     has_intrabar = False
@@ -1141,10 +1161,16 @@ def run_for_clave(clave: str, motor_dir, *, oos: float = 0.3,
         base_dir)
     fecha = fecha or date.today().isoformat()
 
+    # LX-12 — si el master quedó marcado intrabar_no_confiable, el estudio
+    # degrada con el banner ROJO específico (no el genérico "sin HOLC").
+    motivo = ("intrabar_no_confiable" if man.get("intrabar_no_confiable")
+              else None)
     study = luxy_study(trades, ppt, oos=oos, cancel_after_s=cancel_after_s,
                        keys5=keys5, idx5=idx5, bars5=bars5,
-                       has_intrabar=has_intrabar, fecha=fecha, off=off)
+                       has_intrabar=has_intrabar, fecha=fecha, off=off,
+                       degradado_motivo=motivo)
     study["clave"] = clave
+    study["contencion"] = man.get("contencion")     # LX-12 (ficha/banner del front)
     study["master"] = {"integrado": man.get("integrado"),
                        "sha256": (man.get("export") or {}).get("sha256_master"),
                        "n_trades": (man.get("trades") or {}).get("n")}

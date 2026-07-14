@@ -443,6 +443,93 @@ def _guardar_frescura(trades: list[Trade], bars: dict, off: int,
             f"NO se cose cola dudosa.")
 
 
+# ---------------------------------------------------------------------------
+# LX-12 — Guardia de CONTENCIÓN al integrar (fail-honest)
+# ---------------------------------------------------------------------------
+# El HOLC del share puede estar en un CONTORNO DE CONTRATO distinto al del
+# master (política de roll / back-adjust de NinjaTrader ≠ continuo `<sym>1!` de
+# LuxAlgo): los timestamps alinean pero el NIVEL de precio está desplazado un
+# escalón CONSTANTE por tramo (p.ej. 6J −91 ticks pre-junio). La sanity de
+# `detect_tz_offset` NO lo ve: corrige el nivel con la mediana de los vecinos en
+# tiempo (para ser robusta al roll al DETECTAR la TZ), así que un escalón
+# constante pasa con sanity alta (6J: 0.96). Aquí medimos la contención CRUDA,
+# SIN corrección de nivel: ¿el precio de cada entrada cae DE VERDAD dentro de
+# [low,high] de su barra? Si no, el intrabar (MAE/MFE-timing, fills, BE) no
+# describe estos trades → se MARCA y el estudio Luxy degrada a solo-crudo. Nunca
+# se deriva una palanca de un intrabar que no contiene los precios de los trades.
+CONTENCION_MIN_PCT = 80          # % mínimo de entradas dentro de su barra alineada
+
+
+def _contencion(trades: list, bars: dict, off: int, activo: str) -> dict:
+    """Contención intrabar del master contra su HOLC (LX-12). Devuelve:
+      · pct     = % de entradas cuyo `entry_price` cae en [low,high] de su barra
+                  alineada (offset aplicado) — la métrica CRUDA (sin la
+                  corrección de nivel de la sanity, que absorbe el roll).
+      · pct_pm1 = ídem admitiendo la barra ±1 (referencia).
+      · gap_mediano_ticks_por_mes = mediana(entry_price − close) por mes en
+                  TICKS (master−HOLC al mismo timestamp), si el tick del activo
+                  es conocido (barato: un pase; delata el escalón de roll).
+    Determinista: funciones puras sobre (trades, bars, off)."""
+    delta = timedelta(minutes=off)
+    keys = sorted(bars)
+    index = {ts: i for i, ts in enumerate(keys)}
+    try:                                        # tick full-size del activo (barato)
+        from scripts.mr_report import TICK_SIZE
+        tick = TICK_SIZE.get(activo)
+    except Exception:
+        tick = None
+    n = inside = inside_pm1 = 0
+    gaps_mes: dict[str, list] = {}
+    for t in trades:
+        ts = t.entry_ts + delta
+        i = index.get(ts)
+        if i is None:
+            continue
+        n += 1
+        _o, h, lo, c, _v = bars[ts]
+        if lo <= t.entry_price <= h:
+            inside += 1
+        for j in range(max(0, i - 1), min(len(keys), i + 2)):
+            b = bars[keys[j]]
+            if b[2] <= t.entry_price <= b[1]:   # b = (o,h,lo,c,v): lo=b[2], h=b[1]
+                inside_pm1 += 1
+                break
+        if tick:
+            gaps_mes.setdefault(ts.strftime("%Y-%m"), []).append(t.entry_price - c)
+    pct = round(100 * inside / n, 1) if n else None
+    pct_pm1 = round(100 * inside_pm1 / n, 1) if n else None
+    gap_ticks = ({mes: round(statistics.median(v) / tick)
+                  for mes, v in sorted(gaps_mes.items())}
+                 if tick and gaps_mes else None)
+    return {
+        "pct": pct,
+        "pct_pm1": pct_pm1,
+        "n": n,
+        "umbral_pct": CONTENCION_MIN_PCT,
+        "confiable": bool(pct is not None and pct >= CONTENCION_MIN_PCT),
+        "tick_size": tick,
+        "gap_mediano_ticks_por_mes": gap_ticks,
+    }
+
+
+def _print_contencion(c: dict) -> None:
+    """LX-12 — informe de contención + banner ACCIONABLE si no es confiable."""
+    if c["confiable"]:
+        print(f"· Contención intrabar {c['pct']}% "
+              f"(±1 barra {c['pct_pm1']}%) ≥ {CONTENCION_MIN_PCT}% ✅")
+        return
+    print(f"⛔ INTRABAR NO CONFIABLE: contención {c['pct']}% "
+          f"(±1 barra {c['pct_pm1']}%) < {CONTENCION_MIN_PCT}% — master y HOLC "
+          f"NO comparten contorno de contrato (¿roll/back-adjust?). El master "
+          f"SE INTEGRA igual, pero el estudio Luxy será DEGRADADO (solo crudo, "
+          f"sin palancas intrabar). Corrige el Merge policy en NinjaTrader "
+          f"(mismo continuo que LuxAlgo) y reintegra.")
+    g = c.get("gap_mediano_ticks_por_mes")
+    if g:
+        print("  gap mediano por mes (ticks, master−HOLC): "
+              + " · ".join(f"{m}:{v:+d}" for m, v in g.items()))
+
+
 async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
                    fecha: str | None = None,
                    degradado: bool = False) -> dict:
@@ -520,6 +607,7 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
         estimated = []
         estimated_ids = set()
         holc_last = None
+        contencion = None                       # LX-12: sin HOLC no hay contención
     else:
         bars, off, tz_detail, sin_cobertura, estimated = \
             await _enriquecer(trades, activo)
@@ -528,6 +616,11 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
         _guardar_frescura(trades, bars, off, activo)
         holc_last = max(bars)
         estimated_ids = {t.number for t in estimated}
+        # LX-12 — GUARDIA DE CONTENCIÓN (fail-honest): el master se integra
+        # igual, pero si el HOLC no contiene los precios de los trades se MARCA
+        # (intrabar_no_confiable) y el estudio degradará a solo-crudo.
+        contencion = _contencion(trades, bars, off, activo)
+        _print_contencion(contencion)
 
     # 5) Persistencia: snapshot inmutable + master + enriched + manifest
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -580,6 +673,11 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
             "atr_estimado": len(estimated),
             "degradado": degradado,
         },
+        # LX-12 — contención intrabar (None si degradado sin HOLC) + bandera
+        # fail-honest que el estudio Luxy lee para degradar a solo-crudo.
+        "contencion": contencion,
+        "intrabar_no_confiable": bool(
+            contencion is not None and not contencion["confiable"]),
         "tz": tz_detail,
         "grids_version": grids_fingerprint(),
         "motor_commit": _git_commit(),
