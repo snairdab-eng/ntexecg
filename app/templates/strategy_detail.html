@@ -661,13 +661,17 @@
         {% if luxy and not luxy.degradado %}
         <!-- L5 — Aplicar supervisado (reusa el Puente): diff → confirmar → merge -->
         <div class="flex items-center gap-2 flex-wrap"
-             x-data="{ open:false, loading:false, aerr:null, prev:null,
-               load(){ this.loading=true; this.aerr=null; this.prev=null; this.open=true;
+             x-data="{ open:false, loading:false, aerr:null, prev:null, confirmRiesgo:false, frase:'',
+               get gate(){ return this.prev ? this.prev.gate : null; },
+               get bloqueado(){ const g=this.gate; if(!g) return false;
+                 if(g.nivel==='rojo') return this.frase.trim() !== g.frase_rojo;
+                 if(g.nivel==='amber') return !this.confirmRiesgo; return false; },
+               load(){ this.loading=true; this.aerr=null; this.prev=null; this.confirmRiesgo=false; this.frase=''; this.open=true;
                  fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar/preview')
                   .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200) this.prev=j; else this.aerr=j.error||('error '+s); })
                   .catch(e=>{this.loading=false;this.aerr=String(e);}); },
-               apply(){ this.loading=true;
-                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar',{method:'POST'})
+               apply(){ if(this.bloqueado) return; this.loading=true;
+                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_riesgo:this.confirmRiesgo, frase:this.frase})})
                   .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200){ this.open=false; location.reload(); } else this.aerr=j.error||('error '+s); }); } }">
           {% if luxy_deriva %}
           <span class="text-xs px-2 py-0.5 rounded {% if luxy_deriva.estado=='aplicada' %}bg-emerald-900 text-emerald-300{% elif luxy_deriva.estado=='sin_estrategia_viva' %}bg-gray-800 text-gray-400{% else %}bg-amber-900 text-amber-300{% endif %}">deriva: {{ luxy_deriva.texto }}</span>
@@ -701,9 +705,28 @@
                   <ul class="text-xs text-gray-500 list-disc pl-4">
                     <template x-for="a in prev.avisos" :key="a"><li x-text="a"></li></template>
                   </ul>
+                  {# LX-11 — gate de robustez: fricción proporcional al riesgo #}
+                  <template x-if="gate && gate.nivel==='amber'">
+                    <div class="rounded p-2 text-xs space-y-1" style="background:rgba(210,153,34,.14);color:#d29922;border:1px solid #d29922">
+                      <div class="font-semibold">⚠ Señales en ÁMBAR — revisa antes de aplicar:</div>
+                      <ul class="list-disc pl-4"><template x-for="t in gate.triggers" :key="t"><li x-text="t"></li></template></ul>
+                      <label class="flex items-center gap-2 pt-1"><input type="checkbox" x-model="confirmRiesgo" class="rounded"> <span>Entiendo el riesgo y quiero aplicar igual.</span></label>
+                    </div>
+                  </template>
+                  <template x-if="gate && gate.nivel==='rojo'">
+                    <div class="rounded p-2 text-xs space-y-1" style="background:rgba(248,81,73,.16);color:#f85149;border:1px solid #f85149">
+                      <div class="font-semibold">⛔ Señales en ROJO — aplicar sin robustez validada:</div>
+                      <ul class="list-disc pl-4"><template x-for="t in gate.triggers" :key="t"><li x-text="t"></li></template></ul>
+                      <div class="pt-1">Escribe <code class="font-bold" x-text="gate.frase_rojo"></code> para confirmar:</div>
+                      <input x-model="frase" type="text" :placeholder="gate.frase_rojo" class="w-full bg-gray-800 border border-red-700 rounded px-2 py-1 text-gray-100">
+                    </div>
+                  </template>
                   <div class="flex gap-2 justify-end pt-2">
                     <button @click="open=false" class="bg-gray-800 text-gray-300 px-4 py-2 rounded text-sm">Cancelar</button>
-                    <button @click="apply()" :disabled="loading" class="bg-emerald-700 text-white px-4 py-2 rounded text-sm disabled:opacity-40">Confirmar y aplicar</button>
+                    <button @click="apply()" :disabled="loading || bloqueado"
+                            class="text-white px-4 py-2 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            :class="gate && gate.nivel==='rojo' ? 'bg-red-700' : (gate && gate.nivel==='amber' ? 'bg-amber-700' : 'bg-emerald-700')"
+                            x-text="gate && gate.nivel==='rojo' ? 'Aplicar sin robustez' : 'Confirmar y aplicar'"></button>
                   </div>
                 </div>
               </template>
@@ -1271,12 +1294,15 @@
             const doff=Object.keys(DON).filter(function(k){return !DON[k];}).map(Number);
             return {zones_off:zoff, days_off:doff}; }
           function ventFmt(w){ return (w.days||[]).map(function(d){return ['D','L','M','X','J','V','S'][d];}).join('')+' '+w.start+'–'+w.end+(w.next_day_end?' (+1 día)':''); }
+          var VGATE=null;   // LX-11 §4 — gate del puente de ventanas (rojo: frase)
           function ventPreview(){
             fetch('/ui/strategies/'+SID+'/luxy/ventanas/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ventOff())})
               .then(function(r){return r.json();}).then(function(j){
                 const b=el('lx-vent-body'), ok=el('lx-vent-ok');
+                VGATE=j.gate||null;
                 if(j.error){ b.innerHTML='<span style="color:#f85149">'+j.error+'</span>'; ok.disabled=true; el('lx-vent-modal').style.display=''; return; }
-                ok.disabled=!!j.invalido;
+                var rojo = VGATE && VGATE.nivel==='rojo';
+                ok.disabled=!!j.invalido || !!rojo;
                 var h='';
                 if(j.invalido) h+='<div class="mb-2" style="color:#f85149">⛔ Todo apagado → ventana vacía, no aplicable.</div>';
                 h+='<div class="mb-2"><b style="color:var(--lx-ink)">Actuales:</b> '+((j.actuales||[]).map(ventFmt).join(' · ')||'— (sin ventanas: 7/7 completo)')+'</div>';
@@ -1284,10 +1310,17 @@
                 h+='<div class="mb-2 rounded p-2" style="background:rgba(210,153,34,.1)"><b style="color:#d29922">EL COSTO EN LA CARA — % de trades del backtest FUERA:</b> actual '+(j.pct_fuera_actual==null?'—':j.pct_fuera_actual+'%')+' → propuesta <b>'+(j.pct_fuera_propuesta==null?'—':j.pct_fuera_propuesta+'%')+'</b>';
                 const pl=j.por_lado||{}; h+=' · por lado: largos '+pl.long_fuera+'/'+pl.long_total+' fuera · cortos '+pl.short_fuera+'/'+pl.short_total+' fuera</div>';
                 h+=(j.avisos||[]).map(function(a){return '<div class="mb-1" style="color:#d29922">⚠ '+a+'</div>';}).join('');
-                b.innerHTML=h; el('lx-vent-modal').style.display=''; }); }
+                if(rojo){
+                  h+='<div class="rounded p-2 mt-1" style="background:rgba(248,81,73,.16);color:#f85149;border:1px solid #f85149"><b>⛔ Señales en ROJO:</b><ul style="list-style:disc;padding-left:1rem">'+(VGATE.triggers||[]).map(function(t){return '<li>'+t+'</li>';}).join('')+'</ul><div class="mt-1">Escribe <code style="font-weight:bold">'+VGATE.frase_rojo+'</code> para confirmar:</div><input id="lx-vent-frase" type="text" placeholder="'+VGATE.frase_rojo+'" style="width:100%;background:#0d1117;border:1px solid #f85149;border-radius:4px;padding:4px 6px;color:#e6edf3;margin-top:4px"></div>';
+                }
+                b.innerHTML=h; el('lx-vent-modal').style.display='';
+                if(rojo){ var fi=el('lx-vent-frase'); if(fi) fi.addEventListener('input',function(){ ok.disabled = fi.value.trim() !== VGATE.frase_rojo; }); }
+              }); }
           function ventApply(){
             const ok=el('lx-vent-ok'); ok.disabled=true; ok.textContent='Escribiendo…';
-            fetch('/ui/strategies/'+SID+'/luxy/ventanas/aplicar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ventOff())})
+            var payload=ventOff();
+            if(VGATE && VGATE.nivel==='rojo'){ var fi=el('lx-vent-frase'); payload.frase = fi ? fi.value : ''; }
+            fetch('/ui/strategies/'+SID+'/luxy/ventanas/aplicar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
               .then(function(r){return r.json();}).then(function(j){
                 if(j.ok){ el('lx-vent-body').innerHTML='<div style="color:var(--lx-green)">✓ '+j.n+' ventana(s) escritas en la pestaña Ventanas. Recargando…</div>'; setTimeout(function(){location.reload();},800); }
                 else { ok.disabled=false; ok.textContent='Confirmar y escribir en Ventanas'; el('lx-vent-body').innerHTML+='<div style="color:#f85149">'+(j.error||'error')+'</div>'; } }); }

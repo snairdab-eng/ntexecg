@@ -941,6 +941,89 @@ def activacion_from_study(study: dict) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# LX-11 — Gate de robustez en los puentes de Aplicar (fricción de UI + registro).
+# PURO/derivado del study: NO toca motor ni R-T10 — solo lee las señales que el
+# estudio YA calcula (semáforo de robustez, tripwire implausible, chips flip/
+# mejora, participación de la config) + intrabar_no_confiable (LX-12). El operador
+# manda; la fricción es proporcional al riesgo (verde limpio · amber checkbox ·
+# rojo frase). La misión del sistema es impedir el camino silencioso del
+# 2026-07-13/14 (NQ PF 0.85, 6E PF 0.64, tripwire 6J, flip GC).
+# ---------------------------------------------------------------------------
+GATE_FRASE_ROJO = "APLICAR SIN ROBUSTEZ"
+GATE_PARTICIPACION_MIN_PCT = 90.0
+
+
+def _señales_gate(study: dict) -> dict:
+    """Señales crudas del estudio vigente (compartidas por ambos gates)."""
+    dash = (study or {}).get("dashboard") or {}
+    notes = dash.get("notes") or []
+    cont = (study or {}).get("contencion") or {}
+    part = (((dash.get("table3") or {}).get("crudo_plus") or {})
+            .get("participacion_pct"))
+    return {
+        "robustez": (dash.get("robustez") or {}).get("verdict"),
+        "implausible": bool(dash.get("implausible")),
+        "implausible_msg": dash.get("implausible_msg"),
+        "flip_signo": any("flip de signo" in n for n in notes),
+        "mejora_3x": any("mejora >3" in n for n in notes),
+        "participacion_pct": part,
+        "intrabar_no_confiable": bool(
+            study.get("degradado_motivo") == "intrabar_no_confiable"
+            or (cont and cont.get("confiable") is False)),
+        "contencion_pct": cont.get("pct") if cont else None,
+    }
+
+
+def gate_aplicar(study: dict) -> dict:
+    """Gate del puente Aplicar (Luxy → config viva). Nivel de fricción:
+      · 🔴 rojo  = robustez ROJA | tripwire implausible | flip de signo crudo→
+                   config | intrabar NO confiable (LX-12) → exige `GATE_FRASE_ROJO`.
+      · 🟡 amber = robustez ÁMBAR | participación<90% | mejora>3× (sobreajuste)
+                   → exige checkbox "entiendo el riesgo".
+      · 🟢 verde = sin alertas → flujo actual.
+    Devuelve {nivel, triggers, frase_rojo, señales}."""
+    s = _señales_gate(study)
+    rojo: list[str] = []
+    if s["robustez"] == "rojo":
+        rojo.append("semáforo de robustez ROJO (OOS net≤0 o PF<1.0)")
+    if s["implausible"]:
+        rojo.append(s["implausible_msg"] or "tripwire de implausibilidad activo")
+    if s["flip_signo"]:
+        rojo.append("flip de signo crudo→config")
+    if s["intrabar_no_confiable"]:
+        rojo.append("intrabar NO confiable — contención < umbral (LX-12)")
+    amber: list[str] = []
+    if s["robustez"] == "amarillo":
+        amber.append("semáforo de robustez ÁMBAR (PF OOS 1.0–1.3)")
+    if s["participacion_pct"] is not None and \
+            s["participacion_pct"] < GATE_PARTICIPACION_MIN_PCT:
+        amber.append(f"participación de la config {s['participacion_pct']}% "
+                     f"< {GATE_PARTICIPACION_MIN_PCT:.0f}%")
+    if s["mejora_3x"]:
+        amber.append("mejora >3× crudo→config (revisar sobreajuste)")
+    nivel = "rojo" if rojo else ("amber" if amber else "verde")
+    return {"nivel": nivel, "triggers": rojo + amber,
+            "frase_rojo": GATE_FRASE_ROJO, "señales": s}
+
+
+def gate_ventanas(study: dict) -> dict:
+    """Gate del puente de VENTANAS (LX-11 §4): SOLO tripwire implausible o
+    intrabar NO confiable disparan rojo (el resto de señales no aplican a un
+    cambio de ventanas — no tocan la escalera/backstop/TP). Sin esas → verde."""
+    s = _señales_gate(study)
+    rojo: list[str] = []
+    if s["implausible"]:
+        rojo.append(s["implausible_msg"] or "tripwire de implausibilidad activo")
+    if s["intrabar_no_confiable"]:
+        rojo.append("intrabar NO confiable — contención < umbral (LX-12)")
+    return {"nivel": "rojo" if rojo else "verde", "triggers": rojo,
+            "frase_rojo": GATE_FRASE_ROJO,
+            "señales": {"implausible": s["implausible"],
+                        "intrabar_no_confiable": s["intrabar_no_confiable"],
+                        "contencion_pct": s["contencion_pct"]}}
+
+
 def breakeven_informativo(study: dict) -> dict | None:
     """Si el estudio recomienda BE (in-sample), devuelve la info para MOSTRARLA
     como 'palanca no aplicable aún — informativa'. NO se escribe en producción

@@ -775,8 +775,37 @@ async def _luxy_act_ctx(db: AsyncSession, strategy_id: str):
     prof = (await db.execute(select(StrategyProfile).where(
         StrategyProfile.strategy_id == strategy_id))).scalar_one_or_none()
     return {"strategy": srow, "profile": prof, "act": act,
-            "fecha": study.get("fecha"),
+            "fecha": study.get("fecha"), "study": study,   # LX-11: gate lee señales
             "be_info": mrl.breakeven_informativo(study)}, None
+
+
+# LX-11 — enforcement del gate (fricción proporcional; el operador manda, no se
+# prohíbe). SIEMPRE recomputado server-side desde el estudio (nunca del cliente).
+def _gate_enforce(gate: dict, body: dict):
+    """None si el nivel del gate está satisfecho por el cuerpo; JSONResponse 400
+    si no. amber → checkbox `confirm_riesgo`; rojo → frase EXACTA `frase_rojo`
+    (mismo patrón que el CONFIRMAR de armado)."""
+    nivel = gate["nivel"]
+    if nivel == "rojo":
+        frase = (body.get("frase") or "").strip()
+        if frase != gate["frase_rojo"]:
+            return JSONResponse(
+                {"error": f"nivel ROJO — escribe exactamente «{gate['frase_rojo']}» "
+                          f"para aplicar sin robustez", "gate": gate},
+                status_code=400)
+    elif nivel == "amber":
+        if not bool(body.get("confirm_riesgo")):
+            return JSONResponse(
+                {"error": "nivel ÁMBAR — marca «entiendo el riesgo» para aplicar",
+                 "gate": gate}, status_code=400)
+    return None
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        return await request.json() or {}
+    except Exception:
+        return {}
 
 
 @router.get("/ui/strategies/{strategy_id}/luxy/aplicar/preview")
@@ -784,10 +813,12 @@ async def luxy_aplicar_preview(
     strategy_id: str, db: AsyncSession = Depends(get_db)
 ) -> JSONResponse:
     import app.web.routes_riesgo as rr
+    import scripts.mr_luxy as mrl
     ctx, err = await _luxy_act_ctx(db, strategy_id)
     if err:
         return err
     prof, act = ctx["profile"], ctx["act"]
+    gate = mrl.gate_aplicar(ctx["study"])           # LX-11 — señales del estudio
     pcfg = (prof.pipeline_config_json or {}) if prof else {}
     sl_vivo = (float(prof.sl_atr_multiplier)
                if prof and prof.sl_atr_multiplier is not None else None)
@@ -805,6 +836,7 @@ async def luxy_aplicar_preview(
         "filas": rr._diff_aplicar(pcfg, act, ctx["fecha"], sl_vivo, tp_vivo),
         "deriva": rr.deriva_estudio(pcfg, act, ctx["fecha"]),
         "informativos": informativos,
+        "gate": gate,                               # LX-11 — nivel + triggers + señales
         "avisos": [
             "Config de la fila IN-SAMPLE de la Tabla B (la OOS es espejo de "
             "robustez, no aplicable — R-T10).",
@@ -817,14 +849,21 @@ async def luxy_aplicar_preview(
 
 @router.post("/ui/strategies/{strategy_id}/luxy/aplicar")
 async def luxy_aplicar(
-    strategy_id: str, db: AsyncSession = Depends(get_db)
+    strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
 ) -> JSONResponse:
     import app.web.routes_riesgo as rr
+    import scripts.mr_luxy as mrl
     from app.services.audit_service import AuditService
 
     ctx, err = await _luxy_act_ctx(db, strategy_id)
     if err:
         return err
+    # LX-11 — GATE recomputado server-side (nunca del cliente) + fricción.
+    gate = mrl.gate_aplicar(ctx["study"])
+    body = await _json_body(request)
+    gate_err = _gate_enforce(gate, body)
+    if gate_err:
+        return gate_err
     act = ctx["act"]
     prof = ctx["profile"]
     if prof is None:
@@ -836,13 +875,22 @@ async def luxy_aplicar(
     llaves = [k for k in ("backstop_points", "tp_nominal_long",
                           "tp_nominal_short", "entry_reserve_timeout_seconds",
                           "scale_entry") if k in act]
+    new_data = {k: cfg.get(k) for k in llaves}
+    # LX-11 — huella SIEMPRE de qué se sabía al aplicar (señales + overrides del
+    # operador). Queda en new_value_json de la entrada APPLY_LUXY_RECO.
+    new_data["_gate_lx11"] = {
+        "nivel": gate["nivel"], "triggers": gate["triggers"],
+        "señales": gate["señales"],
+        "overrides": {"confirm_riesgo": bool(body.get("confirm_riesgo")),
+                      "frase_provista": bool((body.get("frase") or "").strip())},
+    }
     await AuditService().log_strategy_change(
         db, actor="luxy_aplicar", strategy_id=strategy_id,
         old_data={k: before.get(k) for k in llaves},
-        new_data={k: cfg.get(k) for k in llaves},
+        new_data=new_data,
         action="APPLY_LUXY_RECO",
         reason=f"config in-sample del estudio Luxy {ctx['fecha']} aplicada por "
-               f"el operador (preview confirmado)")
+               f"el operador (preview confirmado · gate {gate['nivel']})")
     await db.commit()
     return JSONResponse({
         "ok": True, "strategy": strategy_id, "fecha_estudio": ctx["fecha"],
@@ -897,7 +945,8 @@ def _compilar_desde_toggles(dash: dict, zones_off, days_off):
 
 
 async def _luxy_ventanas_ctx(db: AsyncSession, strategy_id: str):
-    """(srow, dashboard) del estudio Luxy o (None, JSONResponse error)."""
+    """(srow, study) del estudio Luxy o (None, JSONResponse error). Devuelve el
+    estudio COMPLETO (LX-11: el gate de ventanas lee implausible/contención)."""
     import app.web.routes_riesgo as rr
     srow = (await db.execute(select(Strategy).where(
         Strategy.strategy_id == strategy_id))).scalar_one_or_none()
@@ -909,7 +958,7 @@ async def _luxy_ventanas_ctx(db: AsyncSession, strategy_id: str):
     if not study or not study.get("dashboard"):
         return None, JSONResponse(
             {"error": "sin estudio Luxy — córrelo (pestaña Luxy) primero"}, 409)
-    return (srow, study["dashboard"]), None
+    return (srow, study), None
 
 
 @router.post("/ui/strategies/{strategy_id}/luxy/ventanas/preview")
@@ -918,10 +967,13 @@ async def luxy_ventanas_preview(
 ) -> JSONResponse:
     import app.web.routes_riesgo as rr
     from app.services.config_resolver import ConfigResolver
+    import scripts.mr_luxy as mrl
     ctx, err = await _luxy_ventanas_ctx(db, strategy_id)
     if err:
         return err
-    srow, dash = ctx
+    srow, study = ctx
+    dash = study["dashboard"]
+    gate = mrl.gate_ventanas(study)                 # LX-11 §4 — implausible/intrabar
     try:
         body = await request.json()
     except Exception:
@@ -940,6 +992,7 @@ async def luxy_ventanas_preview(
         "pct_fuera_actual": rr._pct_trades_fuera(scfg, muestras),
         "pct_fuera_propuesta": pct_prop,
         "por_lado": _fuera_por_lado(dash.get("trades"), propuestas),
+        "gate": gate,                               # LX-11 §4
         "avisos": [
             "El estudio validó que el filtro de sesión/hora NO aporta edge "
             "(2026-07-04) — esto es una DECISIÓN DE RIESGO del operador, no una "
@@ -954,15 +1007,22 @@ async def luxy_ventanas_preview(
 async def luxy_ventanas_aplicar(
     strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
 ) -> JSONResponse:
+    import scripts.mr_luxy as mrl
     from app.services.audit_service import AuditService
     ctx, err = await _luxy_ventanas_ctx(db, strategy_id)
     if err:
         return err
-    _srow, dash = ctx
+    _srow, study = ctx
+    dash = study["dashboard"]
     try:
         body = await request.json()
     except Exception:
         body = {}
+    # LX-11 §4 — gate (implausible / intrabar no confiable) recomputado server-side.
+    gate = mrl.gate_ventanas(study)
+    gate_err = _gate_enforce(gate, body)
+    if gate_err:
+        return gate_err
     propuestas = _compilar_desde_toggles(dash, body.get("zones_off"),
                                          body.get("days_off"))
     if not propuestas:
@@ -981,10 +1041,15 @@ async def luxy_ventanas_aplicar(
     await AuditService().log(
         db, actor="admin", action="APPLY_LUXY_VENTANAS",
         object_type="StrategyProfile", object_id=strategy_id,
-        old_value={"windows": antes}, new_value={"windows": propuestas},
+        old_value={"windows": antes},
+        new_value={"windows": propuestas, "_gate_lx11": {   # LX-11 — huella
+            "nivel": gate["nivel"], "triggers": gate["triggers"],
+            "señales": gate["señales"],
+            "overrides": {"confirm_riesgo": bool(body.get("confirm_riesgo")),
+                          "frase_provista": bool((body.get("frase") or "").strip())}}},
         reason="ventanas L2 compiladas desde los toggles de sesiones/días de "
-               "Luxy (atajo supervisado; el editor canónico es la pestaña "
-               "Ventanas)")
+               f"Luxy (atajo supervisado; gate {gate['nivel']}; el editor "
+               "canónico es la pestaña Ventanas)")
     await db.commit()
     return JSONResponse({"ok": True, "n": len(propuestas), "ventanas": propuestas})
 
