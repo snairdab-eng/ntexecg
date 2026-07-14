@@ -769,6 +769,8 @@
                + semáforo de robustez (SOLO de la fila OOS validada). -->
           <!-- LX-6 — tripwire de plausibilidad: banner ROJO si los números del estudio son absurdos -->
           <div id="lx-implausible" class="rounded p-2 text-xs mb-2 font-medium" style="display:none;background:rgba(248,81,73,.16);color:#f85149;border:1px solid #f85149"></div>
+          <!-- LX-7 — estado PROPIO "no evaluable por muestra" (ámbar, NO rojo): PF alto con muy pocos perdedores -->
+          <div id="lx-pf-noeval" class="rounded p-2 text-xs mb-2 font-medium" style="display:none;background:rgba(210,153,34,.14);color:#d29922;border:1px solid #d29922"></div>
           <div id="lx-muestra-banner" class="rounded p-2 text-xs mb-2" style="display:none;background:rgba(210,153,34,.14);color:#d29922"></div>
           <div id="lx-robustez" class="text-xs mb-1"></div>
           <!-- LX-3 — Tabla reactiva: Crudo (lista base, fija) · Crudo+ (palancas
@@ -780,9 +782,15 @@
                cronológico, línea vertical de corte del split y barras OOS en tono
                tenue. Un solo juego de líneas de palanca cruza todo el ancho. -->
           <div class="rounded p-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
-            <div class="flex items-center justify-between text-xs mb-1" style="color:var(--lx-muted)">
+            <div class="flex items-center justify-between text-xs mb-1 gap-3 flex-wrap" style="color:var(--lx-muted)">
               <span>Recorrido — 100% de trades (orden cronológico)</span>
-              <span class="font-mono">← in-sample · OOS →</span>
+              <span class="flex items-center gap-3 flex-wrap">
+                <!-- LX-DIAG — lector en vivo: cuántas operaciones cortaría el SL -->
+                <span id="lx-sl-count" class="font-mono" style="color:var(--lx-sl)"></span>
+                <!-- LX-DIAG — toggle de escala Y (estado visible); recortada marca los outliers -->
+                <button id="lx-scale-toggle" type="button" class="px-2 py-0.5 rounded" style="background:#21262d;color:var(--lx-ink);border:1px solid var(--lx-line)" title="Escala del eje Y en USD, compartida por MFE/MAE/cierre/palancas. Recortada = eje al p95 (los extremos se marcan con ▸, la pérdida real no se falsea); completa = incluye el outlier (todo se ve más chico)."></button>
+                <span class="font-mono">← in-sample · OOS →</span>
+              </span>
             </div>
             <canvas id="lx-chart" width="1120" height="240" style="width:100%;height:auto"></canvas>
           </div>
@@ -877,6 +885,10 @@
               return '<span class="text-amber-500" title="PF sin significado: los filtros dejaron casi sin perdedores la muestra (posible cherry-picking)">n/s ('+c.nl+' perdedor'+(c.nl===1?'':'es')+')</span>';
             return pf(c.pf); }
           const dLbl = {both:'ambos',long:'largos',short:'cortos'};
+          // LX-DIAG — escala del diagrama: recortada (p95, legible) por defecto; el
+          // toggle la lleva a completa (incluye outliers). NUNCA falsea la proporción:
+          // en recortada los extremos se marcan con ▸ "sigue más allá".
+          let CHARTCLIP = true;
           // ---- Estado ACTUAL de palancas (USD) ----
           const S = { tp:R.tp_usd!=null, be:false, sc:(A[1]+A[2])>0, sl:R.sl_usd!=null,
                       tpV:R.tp_usd||0, beV:R.be_usd||0, l2:R.l2_usd||0, l3:R.l3_usd||0,
@@ -1025,6 +1037,8 @@
             const r=el('lx-robustez'); if(!r) return;
             // LX-6 — si el estudio es implausible, el semáforo NO se enciende.
             if(D.implausible){ r.style.opacity='0.5'; r.innerHTML='⚪ <b style="color:var(--lx-muted)">robustez OOS</b> <span style="color:#f85149">sin veredicto — números implausibles</span>'; return; }
+            // LX-7 — estado PROPIO: PF no evaluable por muestra (muy pocos perdedores). NO es "implausible".
+            if(D.pf_no_evaluable){ r.style.opacity='0.6'; r.innerHTML='⚪ <b style="color:var(--lx-muted)">robustez OOS</b> <span style="color:#d29922">no evaluable por muestra — PF sin significado (muy pocos perdedores)</span>'; return; }
             const v=(VROB&&VROB.verdict)||'rojo';
             const map={verde:['🟢','#3fb950','robusto'],amarillo:['🟡','#d29922','frágil'],rojo:['🔴','#f85149','no generaliza']};
             const m=map[v]||map.rojo; const dim=(mode==='est');
@@ -1035,44 +1049,98 @@
           function banner(){ const b=el('lx-muestra-banner');
             if(b){ if(D.muestra_banner){ b.textContent='⚠ '+D.muestra_banner; b.style.display=''; } else b.style.display='none'; }
             const im=el('lx-implausible');
-            if(im){ if(D.implausible){ im.textContent='⛔ '+D.implausible_msg; im.style.display=''; } else im.style.display='none'; } }
+            if(im){ if(D.implausible){ im.textContent='⛔ '+D.implausible_msg; im.style.display=''; } else im.style.display='none'; }
+            // LX-7 — aviso ÁMBAR honesto (no rojo) cuando el PF no es evaluable por muestra.
+            const pn=el('lx-pf-noeval');
+            if(pn){ if(D.pf_no_evaluable && !D.implausible){ pn.textContent='ⓘ '+D.pf_no_evaluable_msg; pn.style.display=''; } else pn.style.display='none'; } }
           // ---- LX-1 #3: UN diagrama a todo el ancho, corte del split + OOS tenue ----
           function drawChart(){
             const cv=el('lx-chart'); if(!cv) return; const ctx=cv.getContext('2d');
-            const W=cv.width, H=cv.height, pad=8, midY=H*0.55;
+            const W=cv.width, H=cv.height;
+            const showPts = !!(D.units && D.units.show_pts && PV);
+            const padT=8, padB=8, padL=54, padR=showPts?46:12;   // ticks USD (izq) · pts (der)
             ctx.clearRect(0,0,W,H); ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H);
             const rows=D.trades; if(!rows.length){ ctx.fillStyle='#8b949e'; ctx.font='11px monospace'; ctx.fillText('sin operaciones',10,20); return; }
-            const top=D.mfe_max||1, bot=Math.abs(D.mae_min)||1;
-            const yUp=v=> midY-(v/top)*(midY-pad), yDn=v=> midY+(Math.abs(v)/bot)*(H-midY-pad);
-            const step=(W-2*pad)/rows.length, bw=Math.max(1,step*0.7);
-            const cut = (D.cutoff_i!=null? D.cutoff_i : rows.filter(d=>d.in).length);
-            const xCut = pad + cut*step;
-            // banda OOS mas tenue
-            ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fillRect(xCut,0,Math.max(0,W-pad-xCut),H);
+            // ── ESCALA ÚNICA lineal en USD, cero en su posición real, compartida por
+            //    MFE, MAE, cierre y TODAS las palancas (TP/BE/C2/C3/SL). Sin escalas
+            //    separadas arriba/abajo (ese era el bug: mfe_max vs mae_min por mitad).
+            const pos=[], neg=[];
+            rows.forEach(function(d){ if(d.mfe>0)pos.push(d.mfe); if(d.mae<0)neg.push(-d.mae);
+              if(d.pnl>0)pos.push(d.pnl); else if(d.pnl<0)neg.push(-d.pnl); });
+            const qtl=function(a,p){ if(!a.length)return 0; const s=a.slice().sort(function(x,y){return x-y;});
+              return s[Math.min(s.length-1,Math.round(p*(s.length-1)))]; };
+            // palancas VISIBLES: entran siempre en el dominio (nunca se recortan — son
+            // la referencia del operador). El recorte solo afecta a las barras de datos.
+            const levPos=Math.max(0, S.tp?S.tpV:0, S.be?S.beV:0);
+            const levNeg=Math.max(0, S.sl?S.slV:0, S.sc?(S.l2||0):0, S.sc?(S.l3||0):0);
+            const rawPos=Math.max(1,levPos,Math.max.apply(null,pos.length?pos:[1]));
+            const rawNeg=Math.max(1,levNeg,Math.max.apply(null,neg.length?neg:[1]));
+            const yMax = CHARTCLIP? Math.max(1,levPos,qtl(pos,0.95)) : rawPos;
+            const yMin = -(CHARTCLIP? Math.max(1,levNeg,qtl(neg,0.95)) : rawNeg);
+            const range=(yMax-yMin)||1, plotT=padT, plotB=H-padB, plotH=plotB-plotT;
+            const y=function(v){ return plotT + (yMax-Math.max(yMin,Math.min(yMax,v)))/range*plotH; };
+            const yRaw=function(v){ return plotT + (yMax-v)/range*plotH; };     // sin clamp (para líneas)
+            const zeroY=yRaw(0);
+            const step=(W-padL-padR)/rows.length, bw=Math.max(1,step*0.7);
+            const cut=(D.cutoff_i!=null?D.cutoff_i:rows.filter(function(d){return d.in;}).length);
+            const xAt=function(i){ return padL+i*step; }, xCut=xAt(cut);
+            ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fillRect(xCut,0,Math.max(0,W-padR-xCut),H);
+            // ── ticks del eje Y en USD (izq) + eje de PUNTOS a la derecha (PV≤1000) ──
+            ctx.font='10px monospace'; ctx.textBaseline='middle';
+            const tickStep=function(m){ if(m<=0)return 1; const raw=m/3, mag=Math.pow(10,Math.floor(Math.log10(raw))), n=raw/mag;
+              return (n<1.5?1:n<3.5?2:n<7.5?5:10)*mag; };
+            const drawTick=function(v){ const yy=yRaw(v); if(yy<plotT-1||yy>plotB+1)return;
+              ctx.strokeStyle=v===0?'#30363d':'rgba(255,255,255,0.05)';
+              ctx.beginPath(); ctx.moveTo(padL,yy); ctx.lineTo(W-padR,yy); ctx.stroke();
+              ctx.fillStyle='#8b949e'; ctx.textAlign='right'; ctx.fillText(money(v),padL-4,yy);
+              if(showPts){ ctx.textAlign='left'; ctx.fillText(Math.round(v/PV)+'p',W-padR+4,yy); } };
+            const tsU=tickStep(yMax), tsD=tickStep(-yMin);
+            drawTick(0);
+            for(var vv=tsU; vv<=yMax+1e-6; vv+=tsU) drawTick(vv);
+            for(var vd=-tsD; vd>=yMin-1e-6; vd-=tsD) drawTick(vd);
+            // ── barras: EXCURSIÓN ancha translúcida + borde nítido en el extremo;
+            //    CIERRE sólido y angosto (inset ~50%, centrado) → forma distingue
+            //    "hasta dónde llegó" vs "dónde cerró" aunque compartan hue. ──
             const mfeOn=el('lx-t-mfe').checked, maeOn=el('lx-t-mae').checked, clsOn=el('lx-t-cls').checked;
-            rows.forEach(function(d,i){ const x=pad+i*step, oos=!d.in, aF=oos?0.13:0.28;
-              // LX-2: los trades de una sesion/dia bloqueado NO desaparecen — se
-              // ATENUAN (el operador debe ver que esta descartando).
-              const excl = BH.has(d.hr) || BD.has(d.dow);
-              ctx.save(); if(excl) ctx.globalAlpha=0.22;
-              if(mfeOn && d.mfe>0){ ctx.fillStyle='rgba(63,185,80,'+aF+')'; ctx.fillRect(x,yUp(d.mfe),bw,midY-yUp(d.mfe)); }
-              if(maeOn && d.mae<0){ ctx.fillStyle='rgba(248,81,73,'+aF+')'; ctx.fillRect(x,midY,bw,yDn(d.mae)-midY); }
-              if(clsOn){ const c=d.pnl>=0?yUp(d.pnl):yDn(d.pnl);
-                ctx.fillStyle=d.pnl>=0?(oos?'rgba(63,185,80,.5)':'#3fb950'):(oos?'rgba(248,81,73,.5)':'#f85149');
-                ctx.fillRect(x,Math.min(midY,c),bw,Math.abs(c-midY)); }
-              ctx.restore(); });
-            // linea vertical de corte del split
+            const clipTri=function(cx,edgeY,down){ ctx.beginPath(); const s=Math.min(5,bw/2+1);
+              if(down){ ctx.moveTo(cx-s,edgeY); ctx.lineTo(cx+s,edgeY); ctx.lineTo(cx,edgeY+5); }
+              else { ctx.moveTo(cx-s,edgeY); ctx.lineTo(cx+s,edgeY); ctx.lineTo(cx,edgeY-5); }
+              ctx.closePath(); ctx.fill(); };
+            let slHit=0, slTot=0; const slOn=!!(S.sl&&S.slV);
+            rows.forEach(function(d,i){ const x=xAt(i), oos=!d.in, excl=BH.has(d.hr)||BD.has(d.dow);
+              ctx.save(); if(excl) ctx.globalAlpha=0.30;
+              // MFE (verde) — simétrico con MAE en tratamiento
+              if(mfeOn && d.mfe>0){ const yTop=y(d.mfe);
+                ctx.fillStyle=oos?'rgba(63,185,80,0.22)':'rgba(63,185,80,0.40)'; ctx.fillRect(x,yTop,bw,Math.max(0,zeroY-yTop));
+                ctx.fillStyle=oos?'rgba(63,185,80,0.65)':'#3fb950'; ctx.fillRect(x,yTop,bw,2);      // borde nítido
+                if(CHARTCLIP && d.mfe>yMax){ ctx.fillStyle=oos?'rgba(63,185,80,0.65)':'#3fb950'; clipTri(x+bw/2,plotT,false); } }
+              // MAE (rojo) — INTENSO (adverso, no blanco) + borde nítido en el fondo
+              if(maeOn && d.mae<0){ const yBot=y(d.mae);
+                ctx.fillStyle=oos?'rgba(248,81,73,0.32)':'rgba(248,81,73,0.55)'; ctx.fillRect(x,zeroY,bw,Math.max(0,yBot-zeroY));
+                ctx.fillStyle=oos?'rgba(248,81,73,0.75)':'#f85149'; ctx.fillRect(x,yBot-2,bw,2);     // borde nítido
+                if(CHARTCLIP && -d.mae>-yMin){ ctx.fillStyle=oos?'rgba(248,81,73,0.75)':'#f85149'; clipTri(x+bw/2,plotB,true); } }
+              // Cierre — SÓLIDO, angosto (inset 50%), centrado
+              if(clsOn){ const cy=y(d.pnl), cbw=Math.max(1,bw*0.5), ins=(bw-cbw)/2;
+                ctx.fillStyle=d.pnl>=0?(oos?'rgba(63,185,80,.65)':'#3fb950'):(oos?'rgba(248,81,73,.75)':'#f85149');
+                ctx.fillRect(x+ins,Math.min(zeroY,cy),cbw,Math.abs(cy-zeroY)); }
+              ctx.restore();
+              // LX-DIAG — lector del SL: ¿este trade (MAE adverso) cruzaría el SL?
+              if(slOn && d.mae<0){ slTot++; if(-d.mae >= S.slV) slHit++; } });
+            // línea vertical de corte del split
             if(cut>0 && cut<rows.length){ ctx.strokeStyle='#8b949e'; ctx.setLineDash([3,3]);
               ctx.beginPath(); ctx.moveTo(xCut,0); ctx.lineTo(xCut,H); ctx.stroke(); ctx.setLineDash([]);
-              ctx.fillStyle='#8b949e'; ctx.font='10px monospace';
-              ctx.textAlign='right'; ctx.fillText('in-sample →', xCut-4, 11);
-              ctx.textAlign='left';  ctx.fillText('← OOS', xCut+4, 11); ctx.textAlign='left'; }
-            // UN solo juego de lineas de palanca, a todo el ancho
-            const line=function(v,color,on){ if(!on||v==null) return; const y=v>=0?yUp(v):yDn(v);
-              ctx.strokeStyle=color; ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(W-pad,y); ctx.stroke(); ctx.setLineDash([]); };
-            line(S.tpV,'var(--lx-tp)',S.tp); line(S.beV,'#a371f7',S.be); line(-S.slV,'#d29922',S.sl);
+              ctx.fillStyle='#8b949e'; ctx.textAlign='right'; ctx.fillText('in-sample →',xCut-4,11);
+              ctx.textAlign='left'; ctx.fillText('← OOS',xCut+4,11); }
+            // UN solo juego de líneas de palanca (misma escala y()); SL es ÁMBAR (--sl)
+            const line=function(v,color,on){ if(!on||v==null)return; const yy=yRaw(v); if(yy<plotT||yy>plotB)return;
+              ctx.strokeStyle=color; ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(padL,yy); ctx.lineTo(W-padR,yy); ctx.stroke(); ctx.setLineDash([]); };
+            line(S.tpV,'#3fb950',S.tp); line(S.beV,'#a371f7',S.be); line(-S.slV,'#d29922',S.sl);
             if(S.sc){ line(-S.l2,'#58a6ff',true); line(-S.l3,'#58a6ff',true); }
-            ctx.strokeStyle='#30363d'; ctx.beginPath(); ctx.moveTo(pad,midY); ctx.lineTo(W-pad,midY); ctx.stroke();
+            // lectores en vivo: contador del SL + estado del toggle de escala
+            const slc=el('lx-sl-count');
+            if(slc) slc.textContent = slOn? ('el SL toca '+slHit+' de '+slTot+' operaciones') : 'SL apagado';
+            const stg=el('lx-scale-toggle');
+            if(stg) stg.textContent = CHARTCLIP? 'escala: recortada (p95) ▸' : 'escala: completa';
           }
           // ---- leyenda ----
           function legend(){
@@ -1147,6 +1215,8 @@
             [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(function(pair){ const id=pair[0], k=pair[1];
               el(id).addEventListener('change',function(){ S[k]=el(id).checked; refresh(); }); });
             ['lx-t-mfe','lx-t-mae','lx-t-cls'].forEach(function(id){ el(id).addEventListener('change',drawChart); });
+            // LX-DIAG — toggle de escala Y (completa/recortada), redibuja al vuelo.
+            if(el('lx-scale-toggle')) el('lx-scale-toggle').addEventListener('click',function(){ CHARTCLIP=!CHARTCLIP; drawChart(); });
             el('lx-dir').innerHTML=['both','long','short'].map(function(x){return '<button data-d="'+x+'" class="px-2 py-1 rounded text-xs">'+dLbl[x]+'</button>';}).join(' ');
             el('lx-dir').querySelectorAll('button').forEach(function(b){ b.addEventListener('click',function(){ S.dir=b.dataset.d; syncDir(); refresh(); }); });
           }
