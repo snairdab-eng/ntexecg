@@ -127,6 +127,8 @@ def from_trades(trades, ppt: float, estimated_ids: set[int] | None = None,
     for t in trades:
         if not t.atr_entry or t.atr_entry <= 0:
             continue
+        if getattr(t, "no_contenido", False):      # LX-13 — outlier de roll: su
+            continue                                # intrabar envenena las derivaciones
         out.append(SimTrade(
             number=t.number, side=t.side, in_sample=t.in_sample,
             entry_price=t.entry_price, atr_pts=t.atr_entry,

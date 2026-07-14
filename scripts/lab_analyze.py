@@ -117,6 +117,12 @@ class Trade:
     hour: int | None = None   # hora en la TZ del OHLC (ET)
     in_sample: bool = True
     aligned_ts: datetime | None = None   # entry_ts + offset (clave del OHLC)
+    # LX-13 — contención POR TRADE: True si el precio de entrada NO cae en
+    # [low,high] de su barra alineada ni de las ±vecinas (outlier de frontera de
+    # roll); su intrabar individual es basura → se excluye del universo simulable
+    # como los ATR-estimados (nunca toca el crudo ni el cuadre).
+    no_contenido: bool = False
+    gap_ticks: float | None = None       # diagnóstico: (precio − close) en ticks
     # Fase 2 — features (None si sin cobertura):
     sub_volume: float | None = None
     sub_atr: float | None = None
@@ -475,6 +481,49 @@ def enrich_with_bars(
         t.hour = ts.hour
         t.aligned_ts = ts
     return uncovered
+
+
+# LX-13 — barras vecinas toleradas (±N) antes de marcar un trade no_contenido.
+# 1 = la barra alineada o sus dos vecinas (cubre el timing de fill de 5m); un
+# outlier de frontera de roll cae MUY lejos (cientos de ticks) → fuera igual.
+CONTENCION_TRADE_VECINAS = 1
+
+
+def mark_no_contenido(trades: list[Trade], bars: dict, offset_min: int,
+                      tick: float | None = None,
+                      vecinas: int = CONTENCION_TRADE_VECINAS) -> list[dict]:
+    """LX-13 — marca la contención POR TRADE: `entry_price` dentro de [low,high]
+    de su barra alineada o de las ±`vecinas`. Fuera → `no_contenido=True` (+
+    `gap_ticks` si hay tick). SOLO trades con barra alineada (los sin cobertura ya
+    quedan fuera por ATR; no se tocan). Determinista. Devuelve los no_contenidos
+    [{number, entry_ts, gap_ticks}] para el manifest/anexo/ficha.
+
+    Se llama únicamente cuando la contención GLOBAL pasa el umbral (LX-12): si el
+    master está globalmente desalineado es un problema de contorno de contrato
+    (intrabar_no_confiable), no un puñado de outliers per-trade."""
+    delta = timedelta(minutes=offset_min)
+    keys = sorted(bars)
+    index = {ts: i for i, ts in enumerate(keys)}
+    fuera: list[dict] = []
+    for t in trades:
+        ts = t.entry_ts + delta
+        i = index.get(ts)
+        if i is None:
+            continue                     # sin barra: no aplica (fuera por ATR)
+        contenido = False
+        for j in range(max(0, i - vecinas), min(len(keys), i + vecinas + 1)):
+            _o, h, lo, _c, _v = bars[keys[j]]
+            if lo - 1e-12 <= t.entry_price <= h + 1e-12:
+                contenido = True
+                break
+        if not contenido:
+            t.no_contenido = True
+            close = bars[ts][3]
+            t.gap_ticks = round((t.entry_price - close) / tick, 1) if tick else None
+            fuera.append({"number": t.number,
+                          "entry_ts": t.entry_ts.isoformat(),
+                          "gap_ticks": t.gap_ticks})
+    return fuera
 
 
 def split_in_out(trades: list[Trade], oos: float) -> None:

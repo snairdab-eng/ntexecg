@@ -508,11 +508,15 @@ def retencion_oos(oos: dict, crudo_plus: dict) -> dict:
 
 
 def muestra_banner(n_total: int, n_simulable: int, n_cola: int = 0,
-                   n_inicio: int = 0, ultima_barra: str | None = None):
+                   n_inicio: int = 0, ultima_barra: str | None = None,
+                   n_fuera: int = 0):
     """Nota de muestra (LX-5): enciende SIEMPRE que n_simulable < n_total, con el
     desglose por CAUSA y la acción. `n_simulable` = trades con ATR intrabar REAL
     (nunca cuenta ATR-estimados como simulables). El HOLC vive en NTEXECG, NO
-    viaja en la lista. None cuando toda la muestra es simulable."""
+    viaja en la lista. None cuando toda la muestra es simulable.
+
+    LX-13 — `n_fuera` = trades FUERA DE CONTENCIÓN (frontera de roll): su intrabar
+    individual no es fiable y se excluye como los estimados (no toca el crudo)."""
     fuera = int(n_total) - int(n_simulable)
     if fuera <= 0:
         return None
@@ -524,7 +528,10 @@ def muestra_banner(n_total: int, n_simulable: int, n_cola: int = 0,
         partes.append(s + " — reintegra cuando el updater alcance")
     if n_inicio:
         partes.append(f"{n_inicio} previos al inicio del almacén")
-    resto = fuera - int(n_cola) - int(n_inicio)
+    if n_fuera:
+        partes.append(f"{n_fuera} fuera de contención (frontera de roll) — "
+                      f"intrabar individual no fiable, excluidos como los estimados")
+    resto = fuera - int(n_cola) - int(n_inicio) - int(n_fuera)
     if resto > 0:
         partes.append(f"{resto} fuera de la cobertura intrabar")
     detalle = "; ".join(partes) if partes else str(fuera)
@@ -834,9 +841,16 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         _first = min(bars5) if bars5 else None
         _last = max(bars5) if bars5 else None
         _delta = _td(minutes=off)
-        n_cola = n_inicio = 0
+        n_cola = n_inicio = n_fuera = 0
+        _fuera_ct = []                               # LX-13 — outliers de roll (anexo)
         for t in trades:
             if t.number in _sim:
+                continue
+            if getattr(t, "no_contenido", False):    # LX-13 — frontera de roll
+                n_fuera += 1
+                _fuera_ct.append({"number": t.number,
+                                  "entry_ts": t.entry_ts.isoformat(),
+                                  "gap_ticks": getattr(t, "gap_ticks", None)})
                 continue
             _et = t.entry_ts + _delta
             if _last is not None and _et > _last:
@@ -848,6 +862,8 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         dashboard["n_no_simulable"] = len(trades) - len(sts)
         dashboard["n_estimados"] = n_cola            # ATR-estimados en v1, fuera aquí
         dashboard["n_inicio"] = n_inicio
+        dashboard["n_fuera_contencion"] = n_fuera    # LX-13
+        dashboard["fuera_contencion"] = _fuera_ct    # LX-13 — fechas/gap (anexo)
         dashboard["ultima_barra"] = _last.isoformat() if _last else None
         # LX-6 — tripwire de plausibilidad (barato): con C1 al mercado (una pierna
         # a profundidad ≤0) y SIN corte de lado, la participación DEBE ser ~100%
@@ -870,7 +886,7 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         dashboard["retencion"] = retencion_oos(fila_oos, fila_in)
         dashboard["muestra_banner"] = muestra_banner(
             len(trades), len(sts), n_cola, n_inicio,
-            _last.isoformat() if _last else None)
+            _last.isoformat() if _last else None, n_fuera=n_fuera)
 
     return {
         "version": 3,               # v3: BE same_bar recortado (walk aditivo)
@@ -1087,6 +1103,12 @@ def _load_master(base_dir):
                      else load_holc(activo, "5m"))
             off, _s, _d = detect_tz_offset(trades, bars5)
             enrich_with_bars(trades, bars5, off)
+            # LX-13 — marcar outliers de frontera de roll (no_contenido). Este
+            # branch SOLO se alcanza cuando el master es confiable (LX-12: los
+            # intrabar_no_confiable ya degradan arriba). from_trades los excluye.
+            from scripts.lab_analyze import mark_no_contenido
+            from scripts.mr_report import TICK_SIZE
+            mark_no_contenido(trades, bars5, off, TICK_SIZE.get(activo))
             keys5 = sorted(bars5)
             idx5 = {k: i for i, k in enumerate(keys5)}
             has_intrabar = True

@@ -124,6 +124,10 @@
                 <div class="text-gray-500">{% if motor.holc.atr_estimado %}⚠ {{ motor.holc.atr_estimado }} ATR estimado{% else %}✓ completo{% endif %}</div>
                 {% if motor.contencion %}
                 <div class="{% if motor.intrabar_no_confiable %}text-red-400 font-semibold{% else %}text-gray-500{% endif %}">contención {{ motor.contencion.pct }}%{% if motor.intrabar_no_confiable %} ⛔ &lt;{{ motor.contencion.umbral_pct }}%{% else %} ✓{% endif %}</div>
+                {% if motor.contencion.no_contenidos %}
+                {# LX-13 — outliers de frontera de roll excluidos de las derivaciones #}
+                <div class="text-amber-400" title="{% for d in motor.contencion.no_contenidos %}{{ d.entry_ts[:10] }} ({{ d.gap_ticks }}t){% if not loop.last %} · {% endif %}{% endfor %}">⚠ {{ motor.contencion.no_contenidos|length }} fuera de contención (roll)</div>
+                {% endif %}
                 {% endif %}
                 {% else %}
                 <div class="text-amber-400">⚠ degradado (sin HOLC)</div>

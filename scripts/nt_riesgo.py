@@ -76,6 +76,7 @@ from scripts.lab_analyze import (
     detect_tz_offset,
     enrich_with_bars,
     load_holc,
+    mark_no_contenido,
     parse_luxalgo_csv,
     pullback_study,
     split_in_out,
@@ -367,13 +368,20 @@ def _git_commit() -> str | None:
 # ---------------------------------------------------------------------------
 
 async def _enriquecer(trades: list[Trade], activo: str,
-                      ) -> tuple[dict, int, dict, int, list[Trade]]:
-    """(bars, offset, tz_detail, sin_cobertura, estimados) — HOLC del CSV
-    master (load_holc), validación TZ BLOQUEANTE, ATR(14) vivo y ATR estimado
+                      ) -> tuple[dict, int, dict, int, list[Trade], dict]:
+    """(bars, offset, tz_detail, sin_cobertura, estimados, contencion) — HOLC del
+    CSV master (load_holc), validación TZ BLOQUEANTE, ATR(14) vivo y ATR estimado
     de cola. CSV-ONLY: la costura desde `ohlcv_bars` está JUBILADA — el CSV es
     la única fuente de historia y el guardarraíl de frescura (`_guardar_frescura`
     en integrar) exige que cubra la lista antes de integrar (nada de coser cola
-    dudosa). Sigue async por compatibilidad del flujo (asyncio.run)."""
+    dudosa). Sigue async por compatibilidad del flujo (asyncio.run).
+
+    LX-13 — además marca la contención POR TRADE (`mark_no_contenido`) SOLO si la
+    contención global (LX-12) pasa el umbral: los outliers de frontera de roll
+    quedan `no_contenido=True` en el trade y `from_trades` los excluye de las
+    derivaciones (suelo MAE, TP, fills) SIN tocar el crudo. Si el master está
+    globalmente desalineado no se marca nada (es intrabar_no_confiable, no
+    outliers per-trade). `contencion` = dict LX-12 + `no_contenidos`."""
     bars = load_holc(activo, "5m")
     off, sanity, tz_detail = detect_tz_offset(trades, bars)
     print(f"· TZ offset {off:+d} min · sanity {sanity*100:.0f}% · "
@@ -392,7 +400,21 @@ async def _enriquecer(trades: list[Trade], activo: str,
     if sin_cobertura:
         print(f"⚠ {sin_cobertura} trade(s) sin cobertura de barras "
               f"(inicio del HOLC): sin ATR.")
-    return bars, off, tz_detail, sin_cobertura, estimated
+    # LX-13 — contención por trade (gated en la global LX-12)
+    contencion = _contencion(trades, bars, off, activo)
+    no_contenidos: list[dict] = []
+    if contencion["confiable"]:
+        from scripts.mr_report import TICK_SIZE
+        no_contenidos = mark_no_contenido(trades, bars, off,
+                                          TICK_SIZE.get(activo))
+        if no_contenidos:
+            print(f"⚠ LX-13: {len(no_contenidos)} trade(s) FUERA DE CONTENCIÓN "
+                  f"(frontera de roll) → excluidos de las derivaciones intrabar "
+                  f"(crudo/cuadre intactos): " + ", ".join(
+                      f"{d['entry_ts'][:10]}({d['gap_ticks']:+g}t)"
+                      for d in no_contenidos[:8]))
+    contencion["no_contenidos"] = no_contenidos
+    return bars, off, tz_detail, sin_cobertura, estimated, contencion
 
 
 # ---------------------------------------------------------------------------
@@ -609,17 +631,15 @@ async def integrar(csv_path: Path, codigo: str, activo: str | None = None,
         holc_last = None
         contencion = None                       # LX-12: sin HOLC no hay contención
     else:
-        bars, off, tz_detail, sin_cobertura, estimated = \
+        # _enriquecer YA computa la contención global (LX-12) y marca los outliers
+        # per-trade (LX-13, `no_contenido`) si el master es globalmente confiable.
+        bars, off, tz_detail, sin_cobertura, estimated, contencion = \
             await _enriquecer(trades, activo)
         # Guardarraíl de FRESCURA (fail-closed, reemplaza la costura): el HOLC
         # debe cubrir hasta el último trade o se pide refrescarlo (nunca coser).
         _guardar_frescura(trades, bars, off, activo)
         holc_last = max(bars)
         estimated_ids = {t.number for t in estimated}
-        # LX-12 — GUARDIA DE CONTENCIÓN (fail-honest): el master se integra
-        # igual, pero si el HOLC no contiene los precios de los trades se MARCA
-        # (intrabar_no_confiable) y el estudio degradará a solo-crudo.
-        contencion = _contencion(trades, bars, off, activo)
         _print_contencion(contencion)
 
     # 5) Persistencia: snapshot inmutable + master + enriched + manifest
@@ -835,7 +855,9 @@ async def calcular(clave: str, oos: float = 0.3,
     print("└────────────────────────────────────────────────────────────")
 
     trades = parse_luxalgo_csv(base_dir / "master.csv")
-    bars, off, tz_detail, sin_cobertura, estimated = \
+    # LX-13 — _enriquecer marca no_contenido (si confiable); from_trades los
+    # excluye de las derivaciones (crudo/cuadre intactos).
+    bars, off, tz_detail, sin_cobertura, estimated, contencion = \
         await _enriquecer(trades, activo)
     split_in_out(trades, oos)
 
@@ -864,6 +886,10 @@ async def calcular(clave: str, oos: float = 0.3,
         "n_trades_listado": len(trades),
         "sin_cobertura": sin_cobertura,
         "atr_estimado": len(estimated),
+        # LX-13 — outliers de frontera de roll excluidos de las derivaciones
+        # (anexo para el operador; el crudo/cuadre NO cambian).
+        "no_contenidos": contencion.get("no_contenidos", []),
+        "n_no_contenidos": len(contencion.get("no_contenidos", [])),
         "grids_version": grids_fingerprint(),
         "motor_commit": _git_commit(),
         "cancel_after_s": cancel_after_s,
@@ -1109,7 +1135,7 @@ async def recrear(clave: str, fecha: str) -> dict:
 
     hc = HaircutCfg(**orig["haircut"])
     trades = parse_luxalgo_csv(snap)
-    bars, off, tz_detail, sin_cobertura, estimated = \
+    bars, off, tz_detail, sin_cobertura, estimated, contencion = \
         await _enriquecer(trades, mo["activo"])
     holc_last = max(bars).isoformat()
     if holc_last != mo["holc_ultima_barra"]:
