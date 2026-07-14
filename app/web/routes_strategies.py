@@ -193,20 +193,89 @@ async def _assets(db: AsyncSession) -> list[AssetProfile]:
 # List
 # ---------------------------------------------------------------------------
 
+def _luxy_resumen(clave: str) -> dict | None:
+    """LX-14 Parte B — digest chico del último estudio (runs/luxy_resumen.json).
+    SOLO lectura; la lista NO carga el JSON completo del estudio por fila."""
+    import app.web.routes_riesgo as rr
+    import json
+    p = rr.MOTOR_DIR / clave / "runs" / "luxy_resumen.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+# LX-12 — umbral de contención (para la alerta de la lista). Constante nombrada.
+_CONTENCION_MIN_PCT = 80
+
+
+def _flota_signals(resumen: dict | None, pcfg: dict | None) -> dict:
+    """Semáforo + alertas + deriva + prioridad de atención de UNA fila de la
+    lista, desde el digest (LX-14 Parte B). Sin estudio → '—'."""
+    import app.web.routes_riesgo as rr
+    if not resumen:
+        return {"semaforo": "—", "pf_oos": None, "alertas": [], "deriva": None,
+                "estudio_fecha": None, "prio": 3}
+    implausible = bool(resumen.get("implausible"))
+    verdict = (resumen.get("robustez") or {}).get("verdict")
+    pf_oos = (resumen.get("robustez") or {}).get("pf")
+    # ⛔ implausible PREVALECE sobre el semáforo de robustez.
+    sem = "implausible" if implausible else (verdict or "—")
+    alertas = []
+    chips = resumen.get("chips") or {}
+    if chips.get("flip"):
+        alertas.append(["flip", "flip de signo crudo→config"])
+    if chips.get("mejora3x"):
+        alertas.append(["mejora3x", "mejora >3× crudo→config (revisar sobreajuste)"])
+    ns, nt = resumen.get("n_simulable"), resumen.get("n_total")
+    if ns is not None and nt and ns < nt:
+        alertas.append(["cobertura", f"cobertura incompleta: {ns}/{nt} simulables"])
+    cp = resumen.get("contencion_pct")
+    if cp is not None and cp < _CONTENCION_MIN_PCT:
+        alertas.append(["contencion", f"contención {cp}% < {_CONTENCION_MIN_PCT}%"])
+    deriva = rr.deriva_estudio(pcfg or {}, resumen.get("activacion"),
+                               resumen.get("fecha"))
+    # Orden de atención: piden atención (⛔/🔴/alertas) → ámbar/gris → verde → sin estudio.
+    if implausible or sem == "rojo" or alertas:
+        prio = 0
+    elif sem in ("amarillo", "sin_veredicto"):
+        prio = 1
+    elif sem == "verde":
+        prio = 2
+    else:
+        prio = 3
+    return {"semaforo": sem, "pf_oos": pf_oos,
+            "n_oos": (resumen.get("robustez") or {}).get("n"),
+            "alertas": alertas, "deriva": deriva,
+            "estudio_fecha": resumen.get("fecha"), "prio": prio}
+
+
 @router.get("/ui/strategies", response_class=HTMLResponse)
 async def list_strategies(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> HTMLResponse:
+    import app.web.routes_riesgo as rr
     result = await db.execute(select(Strategy).order_by(Strategy.created_at.desc()))
     strategies = list(result.scalars().all())
 
     # signals-today count per strategy
     perf_rows = await db.execute(select(StrategyPerformance))
     perf = {p.strategy_id: p for p in perf_rows.scalars().all()}
+    # config viva por estrategia (para la DERIVA de la fila — una query, no N)
+    prof_rows = await db.execute(select(StrategyProfile))
+    profs = {p.strategy_id: p for p in prof_rows.scalars().all()}
 
     items = []
     for s in strategies:
         p = perf.get(s.strategy_id)
+        instrument = _lab_instrument(s.asset_symbol)
+        clave = rr.clave_de(s.strategy_id, instrument) if instrument else None
+        resumen = _luxy_resumen(clave) if clave else None
+        prof = profs.get(s.strategy_id)
+        pcfg = (prof.pipeline_config_json or {}) if prof else {}
+        sig = _flota_signals(resumen, pcfg)
         items.append({
             "strategy_id": s.strategy_id,
             "name": s.name,
@@ -214,9 +283,12 @@ async def list_strategies(
             "timeframe": s.timeframe,
             "status": s.status,
             "enabled": s.enabled,
-            "pass_rate": float(p.filter_pass_rate) if p and p.filter_pass_rate else None,
             "total_received": p.total_signals_received if p else 0,
+            **sig,                                 # semaforo/pf_oos/alertas/deriva/…
         })
+    # Orden por atención; sorted es ESTABLE → conserva el orden actual (created_at
+    # desc) como fallback dentro de cada prioridad.
+    items.sort(key=lambda x: x["prio"])
 
     return await render(
         request, "strategies.html",

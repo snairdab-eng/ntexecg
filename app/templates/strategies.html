@@ -30,15 +30,19 @@
     <div class="bg-gray-900 border border-gray-800 rounded overflow-x-auto">
         <table class="w-full text-sm">
             <thead>
+                {# LX-14 Parte B — concentrado de semáforos: Nombre y Pass rate
+                   salen; entran Robustez/Alertas/Deriva/Estudio (del digest). #}
                 <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
                     <th class="px-3 py-2 w-8"></th>
                     <th class="px-3 py-2">strategy_id</th>
-                    <th class="px-3 py-2">Nombre</th>
+                    <th class="px-3 py-2" title="Semáforo de robustez OOS del último estudio">🚦 Robustez</th>
+                    <th class="px-3 py-2">Alertas</th>
+                    <th class="px-3 py-2">Deriva</th>
+                    <th class="px-3 py-2">Estudio</th>
                     <th class="px-3 py-2">Activo</th>
                     <th class="px-3 py-2">TF</th>
                     <th class="px-3 py-2">Status</th>
                     <th class="px-3 py-2">Recibidas</th>
-                    <th class="px-3 py-2">Pass rate</th>
                     <th class="px-3 py-2">Enabled</th>
                 </tr>
             </thead>
@@ -51,20 +55,35 @@
                         " class="accent-blue-500">
                     </td>
                     <td class="px-3 py-2">
-                        <a href="/ui/strategies/{{ s.strategy_id }}" class="text-blue-400 hover:text-blue-300 font-mono">{{ s.strategy_id }}</a>
+                        {# el nombre largo pasa a tooltip del strategy_id #}
+                        <a href="/ui/strategies/{{ s.strategy_id }}" class="text-blue-400 hover:text-blue-300 font-mono" title="{{ s.name }}">{{ s.strategy_id }}</a>
                     </td>
-                    <td class="px-3 py-2 text-gray-300">{{ s.name }}</td>
+                    {# 🚦 ROBUSTEZ — ⛔ implausible prevalece; ⚪ muestra chica; — sin estudio #}
+                    {% set semmap = {'verde':['🟢','text-emerald-400'],'amarillo':['🟡','text-amber-400'],'rojo':['🔴','text-red-400'],'sin_veredicto':['⚪','text-gray-400'],'implausible':['⛔','text-red-500']} %}
+                    {% set sm = semmap.get(s.semaforo) %}
+                    <td class="px-3 py-2 whitespace-nowrap">
+                        {% if sm %}<span class="{{ sm[1] }}" title="{% if s.semaforo=='sin_veredicto' %}muestra chica (n={{ s.n_oos if s.n_oos is not none else '?' }}){% elif s.semaforo=='implausible' %}números implausibles{% endif %}">{{ sm[0] }}</span>{% if s.pf_oos is not none and s.semaforo != 'implausible' %} <span class="text-gray-500 text-xs">PF {{ '%.2f'|format(s.pf_oos) }}</span>{% endif %}{% else %}<span class="text-gray-600" title="sin estudio Luxy">—</span>{% endif %}
+                    </td>
+                    {# ALERTAS — iconos compactos solo si aplican, detalle en tooltip #}
+                    {% set almap = {'flip':'🔀','mejora3x':'📈','cobertura':'◐','contencion':'⊘'} %}
+                    <td class="px-3 py-2 whitespace-nowrap">
+                        {% for a in s.alertas %}<span class="text-amber-400 mr-1 cursor-help" title="{{ a[1] }}">{{ almap.get(a[0], '⚠') }}</span>{% endfor %}{% if not s.alertas %}<span class="text-gray-600">—</span>{% endif %}
+                    </td>
+                    {# DERIVA — aplicada (verde) / difiere (ámbar) / — (sin estudio) #}
+                    <td class="px-3 py-2 text-xs whitespace-nowrap">
+                        {% if s.deriva %}<span class="{% if s.deriva.estado=='aplicada' %}text-emerald-400{% elif s.deriva.estado=='difiere' %}text-amber-400{% else %}text-gray-400{% endif %}">{{ s.deriva.texto }}</span>{% else %}<span class="text-gray-600">—</span>{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-gray-400 text-xs whitespace-nowrap">{{ s.estudio_fecha or '—' }}</td>
                     <td class="px-3 py-2 text-gray-400 font-mono">{{ s.asset_symbol or '—' }}</td>
                     <td class="px-3 py-2 text-gray-400">{{ s.timeframe or '—' }}</td>
                     <td class="px-3 py-2">{{ status_badge(s.status) }}</td>
                     <td class="px-3 py-2 text-gray-400">{{ s.total_received }}</td>
-                    <td class="px-3 py-2 text-gray-400">{{ '%.0f%%'|format(s.pass_rate * 100) if s.pass_rate is not none else '—' }}</td>
                     <td class="px-3 py-2">
                         {% if s.enabled %}<span class="text-green-400">●</span>{% else %}<span class="text-gray-600">○</span>{% endif %}
                     </td>
                 </tr>
                 {% else %}
-                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="9">No hay estrategias. <a href="/ui/strategies/new" class="text-blue-400">Crear la primera</a>.</td></tr>
+                <tr><td class="px-3 py-8 text-center text-gray-600" colspan="11">No hay estrategias. <a href="/ui/strategies/new" class="text-blue-400">Crear la primera</a>.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

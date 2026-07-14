@@ -1071,10 +1071,12 @@
             // LX-7 — estado PROPIO: PF no evaluable por muestra (muy pocos perdedores). NO es "implausible".
             if(D.pf_no_evaluable){ r.style.opacity='0.6'; r.innerHTML='⚪ <b style="color:var(--lx-muted)">robustez OOS</b> <span style="color:#d29922">no evaluable por muestra — PF sin significado (muy pocos perdedores)</span>'; return; }
             const v=(VROB&&VROB.verdict)||'rojo';
-            const map={verde:['🟢','#3fb950','robusto'],amarillo:['🟡','#d29922','frágil'],rojo:['🔴','#f85149','no generaliza']};
+            // LX-14 — ⚪ sin veredicto (OOS muestra chica): ni verde ni rojo.
+            const map={verde:['🟢','#3fb950','robusto'],amarillo:['🟡','#d29922','frágil'],rojo:['🔴','#f85149','no generaliza'],sin_veredicto:['⚪','#8b949e','sin veredicto — muestra chica']};
             const m=map[v]||map.rojo; const dim=(mode==='est');
+            const suf=(v==='sin_veredicto')?(VROB&&VROB.n!=null?' (n='+VROB.n+')':''):(VROB&&VROB.pf!=null?' · PF '+(+VROB.pf).toFixed(2):'');
             r.style.opacity=dim?'0.5':'1';
-            r.innerHTML='<span title="OOS = palancas probadas en datos que no participaron en derivarlas; si esto se degrada, la estrategia se está degradando">'+m[0]+' <b style="color:'+m[1]+'">robustez OOS</b> <span style="color:var(--lx-muted)">'+m[2]+(VROB&&VROB.pf!=null?' · PF '+(+VROB.pf).toFixed(2):'')+'</span></span>'+(dim?' <span style="color:#d29922">— pendiente de Recalcular</span>':'');
+            r.innerHTML='<span title="OOS = palancas probadas en datos que no participaron en derivarlas; si esto se degrada, la estrategia se está degradando">'+m[0]+' <b style="color:'+m[1]+'">robustez OOS</b> <span style="color:var(--lx-muted)">'+m[2]+suf+'</span></span>'+(dim?' <span style="color:#d29922">— pendiente de Recalcular</span>':'');
           }
           // LX-3b/LX-6 — banner ámbar de muestra + banner ROJO de implausibilidad.
           function banner(){ const b=el('lx-muestra-banner');

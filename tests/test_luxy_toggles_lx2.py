@@ -59,9 +59,12 @@ def test_robustez_semaforo_tres_estados():
     assert R({"net_usd": 1000, "pf": 1.30, "n": 20})["verdict"] == "verde"    # umbral incl.
     assert R({"net_usd": 500, "pf": 1.15, "n": 15})["verdict"] == "amarillo"  # 🟡
     assert R({"net_usd": 500, "pf": 1.00, "n": 15})["verdict"] == "amarillo"  # borde inf.
-    assert R({"net_usd": -1, "pf": 2.0, "n": 9})["verdict"] == "rojo"         # 🔴 neto≤0
-    assert R({"net_usd": 100, "pf": 0.9, "n": 9})["verdict"] == "rojo"        # 🔴 PF<1.0
-    assert R({"net_usd": None, "pf": None, "n": 0})["verdict"] == "rojo"      # fail-honest
+    assert R({"net_usd": -1, "pf": 2.0, "n": 15})["verdict"] == "rojo"        # 🔴 neto≤0 (n≥10)
+    assert R({"net_usd": 100, "pf": 0.9, "n": 15})["verdict"] == "rojo"       # 🔴 PF<1.0 (n≥10)
+    # LX-14 — muestra OOS chica (n<RETENCION_N_MIN): ni verde ni rojo (⚪)
+    assert R({"net_usd": -1, "pf": 2.0, "n": 9})["verdict"] == "sin_veredicto"
+    assert R({"net_usd": 100, "pf": 2.87, "n": 2})["verdict"] == "sin_veredicto"  # el caso GC
+    assert R({"net_usd": None, "pf": None, "n": 0})["verdict"] == "sin_veredicto"
     # umbrales como constantes nombradas
     assert mrl.ROBUSTEZ_PF_VERDE == 1.3 and mrl.ROBUSTEZ_PF_MIN == 1.0
 

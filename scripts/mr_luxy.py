@@ -483,10 +483,14 @@ def _expectativa(m: dict):
 
 def robustez_semaforo(oos: dict) -> dict:
     """Semáforo de robustez desde la fila OOS VALIDADA (net/pf):
-    🟢 verde neto>0 y PF≥1.3 · 🟡 amarillo neto>0 y PF 1.0–1.3 · 🔴 rojo neto≤0
-    o PF<1.0. Sobre métricas nulas/sin muestra → rojo (fail-honest)."""
+    ⚪ SIN VEREDICTO n_oos<RETENCION_N_MIN (muestra chica: un verde/rojo sin
+    sustancia, LX-14) · 🟢 verde neto>0 y PF≥1.3 · 🟡 amarillo neto>0 y PF
+    1.0–1.3 · 🔴 rojo neto≤0 o PF<1.0."""
     net, pf = oos.get("net_usd"), oos.get("pf")
-    if net is None or pf is None or net <= 0 or pf < ROBUSTEZ_PF_MIN:
+    n = oos.get("n") or 0
+    if n < RETENCION_N_MIN:                       # LX-14 — muestra chica: ni verde ni rojo
+        verd = "sin_veredicto"
+    elif net is None or pf is None or net <= 0 or pf < ROBUSTEZ_PF_MIN:
         verd = "rojo"
     elif pf >= ROBUSTEZ_PF_VERDE:
         verd = "verde"
@@ -1012,6 +1016,9 @@ def gate_aplicar(study: dict) -> dict:
     amber: list[str] = []
     if s["robustez"] == "amarillo":
         amber.append("semáforo de robustez ÁMBAR (PF OOS 1.0–1.3)")
+    if s["robustez"] == "sin_veredicto":         # LX-14 — muestra OOS chica (n<10)
+        amber.append("semáforo SIN VEREDICTO — OOS muestra chica "
+                     f"(n<{RETENCION_N_MIN}), verde/rojo sin sustancia")
     if s["participacion_pct"] is not None and \
             s["participacion_pct"] < GATE_PARTICIPACION_MIN_PCT:
         amber.append(f"participación de la config {s['participacion_pct']}% "
@@ -1251,6 +1258,51 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
 # (patrón Calcular). El motor de v1 NO se toca.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# LX-14 Parte B — RESUMEN persistido por estudio (concentrado de la lista).
+# La lista de Estrategias NO carga el JSON completo del estudio por fila: solo
+# este digest chico (o None si no hay estudio). Un archivo por clave.
+# ---------------------------------------------------------------------------
+
+def study_resumen(study: dict) -> dict:
+    """Digest CHICO del estudio para el concentrado de semáforos de la lista."""
+    dash = (study or {}).get("dashboard") or {}
+    t3 = dash.get("table3") or {}
+    notes = dash.get("notes") or []
+    rob = dash.get("robustez") or {}
+
+    def _fila(row):
+        row = row or {}
+        n = row.get("n") or 0
+        net = row.get("net_usd")
+        return {"pf": row.get("pf"), "net_usd": net, "n": n,
+                "usd_trade": round(net / n, 2)
+                if (net is not None and n) else None}
+
+    cont = (study or {}).get("contencion") or {}
+    return {
+        "fecha": study.get("fecha"),
+        "estudio_id": dash.get("estudio_id"),
+        "degradado": bool(study.get("degradado")),
+        "degradado_motivo": study.get("degradado_motivo"),
+        "robustez": {"verdict": rob.get("verdict"), "pf": rob.get("pf"),
+                     "n": rob.get("n")},
+        "implausible": bool(dash.get("implausible")),
+        "chips": {"flip": any("flip de signo" in x for x in notes),
+                  "mejora3x": any("mejora >3" in x for x in notes)},
+        "n_simulable": dash.get("n_simulable"),
+        "n_total": dash.get("n_total"),
+        "n_fuera_contencion": dash.get("n_fuera_contencion"),
+        "contencion_pct": cont.get("pct"),
+        "crudo_plus": _fila(t3.get("crudo_plus")),
+        "oos": _fila(t3.get("oos")),
+        # `activacion` = para computar la DERIVA en la lista contra la config
+        # viva SIN cargar el estudio completo (misma vía que el badge del detalle).
+        "activacion": (activacion_from_study(study)
+                       if not study.get("degradado") else {}),
+    }
+
+
 def run_for_clave(clave: str, motor_dir, *, oos: float = 0.3,
                   cancel_after_s: float | None = CANCEL_AFTER_MAX_S,
                   fecha: str | None = None) -> dict:
@@ -1290,6 +1342,10 @@ def run_for_clave(clave: str, motor_dir, *, oos: float = 0.3,
     out = runs / f"luxy_{fecha}.json"
     out.write_text(json.dumps(study, indent=1, ensure_ascii=False,
                               sort_keys=True), encoding="utf-8")
+    # LX-14 Parte B — digest chico para el concentrado de la lista (uno por clave).
+    (runs / "luxy_resumen.json").write_text(
+        json.dumps(study_resumen(study), indent=1, ensure_ascii=False,
+                   sort_keys=True), encoding="utf-8")
     return study
 
 
