@@ -1343,7 +1343,9 @@ def run_for_clave(clave: str, motor_dir, *, oos: float = 0.3,
     out.write_text(json.dumps(study, indent=1, ensure_ascii=False,
                               sort_keys=True), encoding="utf-8")
     # LX-14 Parte B — digest chico para el concentrado de la lista (uno por clave).
-    (runs / "luxy_resumen.json").write_text(
+    # LX-14b — NOMBRE FUERA del patrón luxy_*.json: colisionaba con el glob del
+    # estudio (`_luxy_latest`) y el detalle levantaba el digest como estudio → 500.
+    (runs / "resumen_flota.json").write_text(
         json.dumps(study_resumen(study), indent=1, ensure_ascii=False,
                    sort_keys=True), encoding="utf-8")
     return study

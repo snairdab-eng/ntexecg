@@ -194,11 +194,21 @@ async def _assets(db: AsyncSession) -> list[AssetProfile]:
 # ---------------------------------------------------------------------------
 
 def _luxy_resumen(clave: str) -> dict | None:
-    """LX-14 Parte B — digest chico del último estudio (runs/luxy_resumen.json).
-    SOLO lectura; la lista NO carga el JSON completo del estudio por fila."""
+    """LX-14 Parte B — digest chico del último estudio (runs/resumen_flota.json;
+    LX-14b renombró del viejo luxy_resumen.json que colisionaba con el glob del
+    estudio). SOLO lectura; la lista NO carga el JSON completo por fila."""
     import app.web.routes_riesgo as rr
     import json
-    p = rr.MOTOR_DIR / clave / "runs" / "luxy_resumen.json"
+    runs = rr.MOTOR_DIR / clave / "runs"
+    p = runs / "resumen_flota.json"
+    old = runs / "luxy_resumen.json"                 # LX-14b — nombre legado
+    if not p.exists() and old.exists():
+        # Migración al vuelo: saca el digest del patrón luxy_* (así el detalle
+        # deja de colisionar) sin recalcular. Si el rename falla, lee el viejo.
+        try:
+            old.replace(p)
+        except OSError:
+            p = old
     if not p.exists():
         return None
     try:
@@ -670,17 +680,32 @@ import sys as _sys
 LUXY_JOBS: dict[str, dict] = {}
 
 
+def _es_estudio_completo(d) -> bool:
+    """LX-14b — un ESTUDIO Luxy trae `dashboard` y/o `levers_in_sample` (llaves de
+    contrato: la nube/tablas y la reco). El digest de flota (resumen_flota.json, o
+    el viejo luxy_resumen.json) NO tiene NINGUNA de las dos. Shape check
+    fail-honest: un archivo del glob que no sea estudio se SALTA (nunca se levanta
+    como tal → nada de 500)."""
+    return (isinstance(d, dict)
+            and ("dashboard" in d or "levers_in_sample" in d))
+
+
 def _luxy_latest(clave: str) -> dict | None:
-    """Última corrida Luxy persistida (runs/luxy_*.json) — solo lectura."""
+    """Última corrida Luxy persistida (runs/luxy_*.json) — solo lectura. Defensa
+    DOBLE (LX-14b): el digest ya no usa el patrón luxy_* Y aquí se exige el shape
+    del estudio, así que un digest legado que aún matchee el glob se ignora sin
+    500 (fail-honest)."""
     import json as _json
     import app.web.routes_riesgo as rr
     hits = sorted((rr.MOTOR_DIR / clave / "runs").glob("luxy_*.json"))
-    if not hits:
-        return None
-    try:
-        return _json.loads(hits[-1].read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return None
+    for p in reversed(hits):                        # más reciente primero
+        try:
+            d = _json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if _es_estudio_completo(d):
+            return d
+    return None
 
 
 async def _run_luxy(clave: str, cmd: list[str]) -> None:

@@ -19,7 +19,8 @@ from app.core.auth import SESSION_COOKIE_NAME, create_session_token
 from app.core.config import settings
 from app.models.strategy import Strategy
 
-from tests.test_contencion_lx12 import _integrar   # integra un master sintético alineado
+from tests.test_contencion_lx12 import (_integrar, _trades_spec,   # noqa: F401
+                                        _write_holc, _write_master)
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +101,10 @@ def test_flota_deriva_estados():
 def test_resumen_escrito_al_calcular(tmp_path, monkeypatch):
     _integrar(tmp_path, monkeypatch, shift=0.0)        # master sintético alineado
     mrl.run_for_clave("ES_Test", tmp_path / "MotorRiesgo")
-    p = tmp_path / "MotorRiesgo" / "ES_Test" / "runs" / "luxy_resumen.json"
+    runs = tmp_path / "MotorRiesgo" / "ES_Test" / "runs"
+    p = runs / "resumen_flota.json"
     assert p.exists()
+    assert not (runs / "luxy_resumen.json").exists()   # LX-14b — NO colisiona con luxy_*
     r = json.loads(p.read_text(encoding="utf-8"))
     assert r["fecha"] and "robustez" in r and "activacion" in r
 
@@ -128,7 +131,7 @@ def motor_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _write_resumen(motor_dir: Path, clave: str, **kw):
     runs = motor_dir / clave / "runs"
     runs.mkdir(parents=True, exist_ok=True)
-    (runs / "luxy_resumen.json").write_text(
+    (runs / "resumen_flota.json").write_text(       # LX-14b — nombre fuera de luxy_*
         json.dumps(mrl.study_resumen(_study(**kw)), ensure_ascii=False),
         encoding="utf-8")
 
@@ -170,3 +173,38 @@ async def test_lista_semaforo_sin_estudio_guion(client, db, motor_dir):
     await _mk(db, "ES5m_Nada")
     html = (await client.get("/ui/strategies")).text
     assert "ES5m_Nada" in html                        # renderiza sin tronar
+
+
+# ---------------------------------------------------------------------------
+# 5) REGRESIÓN LX-14b — digest + estudio COEXISTIENDO en runs/: el detalle NO
+#    debe levantar el digest como estudio (era el 500). El hueco de la suite: los
+#    tests creaban uno u otro archivo, nunca AMBOS en el mismo runs/.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_detalle_con_digest_y_estudio_coexistiendo(
+    client, db, motor_dir, tmp_path, monkeypatch
+):
+    import scripts.nt_riesgo as nr
+    # integrar inline con AWAIT (no _integrar, que usa asyncio.run y no corre
+    # dentro de un test async) — master sintético alineado.
+    holc_dir = tmp_path / "holc"; holc_dir.mkdir(exist_ok=True)
+    specs = _trades_spec()
+    _write_holc(holc_dir / "ES_5m.csv", specs, shift=0.0)
+    csv_path = tmp_path / "ES5m_Test_010526.csv"
+    _write_master(csv_path, specs)
+    monkeypatch.setenv("HOLC_DIR", str(holc_dir))
+    monkeypatch.setattr(nr, "MOTOR_DIR", motor_dir)
+    await nr.integrar(csv_path, codigo="Test", activo="ES")
+    study = mrl.run_for_clave("ES_Test", motor_dir)   # estudio real + resumen_flota
+    runs = motor_dir / "ES_Test" / "runs"
+    # simula el estado LEGADO: un digest con el nombre viejo que MATCHEA luxy_*
+    (runs / "luxy_resumen.json").write_text(
+        json.dumps(mrl.study_resumen(study), ensure_ascii=False), encoding="utf-8")
+    assert list(runs.glob("luxy_*.json"))              # coexisten estudio + digest legado
+    await _mk(db, "ES5m_Test")
+
+    r = await client.get("/ui/strategies/ES5m_Test")
+    assert r.status_code == 200, r.text                # antes: 500 UndefinedError
+    # el shape check levantó el ESTUDIO real (no el digest): su split se renderiza
+    assert "Corte del split" in r.text
