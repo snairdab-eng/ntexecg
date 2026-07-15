@@ -891,6 +891,23 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
         dashboard["muestra_banner"] = muestra_banner(
             len(trades), len(sts), n_cola, n_inicio,
             _last.isoformat() if _last else None, n_fuera=n_fuera)
+        # RA-0v2 — sección FIJA "Piernas / Re-armado" (por estrategia, del master
+        # + intrabar de la clave; C2/C3 = ladder derivada del estudio). Detalle,
+        # NO va al digest. Fail-safe: nunca tumba el estudio.
+        try:
+            from scripts.ra0_study import piernas_section
+            _ld = levers_in.get("ladder") or {}
+            _lv = _ld.get("levels") or []
+            if len(_lv) >= 3 and _lv[1] and _lv[2] and keys5:
+                dashboard["piernas"] = piernas_section(
+                    trades, keys5, idx5, bars5, off,
+                    c2=float(_lv[1]), c3=float(_lv[2]),
+                    quantities=_ld.get("alloc") or [TOTAL_MICROS, 0, 0],
+                    bk_pts=levers_in.get("b_pts"),
+                    tp_by_side=levers_in.get("tp_por_lado_atr"),
+                    ppt=ppt)
+        except Exception as _exc:            # informativo — jamás rompe el estudio
+            dashboard["piernas"] = {"error": repr(_exc)}
 
     return {
         "version": 3,               # v3: BE same_bar recortado (walk aditivo)

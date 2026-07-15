@@ -899,6 +899,21 @@
                + ventana mínima de cobertura + comparación con la L2 vigente).
                Paridad numérica con Riesgo v1 (reusa el helper RIES-W). -->
           <div id="lx-window" class="rounded p-3 mt-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)"></div>
+
+          <!-- RA-0v2 — sub-panel COLAPSABLE "Piernas / Re-armado" (INFORMATIVO).
+               Detalle FIJO del estudio (por estrategia, no va al digest): curva de
+               llegada por profundidad · tabla de cortes (¿fills tardíos suman o son
+               cuchillos?) · R-RA3 graduada · orden de eventos (huérfanas) · ATR-
+               expansión · recomendación de constantes para RA-2. Honestidad LX-7/14:
+               n por celda, muestra chica → n/s + default conservador. El re-armado
+               (RA-2) aún NO existe en despacho; nada de esto toca producción. -->
+          <details id="lx-piernas-wrap" class="rounded mt-3" style="background:var(--lx-panel);border:1px solid var(--lx-line)">
+            <summary class="cursor-pointer select-none px-3 py-2 text-sm" style="color:var(--lx-ink)">
+              🦿 <b>Piernas / Re-armado</b>
+              <span class="text-xs" style="color:var(--lx-muted)">— informativo: el re-armado (RA-2) aún no existe en despacho. Estas constantes lo alimentarán vía estudio → gate → Aplicar cuando exista; hoy nada toca producción.</span>
+            </summary>
+            <div id="lx-piernas" class="px-3 pb-3 text-xs space-y-3"></div>
+          </details>
         </div>
         <script>
         (function(){
@@ -1195,6 +1210,92 @@
             el('lx-ts').innerHTML=(ts.buckets||[]).map(function(b){return '<div class="flex justify-between gap-2"><span style="color:var(--lx-muted)">'+b.range+'m</span><span class="font-mono" style="color:'+(b.net<0?'#f85149':'var(--lx-muted)')+'">'+b.n+'·'+money(b.net)+'</span></div>';}).join('');
             el('lx-ts-why').textContent=ts.why||'';
           }
+          // ---- RA-0v2: sub-panel "Piernas / Re-armado" (informativo, ESTÁTICO) ----
+          // No cambia con las palancas: es del master + intrabar YA enriquecido de
+          // la clave. Honestidad heredada: n por celda; muestra chica → n/s + la
+          // recomendación degrada a default conservador (lo decide el motor). Si el
+          // estudio degrada (contención/intrabar) NO hay dashboard → este panel no
+          // se renderiza (degrada CON el estudio, junto al banner rojo de arriba).
+          function piernas(){
+            const host=el('lx-piernas'); if(!host) return;
+            const P=D.piernas;
+            if(!P || P.error){
+              host.innerHTML='<div style="color:var(--lx-muted)">Sección no disponible'
+                +(P&&P.error?' <span style="opacity:.7">('+String(P.error).slice(0,140)+')</span>'
+                            : ' — falta el ladder C2/C3 del estudio o el intrabar de la clave.')+'</div>';
+              return;
+            }
+            const nmin=P.n_min_celda||10;
+            const p1=(v,u)=> v==null?'—':(+v).toFixed(1)+(u||'');
+            const min1=v=> v==null?'—':v+'m';
+            // 1) Curva de llegada por profundidad (R-RA4)
+            const arr=(lbl,a)=> '<div class="flex justify-between gap-3 flex-wrap"><span style="color:var(--lx-muted)">'+lbl
+              +' <span style="opacity:.7">(n='+a.n+')</span></span>'
+              +'<span class="font-mono" style="color:var(--lx-ink)">toca '+p1(a.touch_rate_pct,'%')
+              +' · med '+min1(a.mediana_min)+' p90 '+min1(a.p90_min)+' p95 '+min1(a.p95_min)
+              +' · ≤1h '+p1(a.pct_le_1h,'%')+' ≤2h '+p1(a.pct_le_2h,'%')+' ≤3h '+p1(a.pct_le_3h,'%')
+              +' · nunca '+p1(a.pct_nunca,'%')+'</span></div>';
+            let h='<div><div class="uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Curva de llegada '
+              +'<span style="text-transform:none">(minuto del primer toque, vida completa del trade)</span></div>'
+              +arr('C2 · '+P.c2+'×ATR',P.arrival_c2)+arr('C3 · '+P.c3+'×ATR',P.arrival_c3)+'</div>';
+            // 2) PREGUNTA DE ORO: tabla de cortes (¿fills tardíos suman o son cuchillos?)
+            const C=P.cortes||{}; let prev=null, filas='';
+            [['1h','corte 1h (despacho vigente)'],['2h','corte 2h'],['3h','corte 3h'],
+             ['duracion','vida de la posición (re-armado)']].forEach(function(kv){
+              const m=C[kv[0]]||{}; const net=m.net_usd;
+              const dnet=(prev==null||net==null)?'':((net-prev>=0?'+':'−')+'$'+Math.abs(Math.round(net-prev)).toLocaleString('en-US'));
+              const dcol=(prev==null||net==null)?'var(--lx-muted)':(net-prev>=0?'var(--lx-green)':'var(--lx-red)');
+              filas+='<tr style="border-top:1px solid var(--lx-line)"><td class="py-1 pr-3" style="color:var(--lx-ink)">'+kv[1]+'</td>'
+                +'<td class="py-1 pr-3 font-mono" style="color:'+(net<0?'var(--lx-red)':'var(--lx-ink)')+'">'+money(net)+'</td>'
+                +'<td class="py-1 pr-3 font-mono">'+dnet+'&nbsp;<span style="color:'+dcol+'">▸</span></td>'
+                +'<td class="py-1 pr-3 font-mono">'+pf(m.pf)+'</td>'
+                +'<td class="py-1 pr-3 font-mono" style="color:var(--lx-muted)">'+money(m.max_dd_usd==null?null:-m.max_dd_usd)+'</td>'
+                +'<td class="py-1 pr-3 font-mono" style="color:var(--lx-muted)">'+money(m.peor_trade_usd)+'</td>'
+                +'<td class="py-1 font-mono" style="color:var(--lx-muted)">'+(m.n==null?'—':m.n)+'</td></tr>';
+              if(net!=null) prev=net;
+            });
+            h+='<div><div class="uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Pregunta de oro '
+              +'<span style="text-transform:none">— ladder por política de corte (Δ vs. corte anterior = aporte marginal del fill más tardío: ¿suma o es cuchillo?)</span></div>'
+              +'<table class="w-full"><thead><tr class="text-left" style="color:var(--lx-muted)"><th class="pr-3 font-normal">Corte</th><th class="pr-3 font-normal">Neto</th><th class="pr-3 font-normal">Δnet</th><th class="pr-3 font-normal">PF</th><th class="pr-3 font-normal">Max DD</th><th class="pr-3 font-normal">Peor</th><th class="font-normal">N</th></tr></thead><tbody>'
+              +filas+'</tbody></table></div>';
+            // 3) R-RA3 graduada — P(toca C2 luego | sin toque a t y ≥k×ATR fav). n/s por celda.
+            const G={}; (P.graduada_flat||[]).forEach(function(g){ G[g.t+'|'+g.k]=g; });
+            let gr='<table class="w-full font-mono"><thead><tr class="text-left" style="color:var(--lx-muted)"><th class="pr-3 font-normal" style="font-family:inherit">t \\ k</th><th class="pr-3 font-normal" style="font-family:inherit">k≥0</th><th class="pr-3 font-normal" style="font-family:inherit">k≥0.5</th><th class="font-normal" style="font-family:inherit">k≥1.0</th></tr></thead><tbody>';
+            [60,120,180].forEach(function(t){
+              gr+='<tr style="border-top:1px solid var(--lx-line)"><td class="py-1 pr-3" style="color:var(--lx-muted)">'+t+'m</td>';
+              [0,0.5,1].forEach(function(k){
+                const c=G[t+'|'+k]||{}; const ns=(c.n_cond||0)<nmin || c.p_toque_luego_pct==null;
+                gr+='<td class="py-1 pr-3" style="color:'+(ns?'var(--lx-sl)':'var(--lx-ink)')+'">'
+                  +(ns?'n/s':(+c.p_toque_luego_pct).toFixed(0)+'%')+' <span style="color:var(--lx-muted)">(n'+(c.n_cond||0)+')</span></td>';
+              });
+              gr+='</tr>';
+            });
+            gr+='</tbody></table>';
+            h+='<div><div class="uppercase tracking-wide mb-1" style="color:var(--lx-muted)">R-RA3 graduada '
+              +'<span style="text-transform:none">— P(el precio aún vuelve a tocar C2 | sin toque a t y el precio ya está k×ATR del lado favorable). Prob baja → pullback improbable, no re-armar. <b>n/s</b> = muestra &lt; '+nmin+'.</span></div>'+gr+'</div>';
+            // 4) Orden de eventos (R-RA6) + ventana ciega (§1) + ATR-expansión (R-RA7)
+            const oe=P.orden_eventos||{}, cc2=P.ciega_c2||{}, cc3=P.ciega_c3||{};
+            const ae=function(x){ x=x||{}; const g=x.ganadores||{}, l=x.perdedores||{};
+              return 'tardíos n'+(x.n_tardios||0)+' → gan med '+(g.atr_ratio_med==null?'—':g.atr_ratio_med)+' (n'+(g.n||0)+') · perd med '
+                +(l.atr_ratio_med==null?'—':l.atr_ratio_med)+' p90 '+(l.atr_ratio_p90==null?'—':l.atr_ratio_p90)+' (n'+(l.n||0)+')'; };
+            h+='<div class="space-y-1"><div class="uppercase tracking-wide" style="color:var(--lx-muted)">Muerte inferida, ventana ciega y régimen</div>'
+              +'<div style="color:var(--lx-ink)">R-RA6 orden (huérfanas si backstop/TP toca antes que la pierna): C2 <b>'+p1(oe.pct_c2_huerfana,'%')+'</b> · C3 <b>'+p1(oe.pct_c3_huerfana,'%')+'</b></div>'
+              +'<div style="color:var(--lx-ink)">§1 ventana ciega (toque en franja [60,62)m de su ciclo = fill perdido honesto): C2 '+p1(cc2.pct_en_ciega,'%')+' · C3 '+p1(cc3.pct_en_ciega,'%')+' de los toques</div>'
+              +'<div style="color:var(--lx-ink)">R-RA7 ATR_t/ATR_señal en toques tardíos C3: '+ae(P.atr_exp_c3)+'</div></div>';
+            // 5) Recomendación de constantes (evidencia; n/s → default conservador)
+            const R2=P.recomendacion||{};
+            const rec=function(lbl,val,ev){ const ns=/n\/s/.test(ev||'');
+              return '<div class="flex justify-between gap-3 flex-wrap"><span class="font-mono" style="color:var(--lx-ink)">'+lbl+' = <b>'+val+'</b></span>'
+                +'<span style="color:'+(ns?'var(--lx-sl)':'var(--lx-muted)')+'">'+(ev||'')+'</span></div>'; };
+            h+='<div class="rounded p-2 space-y-1" style="background:#0d1117;border:1px solid var(--lx-line)">'
+              +'<div class="uppercase tracking-wide" style="color:var(--lx-muted)">Constantes propuestas para RA-2 '
+              +'<span style="text-transform:none">(por estrategia · con evidencia · jamás sin muestra)</span></div>'
+              +rec('MAX_CICLOS (R-RA4)',R2.MAX_CICLOS,R2.MAX_CICLOS_evidencia)
+              +rec('K_SOBRE_C0 (R-RA3)',R2.K_SOBRE_C0,R2.K_SOBRE_C0_evidencia)
+              +rec('UMBRAL_ATR_EXPANSION (R-RA7)',R2.UMBRAL_ATR_EXPANSION,R2.UMBRAL_ATR_EXPANSION_evidencia)+'</div>';
+            h+='<div style="color:var(--lx-muted)">Base: '+P.n+' trades contenidos (los de frontera de roll se excluyen, LX-13) · C2 '+P.c2+'× · C3 '+P.c3+'×ATR · reparto '+(P.quantities||[]).join('/')+'.</div>';
+            host.innerHTML=h;
+          }
           // ---- ventana de operacion (L7a, sin cambios) ----
           function winDiag(){
             const w=el('lx-window'); if(!w) return;
@@ -1338,7 +1439,7 @@
           // LX-10: precedencia de carga = localStorage → snapshot del server
           // (solo si no había estado local, para no pisar la actividad reciente).
           var _local = restoreExplore();
-          bindOnce(); diag(); setValues(); winDiag(); banner(); refresh();
+          bindOnce(); diag(); setValues(); winDiag(); banner(); piernas(); refresh();
           loadServer(!_local);     // siempre para el sello; restaura solo si no había local
         })();
         </script>

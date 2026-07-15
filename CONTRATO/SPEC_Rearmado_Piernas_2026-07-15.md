@@ -74,7 +74,41 @@ producción sin pasar por el estudio → gate → Aplicar (flujo de siempre).
 3. **RA-3 (UI)**: toggle por estrategia en Config (default OFF hasta observar
    en demo), visibilidad de ciclos en Posiciones.
 
-## 4. Interacción con la auditoría E2E del 2026-07-15
+## 5. Reglas de inferencia (2026-07-15, del operador + arquitecto — calibrar con RA-0)
+
+Sin confirmación de fills desde TradersPost, NTEXECG INFIERE por precio (feed vivo):
+- **R-RA1** feed ciego (heartbeat viejo) → no re-armar (fail-closed, como L1.6).
+- **R-RA2** nivel YA tocado → jamás re-enviar esa pierna. Doble lectura: toque con
+  orden viva ⇒ ASUMIR FILL (cuenta para exposición/peor-caso); toque en ventana
+  ciega ⇒ pierna muerta (fill perdido honesto). Nunca dos lecturas del mismo toque.
+- **R-RA3** precio k×ATR del lado favorable de C0 a la hora t → pullback improbable,
+  no re-armar (umbral k y hora t: calibrar por activo en RA-0).
+- **R-RA4** tope de ciclos (~3h; calibrar por activo con la curva de llegada).
+- **R-RA5** exit/cierre de posición → matar re-armados (ya en §1).
+- **R-RA6** muerte INFERIDA por precio: backstop o TP tocados → la posición murió
+  aunque nadie avise → matar re-armados YA (una pierna llenada post-stop es una
+  posición huérfana sin protección — la inferencia más crítica).
+- **R-RA7** ATR vivo / ATR de la señal > umbral (~1.5×) → régimen cambió, el nivel
+  ya no significa lo mismo → no re-armar.
+- **R-RA8** a menos de X min del cierre de sesión (17:00 ET) → no re-armar.
+- **R-RA9** jerarquía: R-RA5/6 > R-RA1 > R-RA2 > R-RA7 > R-RA3/4/8. La primera que
+  dispara, corta.
+
+**RA-0v2 (decisión del operador 2026-07-15): el estudio es POR ESTRATEGIA, no por
+activo, y queda FIJO como sección "Piernas" del estudio Luxy** (recalcula con cada
+Calcular estudio; el comportamiento del pullback es de la señal, no del símbolo).
+Honestidad heredada: n por celda, n/s con muestra chica → default conservador
+(corte 1h); degrada con el estudio. Las constantes recomendadas alimentarán RA-2
+vía estudio→gate→Aplicar cuando el re-armado exista en despacho.
+Contenido (antes "RA-0"): curva de llegada por profundidad;
+R-RA3 graduada; PnL marginal de fills tardíos (¿suman o son cuchillos?); orden de
+eventos backstop/TP vs C2/C3; sensibilidad de ventana ciega; ATR-expansión en
+toques tardíos. Activos: ES (índices) · GC (metales) · 6E (FX) · RTY (15m).
+Entregable: constantes recomendadas por activo + veredicto por regla
+(confirmada/ajustada/descartada). El prompt completo quedó en el chat de cierre
+2026-07-15; reproducirlo desde este resumen si se pierde.
+
+## 4-bis. Interacción con la auditoría E2E del 2026-07-15
 
 La auditoría documenta el ciclo de vida ACTUAL de las piernas (qué queda
 huérfano al cerrar). Sus hallazgos alimentan RA-2 — no implementar RA-2 antes
