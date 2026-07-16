@@ -259,42 +259,133 @@ def ladder_cuts(trades, feats, c2, c3, quantities, bk_pts, tp_by_side, ppt):
 
 # muestra mínima por celda (patrón LX-7/14) — bajo esto → "n/s" + default conservador
 PIERNAS_N_MIN = 10
+# RA-0v3 — la recomendación tiene JUICIO económico: el horizonte sale de la TABLA
+# DE ORO (Δnet por corte), no de la curva de llegada ciega (que daba MAX_CICLOS=57
+# a GC contra una tabla en rojo). Tolerancias del veredicto y tope duro de ciclos:
+PEOR_TOLERANCIA_PCT = 15.0   # cuánto puede empeorar el peor-trade vs. el corte 1h
+PF_TOLERANCIA_PCT = 10.0     # cuánta caída RELATIVA de PF vs. el corte 1h se tolera
+MAX_CICLOS_CAP = 8           # tope duro (~una jornada de ciclos de 62m); jamás 57
+
+# minuto-horizonte de cada corte de la tabla de oro (None = vida de la posición)
+_CORTE_MIN = {"1h": 60.0, "2h": 120.0, "3h": 180.0, "duracion": None}
+
+
+def _finito(x) -> bool:
+    import math
+    try:
+        return x is not None and math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
+
+
+def _peor_no_degrada(base, peor, tol_pct: float = PEOR_TOLERANCIA_PCT) -> bool:
+    """El peor-trade del corte no empeora más de tol% respecto al de 1h. El
+    peor-trade es ≤0 (una pérdida); 'empeorar' = hacerse MÁS negativo."""
+    if base is None or peor is None:
+        return True
+    if base >= 0:                      # sin perdedores a 1h → cualquier pérdida degrada
+        return peor >= 0
+    return peor >= base * (1 + tol_pct / 100.0)   # base<0 → piso más negativo
+
+
+def _pf_no_degrada(base, pf, tol_pct: float = PF_TOLERANCIA_PCT) -> bool:
+    """El PF del corte no cae materialmente (>tol% relativo) respecto al de 1h."""
+    if not _finito(base):
+        return True                    # 1h sin pérdidas (PF ∞/None) → no bloquea
+    if not _finito(pf):
+        return True                    # el corte mejoró a sin pérdidas
+    return float(pf) >= float(base) * (1 - tol_pct / 100.0)
+
+
+def veredicto_rearmado(cortes: dict, n_fills_tardios: int) -> dict:
+    """RA-0v3 — VEREDICTO económico del re-armado leído de la TABLA DE ORO.
+    Mejor horizonte = corte >1h con Δnet acumulado (vs. 1h) MÁXIMO que NO degrada
+    el peor-trade más de PEOR_TOLERANCIA_PCT ni el PF materialmente. Si ningún
+    corte >1h mejora → NO recomendado. Muestra de fills tardíos chica → n/s
+    (default OFF, conservador): sin evidencia no se re-arma."""
+    base = cortes.get("1h") or {}
+    base_net = base.get("net_usd")
+    if (n_fills_tardios or 0) < PIERNAS_N_MIN or base_net is None:
+        return {"veredicto": "n/s", "mejor_horizonte": None, "delta_net_usd": None,
+                "texto": (f"n/s — sin evidencia para re-armar "
+                          f"({n_fills_tardios or 0} fills tardíos < {PIERNAS_N_MIN}); "
+                          f"default OFF")}
+    best_lbl, best_delta = None, 0.0
+    for lbl in ("2h", "3h", "duracion"):
+        m = cortes.get(lbl) or {}
+        net = m.get("net_usd")
+        if net is None:
+            continue
+        delta = net - base_net
+        if delta <= 0:                                   # no suma neto
+            continue
+        if not _peor_no_degrada(base.get("peor_trade_usd"), m.get("peor_trade_usd")):
+            continue                                     # suma, pero a costa del peor-caso
+        if not _pf_no_degrada(base.get("pf"), m.get("pf")):
+            continue                                     # el PF se cae materialmente
+        if delta > best_delta:
+            best_lbl, best_delta = lbl, delta
+    if best_lbl is None:
+        return {"veredicto": "no_recomendado", "mejor_horizonte": None,
+                "delta_net_usd": None,
+                "texto": "NO recomendado — los fills tardíos restan (ningún corte "
+                         ">1h mejora el neto sin degradar peor-trade/PF)"}
+    return {"veredicto": "recomendado", "mejor_horizonte": best_lbl,
+            "delta_net_usd": round(best_delta, 2),
+            "texto": f"re-armado RECOMENDADO (hasta {best_lbl}) — los fills tardíos "
+                     f"SUMAN +${best_delta:,.0f} de neto sin degradar el peor-caso"}
 
 
 def recomendar(section: dict) -> dict:
     """Recomendación por estrategia con EVIDENCIA (constantes PROPUESTAS para
     RA-1/2). Jamás constante sin muestra: celda floja → n/s + default conservador.
-      · MAX_CICLOS: hasta dónde llega el pullback = ceil(p90 de C3 / 62 min),
-        acotado por la curva; sin muestra → 1 (corte 1h, conservador).
+      · VEREDICTO + MAX_CICLOS: del JUICIO económico sobre la TABLA DE ORO
+        (RA-0v3), no de la curva de llegada ciega. MAX_CICLOS = ⌈mejor_horizonte/
+        62⌉ con tope MAX_CICLOS_CAP; NO recomendado / n/s → 1 (OFF).
       · K_SOBRE_C0: el k donde P(toque tardío) cae bajo ~15% a t=1h (R-RA3).
       · UMBRAL_ATR_EXPANSION: ATR_t/ATR_señal p90 de los fills tardíos PERDEDORES
         (por encima → el nivel ya no significa lo mismo, R-RA7); sin muestra → 1.5.
     """
-    a3 = section["arrival_c3"]
-    ns_arr = a3["n_touched"] < PIERNAS_N_MIN
-    if ns_arr or a3["p90_min"] is None:
-        max_ciclos, ev_ciclos = 1, "n/s (muestra floja) → default 1 (corte 1h)"
+    import math
+    vd = veredicto_rearmado(section.get("cortes") or {},
+                            section.get("n_fills_tardios", 0))
+    # MAX_CICLOS del VEREDICTO (no del p90 ciego): ⌈horizonte/62⌉, tope duro CAP.
+    if vd["veredicto"] != "recomendado":
+        max_ciclos = 1
+        ev_ciclos = ("n/s (sin evidencia de fills tardíos) → default 1 (OFF)"
+                     if vd["veredicto"] == "n/s"
+                     else "NO recomendado → 1 (OFF, corte 1h)")
     else:
-        import math
-        max_ciclos = max(1, math.ceil(a3["p90_min"] / 62.0))
-        ev_ciclos = f"p90 llegada C3 = {a3['p90_min']}m → ⌈/62⌉"
+        hz = _CORTE_MIN.get(vd["mejor_horizonte"])
+        if hz is None:                     # 'duracion' = sin tope de reloj → cap duro
+            max_ciclos = MAX_CICLOS_CAP
+            ev_ciclos = (f"mejor horizonte = vida de la posición "
+                         f"(Δnet +${vd['delta_net_usd']:,.0f}) → tope {MAX_CICLOS_CAP}")
+        else:
+            crudo = math.ceil(hz / 62.0)
+            max_ciclos = max(1, min(MAX_CICLOS_CAP, crudo))
+            ev_ciclos = (f"mejor horizonte = {vd['mejor_horizonte']} "
+                         f"(Δnet +${vd['delta_net_usd']:,.0f}) → ⌈{int(hz)}/62⌉"
+                         + (f" (tope {MAX_CICLOS_CAP})" if crudo > MAX_CICLOS_CAP else ""))
     # K_SOBRE_C0: menor k con P(toque luego)≤15% y n≥min a t=60
     k_sobre, ev_k = None, "n/s"
     for k in (0.0, 0.5, 1.0):
-        cell = section["graduada"].get((60.0, k)) or {}
+        cell = (section.get("graduada") or {}).get((60.0, k)) or {}
         p = cell.get("p_toque_luego_pct")
         if cell.get("n_cond", 0) >= PIERNAS_N_MIN and p is not None and p <= 15.0:
             k_sobre, ev_k = k, f"P(toque|k≥{k},t=1h)={p}% (n{cell['n_cond']})"
             break
     if k_sobre is None:
         k_sobre, ev_k = 1.0, "n/s (ninguna celda con muestra baja la prob) → default 1.0"
-    ae = section["atr_exp_c3"]["perdedores"]
+    ae = (section.get("atr_exp_c3") or {}).get("perdedores") or {}
     if (ae.get("n") or 0) < PIERNAS_N_MIN or ae.get("atr_ratio_p90") is None:
         umbral_atr, ev_atr = 1.5, "n/s (pocos fills tardíos perdedores) → default 1.5"
     else:
         umbral_atr = ae["atr_ratio_p90"]
         ev_atr = f"p90 ATR_t/ATR_señal de fills tardíos perdedores C3 = {umbral_atr}"
     return {
+        "veredicto": vd["veredicto"], "veredicto_texto": vd["texto"],
+        "mejor_horizonte": vd["mejor_horizonte"], "delta_net_usd": vd["delta_net_usd"],
         "MAX_CICLOS": max_ciclos, "MAX_CICLOS_evidencia": ev_ciclos,
         "K_SOBRE_C0": k_sobre, "K_SOBRE_C0_evidencia": ev_k,
         "UMBRAL_ATR_EXPANSION": umbral_atr, "UMBRAL_ATR_EXPANSION_evidencia": ev_atr,
@@ -315,6 +406,11 @@ def piernas_section(trades, keys, idx, bars, off, *, c2, c3, quantities,
         "c2": c2, "c3": c3, "quantities": list(quantities), "backstop_pts": bk_pts,
         "tp_por_lado_atr": dict(tp_by_side or {}), "n": len(conf),
         "n_min_celda": PIERNAS_N_MIN,
+        # RA-0v3 — muestra de la que depende el VEREDICTO: trades con un fill de
+        # pierna profunda DESPUÉS de 1h (lo que un horizonte >1h captura de más).
+        "n_fills_tardios": sum(1 for f in feats
+                               if (f.get("c2_min") or 0) > 60.0
+                               or (f.get("c3_min") or 0) > 60.0),
         "arrival_c2": arrival_stats([f["c2_min"] for f in feats]),
         "arrival_c3": arrival_stats([f["c3_min"] for f in feats]),
         "cortes": ladder_cuts(conf, feats, c2, c3, quantities, bk_pts,

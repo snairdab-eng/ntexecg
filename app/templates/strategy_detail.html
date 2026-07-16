@@ -1287,7 +1287,12 @@
             const rec=function(lbl,val,ev){ const ns=/n\/s/.test(ev||'');
               return '<div class="flex justify-between gap-3 flex-wrap"><span class="font-mono" style="color:var(--lx-ink)">'+lbl+' = <b>'+val+'</b></span>'
                 +'<span style="color:'+(ns?'var(--lx-sl)':'var(--lx-muted)')+'">'+(ev||'')+'</span></div>'; };
+            // RA-0v3 — VEREDICTO económico encabeza el bloque (de la tabla de oro,
+            // no de la curva ciega): 🟢 recomendado · 🔴 no recomendado · ⚪ n/s.
+            const vmap={recomendado:['🟢','var(--lx-green)'],no_recomendado:['🔴','var(--lx-red)'],'n/s':['⚪','var(--lx-sl)']};
+            const vm=vmap[R2.veredicto]||vmap['n/s'];
             h+='<div class="rounded p-2 space-y-1" style="background:#0d1117;border:1px solid var(--lx-line)">'
+              +'<div style="color:'+vm[1]+'" title="El horizonte sale de la tabla de oro: mejor Δnet acumulado sin degradar el peor-trade ni el PF. Si ningún corte >1h mejora → NO recomendado.">'+vm[0]+' <b>'+(R2.veredicto_texto||'—')+'</b></div>'
               +'<div class="uppercase tracking-wide" style="color:var(--lx-muted)">Constantes propuestas para RA-2 '
               +'<span style="text-transform:none">(por estrategia · con evidencia · jamás sin muestra)</span></div>'
               +rec('MAX_CICLOS (R-RA4)',R2.MAX_CICLOS,R2.MAX_CICLOS_evidencia)
