@@ -1027,27 +1027,33 @@ def gate_aplicar(study: dict, scale_entry: dict | None = None) -> dict:
     `scale_entry` (opcional) = la escalera que se aplicaría; si su C1 tiene
     profundidad>0 (LX-15) la participación cae <100% por diseño → mínimo ÁMBAR
     SIEMPRE. Devuelve {nivel, triggers, frase_rojo, señales}."""
-    s = _señales_gate(study)
+    return _gate_build(_señales_gate(study), scale_entry)
+
+
+def _gate_build(s: dict, scale_entry: dict | None = None) -> dict:
+    """Core del gate LX-11: mismas señales, mismos umbrales — lo comparten el gate
+    del ESTUDIO (`gate_aplicar`) y el de las PALANCAS del operador (`gate_palancas`).
+    `s` = dict de señales (robustez/implausible/flip/mejora/participación/intrabar)."""
     rojo: list[str] = []
-    if s["robustez"] == "rojo":
+    if s.get("robustez") == "rojo":
         rojo.append("semáforo de robustez ROJO (OOS net≤0 o PF<1.0)")
-    if s["implausible"]:
-        rojo.append(s["implausible_msg"] or "tripwire de implausibilidad activo")
-    if s["flip_signo"]:
+    if s.get("implausible"):
+        rojo.append(s.get("implausible_msg") or "tripwire de implausibilidad activo")
+    if s.get("flip_signo"):
         rojo.append("flip de signo crudo→config")
-    if s["intrabar_no_confiable"]:
+    if s.get("intrabar_no_confiable"):
         rojo.append("intrabar NO confiable — contención < umbral (LX-12)")
     amber: list[str] = []
-    if s["robustez"] == "amarillo":
+    if s.get("robustez") == "amarillo":
         amber.append("semáforo de robustez ÁMBAR (PF OOS 1.0–1.3)")
-    if s["robustez"] == "sin_veredicto":         # LX-14 — muestra OOS chica (n<10)
+    if s.get("robustez") == "sin_veredicto":     # LX-14 — muestra OOS chica (n<10)
         amber.append("semáforo SIN VEREDICTO — OOS muestra chica "
                      f"(n<{RETENCION_N_MIN}), verde/rojo sin sustancia")
-    if s["participacion_pct"] is not None and \
+    if s.get("participacion_pct") is not None and \
             s["participacion_pct"] < GATE_PARTICIPACION_MIN_PCT:
         amber.append(f"participación de la config {s['participacion_pct']}% "
                      f"< {GATE_PARTICIPACION_MIN_PCT:.0f}%")
-    if s["mejora_3x"]:
+    if s.get("mejora_3x"):
         amber.append("mejora >3× crudo→config (revisar sobreajuste)")
     # LX-15 — C1 móvil (profundidad>0): participación <100% por diseño (la señal ya
     # no entra a mercado seguro) → mínimo ÁMBAR SIEMPRE, nunca verde.
@@ -1057,6 +1063,26 @@ def gate_aplicar(study: dict, scale_entry: dict | None = None) -> dict:
     nivel = "rojo" if rojo else ("amber" if amber else "verde")
     return {"nivel": nivel, "triggers": rojo + amber,
             "frase_rojo": GATE_FRASE_ROJO, "señales": s}
+
+
+def gate_palancas(study: dict, señales_eval: dict,
+                  scale_entry: dict | None = None) -> dict:
+    """LX-15 — gate del «Aplicar estas palancas»: la robustez/participación/flip/
+    mejora vienen de la evaluación de ESTAS palancas (`evaluate_overrides.señales`),
+    el intrabar/contención del master (study), y el C1 móvil de `scale_entry`.
+    Recomputado SIEMPRE server-side (nunca del cliente)."""
+    st = _señales_gate(study)
+    s = {
+        "robustez": señales_eval.get("robustez"),
+        "implausible": señales_eval.get("implausible"),
+        "implausible_msg": señales_eval.get("implausible_msg"),
+        "flip_signo": señales_eval.get("flip_signo"),
+        "mejora_3x": señales_eval.get("mejora_3x"),
+        "participacion_pct": señales_eval.get("participacion_pct"),
+        "intrabar_no_confiable": st["intrabar_no_confiable"],
+        "contencion_pct": st["contencion_pct"],
+    }
+    return _gate_build(s, scale_entry)
 
 
 def gate_ventanas(study: dict) -> dict:
@@ -1205,13 +1231,68 @@ def _overrides_to_levers(base: dict, o: dict, atr_med, ppt) -> dict:
     return lev
 
 
+def config_from_overrides(o: dict, atr_med, ppt, alloc, cancel_after_s) -> dict:
+    """LX-15 — palancas del operador (USD) → config APLICABLE (mismas llaves que
+    `activacion_from_study`): backstop_points, tp_nominal_*, scale_entry con
+    profundidad de C1 (`c1_depth_atr`, la ÚNICA ruta que la escribe), y
+    entry_reserve_timeout_seconds. NO mapea dir (diagnóstico, no aplicable) ni BE.
+    R-T10: se construye de las palancas del operador (crudo+), jamás de la fila OOS."""
+    o = o or {}
+    out: dict = {}
+    if o.get("sl_usd"):
+        out["backstop_points"] = round(float(o["sl_usd"]) / ppt, 2)
+    if o.get("tp_usd") and atr_med:
+        a = round(float(o["tp_usd"]) / ppt / atr_med, 4)
+        out["tp_nominal_long"] = a
+        out["tp_nominal_short"] = a
+    if cancel_after_s:
+        out["entry_reserve_timeout_seconds"] = int(cancel_after_s)
+    c1 = round(float(o.get("l1_usd") or 0) / ppt / atr_med, 2) if atr_med else 0.0
+    # scale_entry si hay escalera (C2/C3) O si el operador movió C1 (C1 límite solo).
+    if alloc and atr_med and (any(x > 0 for x in list(alloc)[1:]) or c1 > 0):
+        se = {
+            "mode": "execute",
+            "quantities": list(alloc),
+            "levels": [round(float(o.get("l2_usd") or 0) / ppt / atr_med, 2),
+                       round(float(o.get("l3_usd") or 0) / ppt / atr_med, 2)],
+            "max_micro_contracts": sum(alloc) or 10,
+        }
+        if c1 > 0:                       # C1 MÓVIL — activa el cable de despacho
+            se["c1_depth_atr"] = c1
+        out["scale_entry"] = se
+    return out
+
+
+def _señales_de_eval(crudo, crudo_plus, oosm, lev) -> dict:
+    """LX-15 — señales del gate LX-11 calculadas sobre la evaluación de ESTAS
+    palancas (no del dashboard del estudio): robustez OOS, participación, flip de
+    signo, mejora>3×, tripwire implausible. El intrabar/contención lo añade
+    `gate_palancas` desde el master."""
+    cb = _card(crudo)
+    cc = _card(crudo_plus)
+    net_b, net_c = cb.get("net"), cc.get("net")
+    legs = ((lev.get("ladder") or {}).get("legs")) or ()
+    lado_accion = (lev.get("lado") or {}).get("accion")
+    impl, impl_msg, _av = tripwire_implausible(
+        legs, lado_accion, cc.get("part"), cc.get("pf"), cc.get("n_perdedores"))
+    flip = (net_b is not None and net_c is not None and net_b != 0
+            and (net_b > 0) != (net_c > 0))
+    mejora3 = bool(net_b and net_c and net_b > 0 and net_c / net_b > 3)
+    return {
+        "robustez": (robustez_semaforo(oosm) or {}).get("verdict"),
+        "implausible": impl, "implausible_msg": impl_msg,
+        "flip_signo": flip, "mejora_3x": mejora3,
+        "participacion_pct": cc.get("part"),
+    }
+
+
 def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
                        oos: float = 0.3,
                        cancel_after_s: float | None = CANCEL_AFTER_MAX_S) -> dict:
     """RECALCULAR del dashboard: evalúa las palancas movidas con el evaluador de
     L2 (`eval_levers` → `luxy_outcome`) sobre el master. Devuelve las teselas
-    VALIDADAS (base/config/oos). Mismos números que llamar al evaluador directo
-    con esas palancas."""
+    VALIDADAS (base/config/oos) + LX-15 `señales` del gate + `aplicable` (config
+    a escribir). Mismos números que llamar al evaluador directo con esas palancas."""
     from statistics import median
     from pathlib import Path
 
@@ -1277,6 +1358,7 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
     oosm = eval_levers(sts_oos_f, lev, ppt, cancel_after_s=cancel_after_s,
                        touches=touches) if sts_oos_f else {"n": 0}
     crudo = metrics_usd([t.pnl_usd for t in trades])
+    alloc = (lev.get("ladder") or {}).get("alloc") or []
     return {
         "validado": True, "clave": clave,
         "base": _card(crudo), "config": _card(crudo_plus), "oos": _card(oosm),
@@ -1284,6 +1366,11 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
         "robustez": robustez_semaforo(oosm),
         "retencion": retencion_oos(oosm, crudo_plus),
         "levers": _lever_summary(lev),
+        # LX-15 — señales del gate de ESTAS palancas + config aplicable (la única
+        # que porta c1_depth_atr). El intrabar lo añade gate_palancas desde el study.
+        "señales": _señales_de_eval(crudo, crudo_plus, oosm, lev),
+        "aplicable": config_from_overrides(overrides, atr_med, ppt, alloc,
+                                           cancel_after_s),
     }
 
 

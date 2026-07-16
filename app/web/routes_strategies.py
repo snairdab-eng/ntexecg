@@ -1000,6 +1000,148 @@ async def luxy_aplicar(
 
 
 # ---------------------------------------------------------------------------
+# LX-15 — «Aplicar estas palancas»: aplica el ESTADO ACTUAL de las palancas del
+# operador (no la fila in-sample del estudio). La evidencia y el gate son de ESAS
+# palancas (evaluate_overrides recomputado SERVER-SIDE), y es la ÚNICA ruta que
+# escribe scale_entry.c1_depth_atr (activa el cable C1-límite de LX-15).
+# R-T10 intacto: la config se construye de las palancas del operador (crudo+),
+# JAMÁS de la fila OOS (que es solo evidencia de robustez).
+# ---------------------------------------------------------------------------
+_APLICABLE_LLAVES = ("backstop_points", "tp_nominal_long", "tp_nominal_short",
+                     "entry_reserve_timeout_seconds", "scale_entry")
+
+
+async def _luxy_palancas_ctx(db: AsyncSession, strategy_id: str, overrides: dict):
+    """(ctx, err). Corre evaluate_overrides IN-PROCESS (hilo) sobre las palancas del
+    operador. ctx = {clave, study, ev, prof, pcfg, sl_vivo, tp_vivo}."""
+    import app.web.routes_riesgo as rr
+    import scripts.mr_luxy as mrl
+    srow = (await db.execute(select(Strategy).where(
+        Strategy.strategy_id == strategy_id))).scalar_one_or_none()
+    if srow is None:
+        return None, JSONResponse({"error": "estrategia no encontrada"},
+                                  status_code=404)
+    instrument = _lab_instrument(srow.asset_symbol)
+    clave = rr.clave_de(strategy_id, instrument) if instrument else None
+    if not clave or rr._motor_manifest(clave) is None:
+        return None, JSONResponse({"error": "sin master integrado"}, status_code=409)
+    study = _luxy_latest(clave)
+    if not study:
+        return None, JSONResponse(
+            {"error": "sin estudio Luxy — córrelo primero"}, status_code=409)
+    if study.get("degradado"):
+        return None, JSONResponse(
+            {"error": "estudio degradado (sin HOLC/intrabar) — recalcula antes de "
+                      "aplicar"}, status_code=409)
+    ev = await _asyncio.to_thread(
+        mrl.evaluate_overrides, clave, rr.MOTOR_DIR, overrides,
+        cancel_after_s=study.get("cancel_after_s"))
+    if not isinstance(ev, dict) or ev.get("error"):
+        return None, JSONResponse(
+            {"error": (ev or {}).get("error", "no se pudo evaluar las palancas")},
+            status_code=409)
+    prof = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == strategy_id))).scalar_one_or_none()
+    pcfg = (prof.pipeline_config_json or {}) if prof else {}
+    sl_vivo = (float(prof.sl_atr_multiplier)
+               if prof and prof.sl_atr_multiplier is not None else None)
+    tp_vivo = (float(prof.tp_atr_multiplier)
+               if prof and prof.tp_atr_multiplier is not None else None)
+    return {"clave": clave, "study": study, "ev": ev, "prof": prof,
+            "pcfg": pcfg, "sl_vivo": sl_vivo, "tp_vivo": tp_vivo}, None
+
+
+@router.post("/ui/strategies/{strategy_id}/luxy/aplicar_palancas/preview")
+async def luxy_aplicar_palancas_preview(
+    strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    import scripts.mr_luxy as mrl
+    overrides = await _json_body(request)
+    ctx, err = await _luxy_palancas_ctx(db, strategy_id, overrides)
+    if err:
+        return err
+    ev, pcfg = ctx["ev"], ctx["pcfg"]
+    aplicable = ev.get("aplicable") or {}
+    gate = mrl.gate_palancas(ctx["study"], ev.get("señales") or {},
+                             aplicable.get("scale_entry"))
+    fecha = ctx["study"].get("fecha")
+    return JSONResponse({
+        "strategy": strategy_id, "fuente": "luxy · palancas del operador",
+        "fecha_estudio": fecha,
+        "aplicable": aplicable,
+        "filas": rr._diff_aplicar(pcfg, aplicable, fecha, ctx["sl_vivo"],
+                                  ctx["tp_vivo"]),
+        "deriva": rr.deriva_estudio(pcfg, aplicable, fecha),
+        # evidencia = fila OOS ESPEJO de ESTAS palancas (R-T10: no aplicable)
+        "evidencia": {"base": ev.get("base"), "config": ev.get("config"),
+                      "oos": ev.get("oos"), "robustez": ev.get("robustez"),
+                      "retencion": ev.get("retencion")},
+        "gate": gate,
+        "avisos": [
+            "Aplica el ESTADO ACTUAL de las palancas (no la fila in-sample).",
+            "La fila OOS es ESPEJO de robustez (evidencia), JAMÁS aplicable (R-T10).",
+            "Toggles de sesión/día NO viajan; el BE no se aplica (informativo).",
+            "No toca mode/dry_run/traderspost_enabled/status (kill-switch).",
+            "⚠ cancel_after: fijar el mismo valor A MANO en TradersPost.",
+        ],
+    })
+
+
+@router.post("/ui/strategies/{strategy_id}/luxy/aplicar_palancas")
+async def luxy_aplicar_palancas(
+    strategy_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> JSONResponse:
+    import app.web.routes_riesgo as rr
+    import scripts.mr_luxy as mrl
+    from app.services.audit_service import AuditService
+    body = await _json_body(request)
+    overrides = body.get("overrides") or {}
+    ctx, err = await _luxy_palancas_ctx(db, strategy_id, overrides)
+    if err:
+        return err
+    ev = ctx["ev"]
+    aplicable = ev.get("aplicable") or {}
+    # LX-11 — GATE recomputado SERVER-SIDE (nunca del cliente) + C1>0 fuerza ámbar.
+    gate = mrl.gate_palancas(ctx["study"], ev.get("señales") or {},
+                             aplicable.get("scale_entry"))
+    gate_err = _gate_enforce(gate, body)
+    if gate_err:
+        return gate_err
+    prof = ctx["prof"]
+    if prof is None:
+        prof = StrategyProfile(strategy_id=strategy_id)
+        db.add(prof)
+    before = dict(prof.pipeline_config_json or {})
+    cfg = rr._merge_activacion(before, aplicable)      # NX-11 · no toca kill-switch
+    prof.pipeline_config_json = cfg
+    llaves = [k for k in _APLICABLE_LLAVES if k in aplicable]
+    new_data = {k: cfg.get(k) for k in llaves}
+    # huella: palancas del operador + evidencia OOS + gate (origen del cambio).
+    new_data["_gate_lx11"] = {
+        "nivel": gate["nivel"], "triggers": gate["triggers"],
+        "señales": gate["señales"],
+        "overrides_gate": {"confirm_riesgo": bool(body.get("confirm_riesgo")),
+                           "frase_provista": bool((body.get("frase") or "").strip())}}
+    new_data["_palancas"] = overrides
+    new_data["_evidencia_oos"] = {"robustez": ev.get("robustez"),
+                                  "oos": ev.get("oos"), "config": ev.get("config")}
+    await AuditService().log_strategy_change(
+        db, actor="luxy_aplicar_palancas", strategy_id=strategy_id,
+        old_data={k: before.get(k) for k in llaves}, new_data=new_data,
+        action="APPLY_LUXY_PALANCAS",
+        reason=f"palancas del operador aplicadas (estudio {ctx['study'].get('fecha')}"
+               f" · gate {gate['nivel']} · evidencia OOS de ESAS palancas)")
+    await db.commit()
+    return JSONResponse({
+        "ok": True, "strategy": strategy_id,
+        "aplicado": {k: cfg.get(k) for k in llaves},
+        "deriva": rr.deriva_estudio(cfg, aplicable, ctx["study"].get("fecha")),
+        "recordatorio": "⚠ cancel_after a mano en TradersPost; BE no aplicado.",
+    })
+
+
+# ---------------------------------------------------------------------------
 # LX-8 — Puente de ventanas: toggles de Luxy (sesiones/días) → ventanas L2
 # (supervisado). El COMPILADOR (scripts.sesiones_et.compilar_ventanas_l2) es
 # puro; aquí solo se calcula el preview (diff + %fuera + por lado + avisos) y se

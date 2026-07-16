@@ -659,47 +659,55 @@
         <p x-show="err" x-text="err" x-cloak class="text-red-400 text-xs"></p>
 
         {% if luxy and not luxy.degradado %}
-        <!-- L5 — Aplicar supervisado (reusa el Puente): diff → confirmar → merge -->
+        <!-- LX-15 — «Aplicar estas palancas»: aplica el ESTADO ACTUAL de las palancas
+             (no la fila in-sample). Evidencia + gate de ESAS palancas; habilitado SOLO
+             en validado·motor (== !dirty(): tras Recalcular o Restablecer). El botón
+             viejo (fila in-sample) se RETIRA — «Aplicar tras Restablecer ≡ aplicar el
+             estudio», así que quedaba redundante. -->
         <div class="flex items-center gap-2 flex-wrap"
-             x-data="{ open:false, loading:false, aerr:null, prev:null, confirmRiesgo:false, frase:'',
+             x-data="{ open:false, loading:false, aerr:null, prev:null, confirmRiesgo:false, frase:'', validated:false,
+               sync(){ this.validated = window.luxyPalancas ? window.luxyPalancas().validated : false; },
                get gate(){ return this.prev ? this.prev.gate : null; },
                get bloqueado(){ const g=this.gate; if(!g) return false;
                  if(g.nivel==='rojo') return this.frase.trim() !== g.frase_rojo;
                  if(g.nivel==='amber') return !this.confirmRiesgo; return false; },
-               load(){ this.loading=true; this.aerr=null; this.prev=null; this.confirmRiesgo=false; this.frase=''; this.open=true;
-                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar/preview')
+               load(){ if(!this.validated || !window.luxyPalancas) return; this.loading=true; this.aerr=null; this.prev=null; this.confirmRiesgo=false; this.frase=''; this.open=true;
+                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar_palancas/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(window.luxyPalancas().overrides)})
                   .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200) this.prev=j; else this.aerr=j.error||('error '+s); })
                   .catch(e=>{this.loading=false;this.aerr=String(e);}); },
-               apply(){ if(this.bloqueado) return; this.loading=true;
-                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_riesgo:this.confirmRiesgo, frase:this.frase})})
-                  .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200){ this.open=false; location.reload(); } else this.aerr=j.error||('error '+s); }); } }">
+               apply(){ if(this.bloqueado || !window.luxyPalancas) return; this.loading=true;
+                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar_palancas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overrides:window.luxyPalancas().overrides, confirm_riesgo:this.confirmRiesgo, frase:this.frase})})
+                  .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200){ this.open=false; location.reload(); } else this.aerr=j.error||('error '+s); }); } }"
+             x-init="sync()" @luxy-refresh.window="sync()">
           {% if luxy_deriva %}
           <span class="text-xs px-2 py-0.5 rounded {% if luxy_deriva.estado=='aplicada' %}bg-emerald-900 text-emerald-300{% elif luxy_deriva.estado=='sin_estrategia_viva' %}bg-gray-800 text-gray-400{% else %}bg-amber-900 text-amber-300{% endif %}">deriva: {{ luxy_deriva.texto }}</span>
           {% endif %}
-          <button @click="load()" class="bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-1.5 rounded text-sm">Aplicar a la config viva…</button>
-          <span class="text-xs text-gray-500">reusa el Puente · fila in-sample (R-T10) · read-only hasta confirmar</span>
+          <button @click="load()" :disabled="!validated" class="bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-1.5 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed">Aplicar estas palancas…</button>
+          <span class="text-xs text-gray-500" x-text="validated ? 'aplica el estado ACTUAL de las palancas · read-only hasta confirmar' : 'Recalcula (motor) o Restablece para aplicar (validado·motor)'"></span>
 
           <div x-show="open" x-cloak class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" @click.self="open=false">
             <div class="bg-gray-900 border border-emerald-800 rounded-lg p-5 max-w-2xl w-full max-h-[85vh] overflow-y-auto space-y-3">
-              <h3 class="text-white font-bold">Aplicar reco de Luxy (fila in-sample) a la config viva</h3>
+              <h3 class="text-white font-bold">Aplicar estas palancas a la config viva</h3>
               <p x-show="loading" class="text-gray-400 text-sm">cargando…</p>
               <p x-show="aerr" x-text="aerr" class="text-red-400 text-sm"></p>
               <template x-if="prev">
                 <div class="space-y-2 text-sm">
                   <div class="text-xs text-gray-500">Estudio <span x-text="prev.fecha_estudio"></span> · fuente <b class="text-gray-300" x-text="prev.fuente"></b></div>
                   <table class="w-full text-xs">
-                    <thead><tr class="text-left text-gray-500"><th class="py-1">Campo</th><th>Vivo</th><th>Recomendado</th><th></th></tr></thead>
+                    <thead><tr class="text-left text-gray-500"><th class="py-1">Campo</th><th>Vivo</th><th>Palanca actual</th><th></th></tr></thead>
                     <tbody>
                       <template x-for="f in prev.filas" :key="f.campo">
                         <tr class="border-t border-gray-800"><td class="py-1 text-gray-300" x-text="f.campo"></td><td class="text-gray-400" x-text="f.vivo"></td><td class="text-gray-200" x-text="f.recomendado"></td><td><span x-show="f.cambia" class="text-amber-400">Δ</span></td></tr>
                       </template>
                     </tbody>
                   </table>
-                  <template x-if="prev.informativos && prev.informativos.length">
-                    <div class="bg-gray-800/50 border border-gray-700 rounded p-2 text-xs">
-                      <template x-for="inf in prev.informativos" :key="inf.campo">
-                        <div><b class="text-gray-300" x-text="inf.campo"></b>: <span x-text="inf.valor"></span> — <span class="text-amber-400/80" x-text="inf.nota"></span></div>
-                      </template>
+                  {# LX-15 — evidencia OOS ESPEJO de ESTAS palancas (R-T10: NO aplicable) #}
+                  <template x-if="prev.evidencia && prev.evidencia.robustez">
+                    <div class="bg-gray-800/50 border border-gray-700 rounded p-2 text-xs" style="color:#8b949e">
+                      Evidencia — fila OOS espejo de ESTAS palancas (robustez, no aplicable · R-T10):
+                      <b :style="'color:'+((prev.evidencia.robustez.verdict==='verde')?'#3fb950':(prev.evidencia.robustez.verdict==='rojo'?'#f85149':'#d29922'))" x-text="prev.evidencia.robustez.verdict||'—'"></b>
+                      · OOS net <span class="font-mono text-gray-300" x-text="(prev.evidencia.oos&&prev.evidencia.oos.net!=null)?('$'+Math.round(prev.evidencia.oos.net).toLocaleString('en-US')):'—'"></span>
+                      · particip <span class="font-mono text-gray-300" x-text="(prev.evidencia.config&&prev.evidencia.config.part!=null)?(prev.evidencia.config.part+'%'):'—'"></span>
                     </div>
                   </template>
                   <ul class="text-xs text-gray-500 list-disc pl-4">
@@ -852,6 +860,11 @@
               <div class="text-xs uppercase tracking-wide" style="color:var(--lx-muted)">Entrada / stop (USD)</div>
               <label class="flex items-center justify-between gap-2 text-xs" style="color:var(--lx-ink)"><span><input type="checkbox" id="lx-t-sc" checked> <span style="color:var(--lx-scin)">■</span> Escalonado <span id="lx-alloc" class="font-mono"></span></span></label>
               <div id="lx-why" class="text-xs rounded p-2" style="background:#0d1117;color:var(--lx-muted)"></div>
+              <!-- LX-15 — C1 móvil: profundidad de la entrada base (0=mercado). >0 la
+                   despacha como LÍMITE a P0∓depth (cable ya desplegado); la participación
+                   cae honestamente y el gate fuerza ámbar al aplicar. -->
+              <div class="text-xs flex justify-between" style="color:var(--lx-muted)"><span>C1 profundidad <span style="opacity:.7">(0=mercado)</span></span><span class="font-mono"><span id="lx-v-l1">mercado</span></span></div>
+              <input type="range" id="lx-r-l1" class="w-full" style="accent-color:var(--lx-scin)">
               <div class="text-xs flex justify-between" style="color:var(--lx-muted)"><span>C2 · C3 (adverso)</span><span class="font-mono"><span id="lx-v-l2"></span> · <span id="lx-v-l3"></span></span></div>
               <input type="range" id="lx-r-l2" class="w-full" style="accent-color:var(--lx-scin)">
               <input type="range" id="lx-r-l3" class="w-full" style="accent-color:var(--lx-scin)">
@@ -937,7 +950,9 @@
           let CHARTCLIP = true;
           // ---- Estado ACTUAL de palancas (USD) ----
           const S = { tp:R.tp_usd!=null, be:false, sc:(A[1]+A[2])>0, sl:R.sl_usd!=null,
-                      tpV:R.tp_usd||0, beV:R.be_usd||0, l2:R.l2_usd||0, l3:R.l3_usd||0,
+                      tpV:R.tp_usd||0, beV:R.be_usd||0,
+                      l1:R.l1_usd||0,                 // LX-15 — C1 profundidad (0=mercado)
+                      l2:R.l2_usd||0, l3:R.l3_usd||0,
                       slV:R.sl_usd||0, dir:R.dir||'both' };
           // LX-1 #2 — RECO0: copia INMUTABLE de las palancas del estudio. Restablecer
           // SIEMPRE vuelve aqui; Recalcular JAMAS la pisa.
@@ -1333,6 +1348,7 @@
             rebuildBlk();                              // LX-2: BH/BD antes de tabla/diagrama
             el('lx-v-tp').textContent=money(S.tpV); el('lx-v-sl').textContent=money(-S.slV);
             el('lx-v-be').textContent=S.be?money(S.beV):'—'; el('lx-v-l2').textContent=money(-S.l2); el('lx-v-l3').textContent=money(-S.l3);
+            if(el('lx-v-l1')) el('lx-v-l1').textContent=(S.l1>0?money(-S.l1)+' (límite)':'mercado');  // LX-15 C1
             el('lx-alloc').textContent=A.join('/'); el('lx-why').textContent=R.why_alloc||'';
             el('lx-be-note').style.display=S.be?'':'none';
             const d=dirty(); el('lx-recalc').disabled=!d; el('lx-hint').style.display=d?'':'none';
@@ -1340,15 +1356,19 @@
             const mode = d?'est':'val';
             renderTable(mode); setChips(mode);
             saveExplore();                            // LX-9: persiste la exploración (debounce)
+            // LX-15 — avisa al componente "Aplicar estas palancas" (habilita solo en
+            // validado·motor == !dirty()).
+            try{ window.dispatchEvent(new CustomEvent('luxy-refresh')); }catch(_e){}
           }
           // ---- LX-1 #2: bind UNA vez (bindOnce) · set de valores idempotente (setValues) ----
-          function setupRng(id, max, set){ const e=el(id); e.min=0; e.max=Math.round(Math.max(1,max)); e.step=Math.max(1,Math.round(max/200));
+          function setupRng(id, max, set, div){ const e=el(id); if(!e) return; e.min=0; e.max=Math.round(Math.max(1,max)); e.step=Math.max(1,Math.round(max/(div||200)));
             e.addEventListener('input',function(){ set(+e.value); refresh(); }); }
           function syncDir(){ el('lx-dir').querySelectorAll('button').forEach(function(x){ const on=x.dataset.d===S.dir;
             x.style.background=on?'var(--lx-scin)':'#21262d'; x.style.color=on?'#fff':'var(--lx-muted)'; }); }
           function bindOnce(){
             const mfeMax=Math.max(1,D.mfe_max), maeMax=Math.max(1,Math.abs(D.mae_min));
             setupRng('lx-r-tp',mfeMax,function(v){S.tpV=v;}); setupRng('lx-r-be',mfeMax,function(v){S.beV=v;});
+            setupRng('lx-r-l1',maeMax,function(v){S.l1=v;},400);   // LX-15 — C1 profundidad (paso fino)
             setupRng('lx-r-l2',maeMax,function(v){S.l2=v;}); setupRng('lx-r-l3',maeMax,function(v){S.l3=v;});
             setupRng('lx-r-sl',maeMax,function(v){S.slV=v;});
             [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(function(pair){ const id=pair[0], k=pair[1];
@@ -1361,6 +1381,7 @@
           }
           function setValues(){
             el('lx-r-tp').value=Math.round(S.tpV); el('lx-r-be').value=Math.round(S.beV);
+            if(el('lx-r-l1')) el('lx-r-l1').value=Math.round(S.l1||0);   // LX-15 C1
             el('lx-r-l2').value=Math.round(S.l2); el('lx-r-l3').value=Math.round(S.l3); el('lx-r-sl').value=Math.round(S.slV);
             [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(function(pair){ el(pair[0]).checked=S[pair[1]]; });
             syncDir();
@@ -1387,7 +1408,7 @@
               } else { el('lx-recalc').disabled=false; }
             }); }
           el('lx-recalc').addEventListener('click',function(){ el('lx-recalc').textContent='Calculando…'; el('lx-recalc').disabled=true;
-            const ov={sl_usd:S.sl?S.slV:0, tp_usd:S.tp?S.tpV:null, dir:S.dir, l2_usd:S.l2, l3_usd:S.l3};
+            const ov={sl_usd:S.sl?S.slV:0, tp_usd:S.tp?S.tpV:null, dir:S.dir, l1_usd:S.l1||0, l2_usd:S.l2, l3_usd:S.l3};
             if(S.be) ov.be_usd=S.beV; else ov.be_off=true;
             // LX-2: sesiones/dias apagados → el motor los excluye por zona/dia
             const zoff=[]; (R.zones||[]).forEach(function(z,i){ if(!ZON[i]) zoff.push(z.name); });
@@ -1446,6 +1467,16 @@
           var _local = restoreExplore();
           bindOnce(); diag(); setValues(); winDiag(); banner(); piernas(); refresh();
           loadServer(!_local);     // siempre para el sello; restaura solo si no había local
+
+          // LX-15 — puente al componente "Aplicar estas palancas": expone el ESTADO
+          // ACTUAL de palancas (sin toggles de sesión/día — no viajan) y si está
+          // "validado · motor" (== !dirty(): tras Recalcular o Restablecer). El
+          // botón de Aplicar se habilita SOLO cuando validated=true.
+          window.luxyPalancas = function(){
+            return { validated: !dirty(),
+                     overrides: { sl_usd: S.sl?S.slV:0, tp_usd: S.tp?S.tpV:null,
+                                  dir: S.dir, l1_usd: S.l1||0, l2_usd: S.l2, l3_usd: S.l3 } };
+          };
         })();
         </script>
         {% endif %}
