@@ -218,8 +218,25 @@ class PayloadBuilder:
             }
             level_atr = 0.0
             if i == 0:
-                # C1 a mercado (sin orderType → market)
-                pass
+                # LX-15 — C1 puede ser MÓVIL: con c1_depth_atr>0 se despacha como
+                # LÍMITE a P0∓depth (igual que C2/C3, absoluto y al tick). c1_depth==0
+                # → mercado (comportamiento actual). FAIL-HONEST TOTAL: un C1>0 sin
+                # precio base/ATR NUNCA cae a mercado en silencio — bloquea la entrada
+                # (el operador prometió C1 a un precio, no al mercado). Nada de utilería.
+                c1_depth = float(se.get("c1_depth_atr") or 0.0)
+                if c1_depth > 0:
+                    if base_price is None or atr is None:
+                        raise ValueError(
+                            "C1 móvil (c1_depth_atr>0) sin precio base/ATR — no se "
+                            "puede despachar como límite; jamás a mercado en silencio "
+                            "(LX-15 fail-honest)")
+                    level_atr = c1_depth
+                    off = level_atr * atr
+                    limit_price = base_price - off if is_long else base_price + off
+                    leg["orderType"] = "limit"
+                    leg["limitPrice"] = round_to_tick(
+                        limit_price, config.get("tick_size"))
+                # else: C1 a mercado (sin orderType → market)
             else:
                 # add: requiere precio base, ATR y un nivel definido
                 if base_price is None or atr is None or (i - 1) >= len(levels):

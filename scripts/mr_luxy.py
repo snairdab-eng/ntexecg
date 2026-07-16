@@ -639,6 +639,11 @@ def _dashboard_payload(sts: list[SimTrade], by_number: dict, levers_in: dict,
         "tp_usd": _usd(tp_long), "tp_pts": _pts(tp_long),
         "tp_long_atr": tp_long, "tp_short_atr": tp.get("short"),
         "be_usd": _usd(be), "be_atr": be,
+        # LX-15 — C1 móvil: profundidad de C1 (hoy 0=mercado; el estudio nunca
+        # deriva C1>0). El slider del lote JS la moverá; read-only aquí.
+        "l1_usd": _usd(levels[0]) if levels else None,
+        "l1_pts": _pts(levels[0]) if levels else None,
+        "l1_atr": levels[0] if levels else 0.0,
         "l2_usd": _usd(levels[1]) if len(levels) > 1 else None,
         "l3_usd": _usd(levels[2]) if len(levels) > 2 else None,
         "l2_pts": _pts(levels[1]) if len(levels) > 1 else None,
@@ -1012,14 +1017,16 @@ def _señales_gate(study: dict) -> dict:
     }
 
 
-def gate_aplicar(study: dict) -> dict:
+def gate_aplicar(study: dict, scale_entry: dict | None = None) -> dict:
     """Gate del puente Aplicar (Luxy → config viva). Nivel de fricción:
       · 🔴 rojo  = robustez ROJA | tripwire implausible | flip de signo crudo→
                    config | intrabar NO confiable (LX-12) → exige `GATE_FRASE_ROJO`.
-      · 🟡 amber = robustez ÁMBAR | participación<90% | mejora>3× (sobreajuste)
-                   → exige checkbox "entiendo el riesgo".
+      · 🟡 amber = robustez ÁMBAR | participación<90% | mejora>3× (sobreajuste) |
+                   C1 móvil (profundidad>0) → exige checkbox "entiendo el riesgo".
       · 🟢 verde = sin alertas → flujo actual.
-    Devuelve {nivel, triggers, frase_rojo, señales}."""
+    `scale_entry` (opcional) = la escalera que se aplicaría; si su C1 tiene
+    profundidad>0 (LX-15) la participación cae <100% por diseño → mínimo ÁMBAR
+    SIEMPRE. Devuelve {nivel, triggers, frase_rojo, señales}."""
     s = _señales_gate(study)
     rojo: list[str] = []
     if s["robustez"] == "rojo":
@@ -1042,6 +1049,11 @@ def gate_aplicar(study: dict) -> dict:
                      f"< {GATE_PARTICIPACION_MIN_PCT:.0f}%")
     if s["mejora_3x"]:
         amber.append("mejora >3× crudo→config (revisar sobreajuste)")
+    # LX-15 — C1 móvil (profundidad>0): participación <100% por diseño (la señal ya
+    # no entra a mercado seguro) → mínimo ÁMBAR SIEMPRE, nunca verde.
+    if scale_entry and float(scale_entry.get("c1_depth_atr") or 0.0) > 0:
+        amber.append("C1 móvil (profundidad>0) — participación <100% por diseño "
+                     "(la entrada base es límite, no mercado)")
     nivel = "rojo" if rojo else ("amber" if amber else "verde")
     return {"nivel": nivel, "triggers": rojo + amber,
             "frase_rojo": GATE_FRASE_ROJO, "señales": s}
@@ -1168,9 +1180,16 @@ def _overrides_to_levers(base: dict, o: dict, atr_med, ppt) -> dict:
         lev["breakeven"] = {"disponible": True,
                             "be_atr": float(o["be_usd"]) / ppt / atr_med}
     ld = lev["ladder"]
-    if (o.get("l2_usd") is not None or o.get("l3_usd") is not None) \
-            and atr_med and ld.get("alloc"):
+    # LX-15 — l1_usd mueve la profundidad de C1 (0=mercado). Con C1>0, leg_filled(d)
+    # exige MAE≥d como en C2/C3 → la participación cae HONESTAMENTE en el estimador y
+    # en eval_levers (diagnóstico read-only; no toca config viva).
+    if (o.get("l1_usd") is not None or o.get("l2_usd") is not None
+            or o.get("l3_usd") is not None) and atr_med and ld.get("alloc"):
         levels = list(ld.get("levels") or [0.0, 0.0, 0.0])
+        while len(levels) < 3:
+            levels.append(0.0)
+        if o.get("l1_usd") is not None:
+            levels[0] = float(o["l1_usd"]) / ppt / atr_med
         if o.get("l2_usd") is not None:
             levels[1] = float(o["l2_usd"]) / ppt / atr_med
         if o.get("l3_usd") is not None:
