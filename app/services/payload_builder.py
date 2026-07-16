@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from app.models.normalized_signal import NormalizedSignal
 from app.models.strategy import Strategy
+from app.services.tp_format import round_to_tick
 
 if TYPE_CHECKING:
     from app.services.filter_pipeline import PipelineResult
@@ -214,7 +215,9 @@ class PayloadBuilder:
                 off = level_atr * atr
                 limit_price = base_price - off if is_long else base_price + off
                 leg["orderType"] = "limit"
-                leg["limitPrice"] = round(limit_price, 6)
+                # FIX-D2 — al tick del catálogo (múltiplo más cercano), nunca un
+                # round(x,6) fijo que desalinea FX (6J tick 5e-7). Sin tick → intacto.
+                leg["limitPrice"] = round_to_tick(limit_price, config.get("tick_size"))
             leg["stopLoss"] = dict(sl_block)
             if tp_block is not None:
                 leg["takeProfit"] = dict(tp_block)

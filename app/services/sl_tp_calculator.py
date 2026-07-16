@@ -15,6 +15,7 @@ Legacy tp_atr_multiplier se mantiene (inactivo por default).
 from __future__ import annotations
 
 from app.models.normalized_signal import NormalizedSignal
+from app.services.tp_format import round_to_tick
 
 
 def backstop_config(config: dict) -> float | None:
@@ -152,6 +153,14 @@ class SLTPCalculator:
             tp_price = (entry_price + (atr * tp_multiplier) if is_long
                         else entry_price - (atr * tp_multiplier))
             tp_mode = "legacy_atr"
+
+        # FIX-D2 — todo precio de ORDEN se redondea al tick del instrumento
+        # (catálogo, múltiplo más cercano; empate → arriba) ANTES de la guarda:
+        # así el P0 valida el precio que REALMENTE se envía, no el crudo. Sin
+        # tick_size en config el precio queda intacto (fail-open).
+        tick = config.get("tick_size")
+        sl_price = round_to_tick(sl_price, tick)
+        tp_price = round_to_tick(tp_price, tick)
 
         # P0 — guarda FINAL fail-closed del bracket (Auditoría 2026-07-06,
         # P0-1): un backstop mal escalado (p. ej. los 90 pts de ES pegados

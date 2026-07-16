@@ -43,7 +43,8 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a):
         return False
 
-    async def post(self, url, json=None, headers=None):
+    async def post(self, url, json=None, content=None, headers=None):
+        _FakeAsyncClient.last_content = content        # FIX-D2: assert serialized body
         idx = _FakeAsyncClient.calls
         _FakeAsyncClient.calls += 1
         item = _FakeAsyncClient._script[min(idx, len(_FakeAsyncClient._script) - 1)]

@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 import httpx
 from loguru import logger
 
+from app.services.tp_format import dumps as tp_dumps
+
 _EXIT_ROLES = {"exit_long", "exit_short"}
 
 # Mask any token=... query value (keeps the key, hides the secret)
@@ -124,10 +126,17 @@ class TradersPostClient:
         last_error: str | None = None
         start = time.monotonic()
 
+        # FIX-D2 — serialize with tp_format.dumps (fixed-decimal, NEVER scientific
+        # notation) via content=, not json=payload. httpx's json= uses stdlib
+        # json.dumps, which renders deep-decimal FX prices/atr as e.g. "5e-07" and
+        # TradersPost misparses those. For payloads without such floats the bytes are
+        # identical, so ES/GC never regress. Content-Type is set in `headers`.
+        body = tp_dumps(payload)
+
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             for attempt in range(1, max_attempts + 1):
                 try:
-                    resp = await client.post(webhook_url, json=payload, headers=headers)
+                    resp = await client.post(webhook_url, content=body, headers=headers)
                     last_status = resp.status_code
                     last_body = resp.text[:2000] if resp.text else None
                     if 200 <= resp.status_code < 300:
