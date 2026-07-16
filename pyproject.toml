@@ -56,9 +56,8 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# Test and its async fixtures share ONE event loop per test function, so the
-# per-test async engine is created and disposed on the same loop (no teardown
-# against a closed loop, no lingering aiosqlite worker thread).
+# Per-function loop (see tests/conftest.py FLAKE QUARANTINE for how the aiosqlite
+# teardown hang is neutralised on Windows).
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 

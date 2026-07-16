@@ -1,4 +1,5 @@
 import os
+import sys
 
 # ---------------------------------------------------------------------------
 # Test isolation — MUST run before any `app.*` import.
@@ -26,6 +27,80 @@ from app.db.session import get_db
 from app.main import create_app
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+# ---------------------------------------------------------------------------
+# FLAKE QUARANTINE — aiosqlite 0.22.1 + Windows ProactorEventLoop teardown hang.
+#
+# aiosqlite runs a worker THREAD; every DB operation resolves its result future on
+# the creating loop via loop.call_soon_threadsafe(). On Windows the default
+# ProactorEventLoop's cross-thread self-pipe wakeup is unreliable: the loop can stay
+# parked in GetQueuedCompletionStatus and never run the scheduled callback, so the
+# await never returns. This hits ANY operation (a query, session.close()'s rollback,
+# engine.dispose()'s close), not just one spot — under a full serial run at least one
+# such await eventually stalls and the whole session hangs (worker idle in tx.get()).
+# It is near-deterministic on this host. Neither loop-scope tweaks nor a loop-free
+# close shim cure it, because the race is in the loop's wakeup itself, for every op.
+#
+# Fix (two test-infra shims, app/ and scripts/ untouched):
+#   1. event_loop_policy → WindowsSelectorEventLoopPolicy. The selector loop's
+#      socketpair self-pipe wakes reliably for call_soon_threadsafe, so no aiosqlite
+#      await ever stalls. This is THE fix for the hang.
+#   2. Selector loops can't spawn asyncio subprocesses on Windows, but app code
+#      (routes_lab/routes_riesgo recalc jobs) calls asyncio.create_subprocess_exec.
+#      Route those spawns through a thread executor running subprocess.run — same
+#      returncode + merged stdout the callers read — so those tests keep passing.
+# ---------------------------------------------------------------------------
+
+
+def _install_subprocess_shim() -> None:
+    """Selector loops (see event_loop_policy) don't support asyncio subprocesses on
+    Windows; run create_subprocess_exec through a thread + subprocess.run instead so
+    the recalc-job endpoints still work. Only the recalc paths use it in tests, and
+    they run trivial commands; behaviour the callers observe (await creation, then
+    `await proc.communicate()` → (stdout, None), `proc.returncode`) is preserved."""
+    import asyncio as _asyncio
+    import subprocess as _subprocess
+
+    class _ThreadProc:
+        def __init__(self, returncode: int, out: bytes) -> None:
+            self.returncode = returncode
+            self._out = out
+
+        async def communicate(self, _input=None):
+            return self._out, None
+
+    async def _create_subprocess_exec(*cmd, env=None, **_kwargs):
+        loop = _asyncio.get_event_loop()
+
+        def _run():
+            cp = _subprocess.run(
+                list(cmd), stdout=_subprocess.PIPE,
+                stderr=_subprocess.STDOUT, env=env)
+            return cp.returncode, (cp.stdout or b"")
+
+        rc, out = await loop.run_in_executor(None, _run)
+        return _ThreadProc(rc, out)
+
+    _asyncio.create_subprocess_exec = _create_subprocess_exec
+
+
+# Only on Windows, where event_loop_policy forces a Selector loop that can't spawn
+# asyncio subprocesses. On Linux the native loop supports them, so tests exercise the
+# real asyncio.create_subprocess_exec path.
+if sys.platform == "win32":
+    _install_subprocess_shim()
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    """Force the Selector loop on Windows — its cross-thread wakeup is reliable, which
+    is what neutralises the aiosqlite teardown hang (see FLAKE QUARANTINE above)."""
+    import asyncio
+    import sys
+
+    if sys.platform == "win32":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.get_event_loop_policy()
 
 
 class MockMarketDataProvider:
@@ -60,10 +135,9 @@ class MockMarketDataProvider:
 async def db() -> AsyncSession:
     # A fresh engine PER TEST, bound to this test's own event loop (pytest-asyncio
     # function loop scope). StaticPool keeps the single in-memory SQLite connection
-    # shared between create_all and the session. The finally block closes the
-    # session and disposes the engine — which stops aiosqlite's connection worker
-    # thread. Without dispose(), that thread (and its connection) lingers and the
-    # async teardown hangs because the event loop can never finalize cleanly.
+    # shared between create_all and the session. The finally block closes the session
+    # and disposes the engine; on the Selector loop (see event_loop_policy) that
+    # teardown no longer hangs — the aiosqlite worker's cross-thread wakeup is reliable.
     engine = create_async_engine(
         TEST_DATABASE_URL,
         connect_args={"check_same_thread": False},
