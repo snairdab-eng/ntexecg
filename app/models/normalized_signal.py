@@ -31,7 +31,9 @@ class NormalizedSignal(Base):
     action: Mapped[str] = mapped_column(String(20), nullable=False)
     sentiment: Mapped[Optional[str]] = mapped_column(String(20))
     quantity: Mapped[Optional[int]] = mapped_column(Integer)
-    price: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
+    # FIX-D4-bis — Numeric(20,10): el precio FUENTE de la señal no trunca el 7º
+    # decimal de FX (6J tick 5e-7), consistente con las columnas downstream (FIX-D4).
+    price: Mapped[Optional[float]] = mapped_column(Numeric(20, 10))
     timeframe: Mapped[Optional[str]] = mapped_column(String(20))
     signal_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
