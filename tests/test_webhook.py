@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.webhooks_luxalgo import process_signal
+from app.models.audit_log import AuditLog
 from app.models.decision import StrategyDecision
 from app.models.normalized_signal import NormalizedSignal
 from app.models.raw_signal import RawSignal
@@ -129,10 +130,11 @@ async def test_raw_signal_saved_after_valid_webhook(
 
 
 @pytest.mark.asyncio
-async def test_raw_signal_saved_on_invalid_token(
+async def test_invalid_token_within_cap_is_quarantined(
     client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """RawSignal is persisted even when the token is invalid (audit trail)."""
+    """FIX-D1 (migrado) — un rechazado DENTRO de la cota se cuarentena: se persiste
+    la traza forense (RawSignal token_valid=False + AuditLog WEBHOOK_BLOCKED)."""
     async def _noop(*args, **kwargs) -> None:
         pass
 
@@ -144,12 +146,46 @@ async def test_raw_signal_saved_on_invalid_token(
     )
     assert response.status_code == 401
 
-    result = await db.execute(
+    raw = (await db.execute(
         select(RawSignal).where(RawSignal.strategy_id == "bad_token_strat")
-    )
-    raw = result.scalar_one_or_none()
+    )).scalar_one_or_none()
     assert raw is not None
     assert raw.token_valid is False
+    # traza forense: AuditLog WEBHOOK_BLOCKED con quién/por qué
+    audit = (await db.execute(
+        select(AuditLog).where(AuditLog.action == "WEBHOOK_BLOCKED",
+                               AuditLog.object_id == "bad_token_strat")
+    )).scalars().first()
+    assert audit is not None and audit.reason == "invalid_token"
+
+
+@pytest.mark.asyncio
+async def test_invalid_token_flood_capped_no_db_growth(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FIX-D1 — pasada la cota por IP/ventana, los rechazos siguen dando 401 pero NO
+    escriben fila (RawSignal ni AuditLog): el flood a DB queda tapado."""
+    from app.core import quarantine_guard as qg
+
+    async def _noop(*args, **kwargs) -> None:
+        pass
+
+    monkeypatch.setattr("app.api.webhooks_luxalgo._background_process_signal", _noop)
+
+    sid = "flood_strat"
+    cap = qg.QUARANTINE_MAX_PER_WINDOW
+    for _ in range(cap + 5):                       # cap + exceso, misma IP (test client)
+        r = await client.post(
+            f"/webhooks/luxalgo/{sid}?token={_INVALID_TOKEN}", json=_PAYLOAD)
+        assert r.status_code == 401                # 401 SIEMPRE, con o sin cota
+
+    raws = (await db.execute(
+        select(RawSignal).where(RawSignal.strategy_id == sid))).scalars().all()
+    audits = (await db.execute(
+        select(AuditLog).where(AuditLog.action == "WEBHOOK_BLOCKED",
+                               AuditLog.object_id == sid))).scalars().all()
+    assert len(raws) == cap                        # exactamente la cota, ni una más
+    assert len(audits) == cap                      # audit gobernado por la misma cota
 
 
 # ---------------------------------------------------------------------------

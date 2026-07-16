@@ -3,8 +3,10 @@
 Flow per request:
   1. Parse body
   2. Validate token (per-strategy hash, fallback to global dev secret)
-  3. Save RawSignal — ALWAYS, even on invalid token (audit trail)
-  4. Return 401 if token invalid (+ AuditLog)
+  3. Valid → persist RawSignal. Invalid → FIX-D1 bounded quarantine: persist the
+     forensic record (RawSignal + AuditLog WEBHOOK_BLOCKED) only up to the per-IP/
+     window cap; beyond it, 401 with no DB write (flood tapped, who/when in the log).
+  4. Return 401 if token invalid
   5. Return 200 immediately with signal_id
   6. Background task: process_signal() — normalize → dedupe → route
 
@@ -26,6 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Qu
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import quarantine_guard
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.decision import StrategyDecision
@@ -588,7 +591,7 @@ async def receive_luxalgo_webhook(
             token, settings.LUXALGO_WEBHOOK_SECRET or ""
         )
 
-    # Save RawSignal ALWAYS (audit trail even for invalid tokens)
+    # Build the RawSignal (cheap; not yet persisted). token_valid decides its fate.
     raw_signal = RawSignal(
         source="luxalgo",
         strategy_id=strategy_id,
@@ -603,25 +606,43 @@ async def receive_luxalgo_webhook(
         ip_address=client_ip,
         token_valid=token_valid,
     )
+
+    if not token_valid:
+        # FIX-D1 — rejected signals go to a BOUNDED quarantine per IP/window. The
+        # forensic record (heavy RawSignal + WEBHOOK_BLOCKED audit) is preserved for
+        # the first QUARANTINE_MAX_PER_WINDOW rejects per IP; beyond the cap NOTHING
+        # is written to the DB (the flood — arbitrary attacker payload_json × unbounded
+        # requests — is tapped), the request is still 401'd, and the who/when stays in
+        # the app log. In-memory best-effort (quarantine_guard, like login_guard).
+        if quarantine_guard.allow(client_ip):
+            db.add(raw_signal)
+            await create_audit_log(
+                db,
+                actor="system",
+                action="WEBHOOK_BLOCKED",
+                object_type="System",
+                object_id=strategy_id,
+                reason="invalid_token",
+                ip_address=client_ip,
+            )
+            await db.commit()
+            logger.warning(
+                "webhook_invalid_token strategy={} ip={}", strategy_id, client_ip,
+            )
+        else:
+            logger.warning(
+                "webhook_quarantine_capped strategy={} ip={} cap={}/{}s "
+                "(rejected signal NOT persisted — flood tapped)",
+                strategy_id, client_ip,
+                quarantine_guard.QUARANTINE_MAX_PER_WINDOW,
+                quarantine_guard.QUARANTINE_WINDOW_S,
+            )
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Valid token → persist the real signal and process it (unchanged).
     db.add(raw_signal)
     await db.commit()
     await db.refresh(raw_signal)
-
-    if not token_valid:
-        await create_audit_log(
-            db,
-            actor="system",
-            action="WEBHOOK_BLOCKED",
-            object_type="System",
-            object_id=strategy_id,
-            reason="invalid_token",
-            ip_address=client_ip,
-        )
-        await db.commit()
-        logger.warning(
-            "webhook_invalid_token strategy={} ip={}", strategy_id, client_ip,
-        )
-        raise HTTPException(status_code=401, detail="Invalid token")
 
     logger.info(
         "webhook_received strategy={} ticker={} action={} sentiment={}",
