@@ -37,7 +37,8 @@ class PositionState(Base):
 
     direction: Mapped[Optional[str]] = mapped_column(String(10))
     quantity: Mapped[int] = mapped_column(Integer, default=0)
-    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
+    # FIX-D4 — Numeric(20,10): el 7º decimal de FX (6J tick 5e-7) no se trunca.
+    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 10))
     entry_signal_id: Mapped[Optional[uuid.UUID]] = mapped_column()
     risk_plan_json: Mapped[Optional[dict]] = mapped_column(JSON)
 

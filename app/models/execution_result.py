@@ -26,10 +26,11 @@ class ExecutionResult(Base):
     direction: Mapped[str] = mapped_column(String(10), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, default=1)
 
+    # FIX-D4 — Numeric(20,10): el 7º decimal de FX (6J tick 5e-7) no se trunca.
     entry_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
+    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 10))
     exit_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    exit_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
+    exit_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 10))
 
     pnl: Mapped[Optional[float]] = mapped_column(Numeric(18, 2))
     pnl_calc: Mapped[Optional[float]] = mapped_column(Numeric(18, 2))

@@ -40,9 +40,10 @@ class StrategyDecision(Base):
     #  "level_3": {"skipped": true}, ...}
 
     # SL/TP calculated (only when outcome=APPROVE)
-    sl_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
-    tp_price: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
-    atr_value: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
+    # FIX-D4 — Numeric(20,10): el 7º decimal de FX (6J tick 5e-7) no se trunca.
+    sl_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 10))
+    tp_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 10))
+    atr_value: Mapped[Optional[float]] = mapped_column(Numeric(20, 10))
     sl_multiplier_used: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
     market_data_provider: Mapped[Optional[str]] = mapped_column(String(50))
 
