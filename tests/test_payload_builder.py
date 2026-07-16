@@ -82,6 +82,7 @@ def test_exit_has_no_stop_loss() -> None:
     assert "takeProfit" not in payload
     assert payload["action"] == "exit"
     assert "sentiment" not in payload  # TradersPost: sentiment invalid on exits
+    assert payload["cancel"] is True   # FIX-D3: cancel unfilled legs before flatten
 
 
 def test_exit_does_not_raise_without_sl() -> None:

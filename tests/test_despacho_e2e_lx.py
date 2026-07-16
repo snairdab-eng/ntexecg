@@ -154,6 +154,14 @@ async def test_exit_limpia_bracket_y_todos_los_destinos(db: AsyncSession):
         assert p["action"] == "exit"
         assert "stopLoss" not in p and "takeProfit" not in p
         assert "sentiment" not in p                     # TradersPost lo rechaza en exit
+        assert p["cancel"] is True                       # FIX-D3: cancela piernas C2/C3
+
+    # FIX-D3 — el cierre queda auditado como cancelación de piernas pendientes.
+    from app.models.audit_log import AuditLog
+    audit = (await db.execute(select(AuditLog).where(
+        AuditLog.action == "EXIT_CANCEL_LEGS"))).scalars().first()
+    assert audit is not None
+    assert audit.new_value_json["cancel_requested"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -510,6 +510,22 @@ async def _dispatch_approved(
         norm.strategy_id, len(destinations), any_sent, any_failed,
     )
 
+    # FIX-D3 — every exit carries cancel:true (PayloadBuilder), so TradersPost
+    # cancels any unfilled pullback legs (C2/C3) before flattening. Record it in the
+    # AuditLog so the demo can reconstruct that orphan-leg cancellation was requested
+    # and whether it reached the broker (any_sent). A FAILED exit means the cancel did
+    # NOT take → the position is UNKNOWN (above) and the residual window is ≤ the
+    # cancel_after remaining, bounded by NX-28 release_unfilled_reservations.
+    if is_exit:
+        from app.services.audit_service import AuditService
+        await AuditService().log(
+            db, actor="luxalgo", action="EXIT_CANCEL_LEGS",
+            object_type="PositionState",
+            object_id=f"{account_id}:{norm.mapped_symbol}",
+            new_value={"cancel_requested": True, "any_sent": any_sent,
+                       "any_failed": any_failed, "role": norm.signal_role},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Background wrapper — creates its own session (request session is closed)

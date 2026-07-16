@@ -129,8 +129,13 @@ async def dispatch_forced_exit(
         db, actor=actor, action="FORCED_EXIT",
         object_type="PositionState",
         object_id=f"{position.account_id}:{position.symbol}",
+        # FIX-D3 — the exit payload carries cancel:true, so TradersPost cancels any
+        # unfilled C2/C3 pullback legs before flattening (no orphan leg). Recorded so
+        # the demo can reconstruct orphan-leg cancellation. Best-effort: a not-sent
+        # exit leaves the residual window bounded by NX-28 (≤ cancel_after remaining).
         new_value={"reason": reason, "status": first_result.status,
-                   "destinations": len(destinations), "any_sent": any_sent},
+                   "destinations": len(destinations), "any_sent": any_sent,
+                   "cancel_requested": True},
     )
     logger.info(
         "forced_exit strategy={} symbol={} reason={} status={} destinations={}",
