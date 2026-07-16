@@ -87,6 +87,19 @@ class PayloadBuilder:
         # with action == "exit" (invalid-sentiment-action), so omit it on exits.
         if not is_exit:
             payload["sentiment"] = signal.sentiment
+        else:
+            # FIX-D3 — cancel any still-WORKING orders BEFORE flattening. TradersPost's
+            # documented top-level boolean "cancel" (webhook-spec.json) cancels open
+            # orders for the ticker before submitting new ones, so an unfilled pullback
+            # leg (C2/C3) — or a re-armed leg once RA-2 exists — cannot fill into an
+            # already-closed position (orphan leg, R-RA6). The cancel happens atomically
+            # WITH the exit (cancel-then-flatten in one message), closing the residual
+            # exposure window at the source rather than in a post-close race. Best-effort
+            # by nature (broker-dependent + delivery can FAIL) — the residual risk when
+            # it does not take is bounded and made visible: a failed exit → position
+            # UNKNOWN (L3 blocks entries) and NX-28 release_unfilled_reservations frees
+            # the phantom within ≤ cancel_after remaining. See CONTRATO/FIX_D3_*.md.
+            payload["cancel"] = True
 
         if not is_exit:
             # ENTRY — stopLoss is MANDATORY
