@@ -465,6 +465,16 @@
                         <input value="common_position_stop" disabled
                                class="w-full bg-gray-800/50 border border-gray-700 rounded px-3 py-2 text-gray-500 text-sm">
                     </div>
+                    {# LX-15 fix D5 — profundidad de C1 aplicada VISIBLE (palanca aplicada
+                       ⇒ visible). READ-ONLY: mover C1 debe pasar por el gate ámbar de
+                       LX-15 (participación<100%); no hay ruta de escritura sin gate desde
+                       aquí — se aplica desde la pestaña Luxy. #}
+                    {% set c1d = (se.c1_depth_atr if se and se.c1_depth_atr else 0) %}
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">C1 profundidad (×ATR) <span class="text-gray-600">— se aplica desde Luxy</span></label>
+                        <input value="{% if c1d and c1d > 0 %}{{ c1d }}×ATR — LÍMITE a P0−{{ c1d }}×ATR{% else %}0 = mercado{% endif %}" disabled
+                               class="w-full bg-gray-800/50 border border-gray-700 rounded px-3 py-2 text-gray-500 text-sm">
+                    </div>
                 </div>
                 <button class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded text-sm">Guardar Scale Entry</button>
             </form>
@@ -644,7 +654,16 @@
     <div x-show="stab === 'luxy'" x-cloak class="space-y-4"
          x-data="{ sid: '{{ strategy.strategy_id }}', busy:false, err:null,
                    poll(){ fetch('/ui/strategies/'+this.sid+'/luxy/status')
-                     .then(r=>r.json()).then(j=>{ if(j.status==='running'){ setTimeout(()=>this.poll(),2000);} else if(j.status==='done'){ location.reload();} else { this.busy=false; this.err=(j.tail||'error').slice(-300);} }); },
+                     .then(r=>r.json()).then(j=>{ if(j.status==='running'){ setTimeout(()=>this.poll(),2000);}
+                       else if(j.status==='done'){
+                         // LX-15 fix D4 — un estudio recién calculado ES estado validado:
+                         // marca "fresh" para que la recarga OMITA toda restauración
+                         // (LX-9 local + LX-10 server) y arranque del BASELINE nuevo
+                         // (VSNAP/VLAST re-init, Aplicar habilitado directo, sin
+                         // Recalcular manual). Cubre también el recalc del mismo estudio.
+                         try{ sessionStorage.setItem('ntexecg_luxy_fresh_'+this.sid,'1'); }catch(e){}
+                         location.reload();
+                       } else { this.busy=false; this.err=(j.tail||'error').slice(-300);} }); },
                    calcular(){ this.busy=true; this.err=null;
                      fetch('/ui/strategies/'+this.sid+'/luxy/calcular',{method:'POST'})
                        .then(r=>r.json().then(j=>({s:r.status,j})))
@@ -1491,9 +1510,15 @@
           // controles/switches con el estado restaurado). VLAST se queda en V0.
           // LX-10: precedencia de carga = localStorage → snapshot del server
           // (solo si no había estado local, para no pisar la actividad reciente).
-          var _local = restoreExplore();
+          // LX-15 fix D4 — tras un «Calcular estudio» reciente: OMITE toda
+          // restauración (local + server) y arranca del BASELINE del estudio nuevo,
+          // que YA es estado validado (VLAST=V0, VSNAP=baseline → Aplicar habilitado).
+          var _fresh=false;
+          try{ _fresh = sessionStorage.getItem('ntexecg_luxy_fresh_'+SID)==='1';
+            if(_fresh){ sessionStorage.removeItem('ntexecg_luxy_fresh_'+SID); localStorage.removeItem(LS_KEY); } }catch(_e){}
+          var _local = _fresh ? false : restoreExplore();
           bindOnce(); diag(); setValues(); winDiag(); banner(); piernas(); refresh();
-          loadServer(!_local);     // siempre para el sello; restaura solo si no había local
+          loadServer(!_local && !_fresh);   // sello siempre; restaura solo si no hay local NI fresh
 
           // LX-15 — puente al componente "Aplicar estas palancas": expone el ESTADO
           // ACTUAL de palancas (sin toggles de sesión/día — no viajan) y si está
