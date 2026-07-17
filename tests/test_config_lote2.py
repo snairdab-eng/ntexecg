@@ -257,14 +257,15 @@ async def test_filters_form_out_of_range_score_ignored(
 
 
 @pytest.mark.asyncio
-async def test_create_form_score_minimum_persisted(
+async def test_create_form_score_minimum_NO_persisted(
     client: AsyncClient, db: AsyncSession
 ) -> None:
-    """El form de alta declaraba score_minimum y lo tiraba a la basura."""
+    """FILTROS-OFF (2026-07-17) — el N4 se apagó y el campo score_minimum se RETIRÓ
+    del alta (NX-12 revertido): aunque el form lo mande, JAMÁS nace en la config."""
     r = await client.post("/ui/strategies/new", data={
         "strategy_id": "NUEVA1", "name": "Nueva", "asset_symbol": "MES",
         "timeframe": "5m", "score_minimum": "60",
     })
     assert r.status_code in (200, 303), r.text
     cfg = await _profile_cfg(db, "NUEVA1")
-    assert cfg.get("score_minimum") == 60
+    assert "score_minimum" not in cfg          # ninguna estrategia nace con la llave

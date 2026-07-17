@@ -392,7 +392,6 @@ async def create_strategy_ui(
     asset_symbol: str = Form(""),
     timeframe: str = Form("5m"),
     sl_atr_multiplier: str = Form(""),
-    score_minimum: str = Form(""),
     traderspost_webhook_url: str = Form(""),
     initial_mode: str = Form("paper"),
     enforce_symbol_match: str = Form(""),
@@ -499,14 +498,8 @@ async def create_strategy_ui(
     cfg: dict = {}
     if guardrails:
         cfg["guardrails"] = guardrails
-    # NX-12 — score_minimum del form de alta (antes se recibía y se descartaba).
-    if score_minimum.strip():
-        try:
-            _smin = int(float(score_minimum))
-            if 1 <= _smin <= 100:
-                cfg["score_minimum"] = _smin
-        except (ValueError, TypeError):
-            pass
+    # FILTROS-OFF (2026-07-17) — el campo score_minimum se RETIRÓ del alta (NX-12
+    # revertido): el Nivel 4 se apagó, ninguna estrategia futura nace con la llave.
     risk_ref: dict = {}
     if form.get("stop_required"):
         risk_ref["stop_required"] = True
