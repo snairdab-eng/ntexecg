@@ -656,11 +656,10 @@
                    poll(){ fetch('/ui/strategies/'+this.sid+'/luxy/status')
                      .then(r=>r.json()).then(j=>{ if(j.status==='running'){ setTimeout(()=>this.poll(),2000);}
                        else if(j.status==='done'){
-                         // LX-15 fix D4 — un estudio recién calculado ES estado validado:
-                         // marca "fresh" para que la recarga OMITA toda restauración
-                         // (LX-9 local + LX-10 server) y arranque del BASELINE nuevo
-                         // (VSNAP/VLAST re-init, Aplicar habilitado directo, sin
-                         // Recalcular manual). Cubre también el recalc del mismo estudio.
+                         /* LX-15 fix D4: estudio recien calculado ES estado validado;
+                            marca fresh para que la recarga omita toda restauracion
+                            (LX-9 local + LX-10 server) y arranque del baseline nuevo.
+                            SIN comillas dobles aqui: rompen el atributo x-data. */
                          try{ sessionStorage.setItem('ntexecg_luxy_fresh_'+this.sid,'1'); }catch(e){}
                          location.reload();
                        } else { this.busy=false; this.err=(j.tail||'error').slice(-300);} }); },
