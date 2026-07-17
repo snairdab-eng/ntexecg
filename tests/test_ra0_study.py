@@ -214,7 +214,7 @@ def test_es_real_seccion_coherente():
     assert r["contencion_pct"] >= 80.0                 # ES alineado
     a = r["arrival_c2"]
     assert a["mediana_min"] is not None and 0 < a["mediana_min"] < 3000
-    assert set(r["cortes"]) == {"1h", "2h", "3h", "duracion"}
+    assert set(r["cortes"]) == {"1h", "2h", "3h", "duracion", "rearmado"}  # RA-1
     assert "MAX_CICLOS" in r["recomendacion"]
     # determinista
     r2 = run_activo("ES", ACTIVOS["ES"])
@@ -265,7 +265,7 @@ def test_piernas_en_estudio_alineado_y_honesta(tmp_path, monkeypatch):
     p = study["dashboard"]["piernas"]
     assert _SECCION_KEYS <= set(p)
     assert len(p["graduada_flat"]) == 9                    # 3 t × 3 k
-    assert set(p["cortes"]) == {"1h", "2h", "3h", "duracion"}
+    assert set(p["cortes"]) == {"1h", "2h", "3h", "duracion", "rearmado"}  # RA-1
     # honestidad: con 20 trades triviales la muestra por celda es floja → default
     r = p["recomendacion"]
     assert r["MAX_CICLOS"] == 1 and "n/s" in r["MAX_CICLOS_evidencia"]

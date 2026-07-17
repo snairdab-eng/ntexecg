@@ -237,24 +237,46 @@ def _simtrade(t, feat, c2, c3):
         pb_touch_min=pbt or None)
 
 
-def ladder_cuts(trades, feats, c2, c3, quantities, bk_pts, tp_by_side, ppt):
-    """La PREGUNTA DE ORO: ladder outcome por política de corte
-    (1h/2h/3h/duración). Devuelve {cut: metrics_usd}. `trades` con ATR real
-    (los demás quedan fuera del universo, como en el motor)."""
-    from scripts.mr_sims import HaircutCfg, ladder_outcome, metrics_usd
+def _ladder_sts_legs(trades, feats, c2, c3, quantities):
+    """(sts, legs) compartidos por los cortes — SimTrades con ATR real (los demás
+    fuera del universo, como en el motor) y el vector de piernas normalizado."""
     total = sum(q for q in quantities if q > 0) or 1
     legs = tuple((d, q / total) for d, q in
                  zip((0.0, float(c2), float(c3)), quantities) if q > 0)
     sts = [_simtrade(t, f, c2, c3) for t, f in zip(trades, feats)
            if t.atr_entry and t.atr_entry > 0]
-    out = {}
+    return sts, legs
+
+
+def ladder_cuts(trades, feats, c2, c3, quantities, bk_pts, tp_by_side, ppt):
+    """La PREGUNTA DE ORO: ladder outcome por política de corte
+    (1h/2h/3h/duración). Devuelve {cut: metrics_usd}. `trades` con ATR real
+    (los demás quedan fuera del universo, como en el motor)."""
+    from scripts.mr_sims import HaircutCfg, ladder_outcome, metrics_usd
+    sts, legs = _ladder_sts_legs(trades, feats, c2, c3, quantities)
     hc = HaircutCfg()
+    out = {}
     for label, cut in (("1h", 3600.0), ("2h", 7200.0), ("3h", 10800.0),
                        ("duracion", None)):
         pnls = [ladder_outcome(st, legs, bk_pts, tp_by_side, ppt, hc, cut)[0]
                 for st in sts]
         out[label] = metrics_usd(pnls)
     return out
+
+
+def ladder_cut_rearmado(trades, feats, c2, c3, quantities, bk_pts, tp_by_side,
+                        ppt, max_ciclos):
+    """RA-1 — corte por RE-ARMADO: la pierna se re-arma cada ciclo hasta
+    `max_ciclos` (del veredicto RA-0v3), con la ventana ciega descontada dentro de
+    `leg_filled`. Columna comparativa entre corte 1h y sin-corte. INFORMATIVA:
+    R-T1 — el default del estudio SIGUE siendo corte 1h hasta que RA-2 exista en
+    despacho; el re-armado jamás es el default aquí."""
+    from scripts.mr_sims import HaircutCfg, ladder_outcome, metrics_usd
+    sts, legs = _ladder_sts_legs(trades, feats, c2, c3, quantities)
+    hc = HaircutCfg()
+    pnls = [ladder_outcome(st, legs, bk_pts, tp_by_side, ppt, hc,
+                           None, rearm_ciclos=int(max_ciclos))[0] for st in sts]
+    return metrics_usd(pnls)
 
 
 # muestra mínima por celda (patrón LX-7/14) — bajo esto → "n/s" + default conservador
@@ -424,6 +446,13 @@ def piernas_section(trades, keys, idx, bars, off, *, c2, c3, quantities,
         "atr_exp_c3": atr_expansion_split(feats, "c3_min"),
     }
     section["recomendacion"] = recomendar(section)
+    # RA-1 — columna comparativa de RE-ARMADO en la tabla de cortes, con el
+    # MAX_CICLOS del veredicto RA-0v3 (n/s → 1, conservador). INFORMATIVA: R-T1 — el
+    # default del estudio sigue corte 1h hasta que RA-2 exista en despacho.
+    section["cortes"]["rearmado"] = ladder_cut_rearmado(
+        conf, feats, c2, c3, quantities, bk_pts, tp_by_side, ppt,
+        section["recomendacion"]["MAX_CICLOS"])
+    section["rearmado_max_ciclos"] = section["recomendacion"]["MAX_CICLOS"]
     # `graduada` con llaves tupla no serializa a JSON — versión plana para el front
     section["graduada_flat"] = [
         {"t": int(t), "k": k, **section["graduada"][(t, k)]}

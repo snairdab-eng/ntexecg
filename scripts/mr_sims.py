@@ -337,20 +337,46 @@ def ladder_grid() -> list[tuple[str, tuple, tuple]]:
 CANCEL_AFTER_MAX_S = 3600.0
 
 
-def leg_filled(st: SimTrade, depth: float,
-               cancel_after_s: float | None = None) -> tuple[bool, bool]:
-    """(llena, aprox) de una pierna límite a `depth`×ATR.
+# RA-1 — modelo de RE-ARMADO (SPEC_Rearmado_Piernas §1-§3): la pierna límite se
+# re-envía cada ciclo de REARM_CYCLE_MIN; la orden vive REARM_LIVE_MIN y el re-envío
+# ocurre al minuto 61-62 (ventana ciega [REARM_LIVE_MIN, REARM_CYCLE_MIN) = fill
+# perdido honesto). Mismos números que el estudio de llegada (blind_window_pct).
+REARM_CYCLE_MIN = 62.0
+REARM_LIVE_MIN = 60.0
 
-    Sin corte (None): MAE de todo el trade (límite trabajando hasta la
-    salida — el modelo original del estudio). Con corte: el toque cacheado
-    del Lab (t_pb_touch, MINUTOS) debe llegar dentro de cancel_after
-    (SEGUNDOS) — en producción TradersPost cancela la orden a los
-    cancel_after s (máx duro 3600). Trade sin datos de tiempo (cola con ATR
-    estimado) → fallback al MAE, marcado aprox (optimista, contado aparte)."""
+
+def leg_filled(st: SimTrade, depth: float,
+               cancel_after_s: float | None = None,
+               rearm_ciclos: int | None = None) -> tuple[bool, bool]:
+    """(llena, aprox) de una pierna límite a `depth`×ATR. Tres modos:
+
+    · Sin corte (cancel_after_s=None, rearm_ciclos=None): MAE de todo el trade
+      (límite trabajando hasta la salida — el modelo original, TECHO del estudio).
+    · Con corte (cancel_after_s): el toque cacheado (t_pb_touch, MINUTOS) debe
+      llegar dentro de cancel_after (SEGUNDOS) — TradersPost cancela a los
+      cancel_after s (máx 3600). Es la POLÍTICA DE DESPACHO VIGENTE (R-T1).
+    · RA-1 RE-ARMADO (rearm_ciclos=N, precede a cancel_after_s): la pierna se
+      re-arma cada ciclo hasta N ciclos; el toque llena si ocurre ≤ N×REARM_CYCLE_MIN
+      Y NO cae en la ventana ciega [REARM_LIVE_MIN, REARM_CYCLE_MIN) de su ciclo.
+      El t_pb_touch ya está acotado a la VIDA del trade (touch_minutes entrada→
+      salida), así que la duración está implícita. Columna INFORMATIVA del estudio.
+
+    Trade sin datos de tiempo (cola con ATR estimado) → fallback al MAE, marcado
+    aprox (optimista, contado aparte)."""
     if depth <= 0:
         return True, False
     if st.mae_atr < depth:
         return False, False                # nunca tocó (ni sin corte)
+    if rearm_ciclos is not None:           # RA-1 — modo re-armado (precede al corte)
+        if st.pb_touch_min is None:
+            return True, True              # sin tiempos → MAE (aprox)
+        t_min = st.pb_touch_min.get(str(float(depth)))
+        if t_min is None:
+            return False, False            # tocó, pero fuera de la ventana
+        if t_min > rearm_ciclos * REARM_CYCLE_MIN:
+            return False, False            # más allá de MAX_CICLOS (ya no se re-arma)
+        en_ciega = REARM_LIVE_MIN <= (t_min % REARM_CYCLE_MIN) < REARM_CYCLE_MIN
+        return (not en_ciega), False       # ventana ciega = fill perdido honesto
     if cancel_after_s is None:
         return True, False
     if st.pb_touch_min is None:
@@ -365,17 +391,18 @@ def ladder_outcome(st: SimTrade, legs: tuple, b_pts: float | None,
                    tp_atr_by_side: dict | None, ppt: float,
                    hc: HaircutCfg,
                    cancel_after_s: float | None = None,
+                   rearm_ciclos: int | None = None,
                    ) -> tuple[float, float, bool]:
     """(pnl_usd, peso_llenado, ambigüedad pierna↔TP) de un trade.
-    Fills por MAE (todo el trade) o con corte de cancel_after (leg_filled);
-    stop manda sobre TP (conservador)."""
+    Fills por MAE (techo), con corte de cancel_after, o RA-1 re-armado
+    (rearm_ciclos) — todos vía `leg_filled`; stop manda sobre TP (conservador)."""
     tp_atr = (tp_atr_by_side or {}).get(st.side)
     stopped = b_pts is not None and st.mae_pts >= b_pts
     tp_hit = (not stopped and tp_atr is not None and st.mfe_atr >= tp_atr)
     acc = filled_w = 0.0
     ambiguous = False
     for d, w in legs:
-        if not leg_filled(st, d, cancel_after_s)[0]:
+        if not leg_filled(st, d, cancel_after_s, rearm_ciclos)[0]:
             continue                       # la pierna no llenó (a tiempo)
         filled_w += w
         if stopped:

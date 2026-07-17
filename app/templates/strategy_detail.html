@@ -1291,8 +1291,12 @@
               +arr('C2 · '+P.c2+'×ATR',P.arrival_c2)+arr('C3 · '+P.c3+'×ATR',P.arrival_c3)+'</div>';
             // 2) PREGUNTA DE ORO: tabla de cortes (¿fills tardíos suman o son cuchillos?)
             const C=P.cortes||{}; let prev=null, filas='';
+            // RA-1 — columna de RE-ARMADO (MAX_CICLOS del veredicto) entre corte 1h
+            // y sin-corte; INFORMATIVA (el default de despacho sigue corte 1h, R-T1).
+            const _mc = P.rearmado_max_ciclos || 1;
             [['1h','corte 1h (despacho vigente)'],['2h','corte 2h'],['3h','corte 3h'],
-             ['duracion','vida de la posición (re-armado)']].forEach(function(kv){
+             ['rearmado','re-armado ('+_mc+' ciclo'+(_mc===1?'':'s')+' · informativo)'],
+             ['duracion','sin corte (techo MAE)']].forEach(function(kv){
               const m=C[kv[0]]||{}; const net=m.net_usd;
               const dnet=(prev==null||net==null)?'':((net-prev>=0?'+':'−')+'$'+Math.abs(Math.round(net-prev)).toLocaleString('en-US'));
               const dcol=(prev==null||net==null)?'var(--lx-muted)':(net-prev>=0?'var(--lx-green)':'var(--lx-red)');
