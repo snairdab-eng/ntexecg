@@ -52,6 +52,9 @@ from scripts.mr_sims import (
     tp_nominal_study,
 )
 from scripts.pullback_timing import pctl
+# FIX-FX-BACKSTOP — conversión ÚNICA USD→puntos/×ATR con la rejilla del tick del
+# catálogo (representabilidad fail-honest). Reemplaza los round(_,2/4) dispersos.
+from scripts.fx_levers import tick_de, usd_a_mult_atr, usd_a_puntos, snap_puntos
 
 TOTAL_MICROS = 10
 
@@ -280,7 +283,11 @@ def derive_levers(win: list[SimTrade], ppt: float, *,
     return {
         "suelo_mae_p95_ganadoras": suelo,
         "backstop_usd": backstop_usd,
-        "b_pts": round(b_pts, 2) if b_pts else None,
+        # FIX-FX-BACKSTOP — b_pts en PRECISIÓN PLENA (usd/ppt sin colapsar). El
+        # round(_,2) pensado para índices aplastaba el backstop FX a 0.0 (6J/6E)
+        # ANTES de que el camino de aplicar pudiera snapear al tick. El display
+        # redondea aparte; la rejilla del tick la pone la capa de aplicar.
+        "b_pts": b_pts,
         "tp_por_lado_atr": tp,
         "ladder": ladder,
         "lado": lado,
@@ -959,9 +966,21 @@ def activacion_from_study(study: dict) -> dict:
     el despacho — L5 lo trata como informativo)."""
     lev = (study or {}).get("levers_in_sample") or {}
     out: dict = {}
+    # FIX-FX-BACKSTOP — instrumento del clave del estudio ("ES_ConfNormal_…" →
+    # "ES") para la rejilla del tick; sin clave (tests) → tick None → fail-open.
+    activo = ((study or {}).get("clave") or "").split("_")[0] or None
+    tick = tick_de(activo)
+    no_repr: list[dict] = []
     b_pts = lev.get("b_pts")
     if lev.get("backstop_usd") and b_pts:
-        out["backstop_points"] = round(float(b_pts), 2)
+        pts, repr_ok, raw = snap_puntos(b_pts, tick)
+        if repr_ok:
+            out["backstop_points"] = pts
+        else:                              # FAIL-HONEST — jamás escribir un 0 colapsado
+            no_repr.append({"campo": "backstop_points", "pts_crudos": raw,
+                            "tick": tick, "activo": activo,
+                            "motivo": "backstop < 1 tick del instrumento — "
+                                      "no representable (se OMITE, no se escribe 0)"})
     tp = lev.get("tp_por_lado_atr") or {}
     if tp.get("long"):
         out["tp_nominal_long"] = tp["long"]
@@ -977,9 +996,15 @@ def activacion_from_study(study: dict) -> dict:
         out["scale_entry"] = {
             "mode": "execute",                          # el merge preserva el vivo
             "quantities": list(alloc),
+            # levels ×ATR ADIMENSIONALES (orden ~1..16, iguales entre
+            # instrumentos) — no son precio, no colapsan: round(_,2) es seguro.
             "levels": [round(float(x), 2) for x in levels[1:]],
             "max_micro_contracts": sum(alloc) or 10,
         }
+    # FIX-FX-BACKSTOP — llaves OMITIDAS por no-representables (clave privada _;
+    # el merge/aplicar solo copia llaves conocidas → jamás persiste ni se aplica).
+    if no_repr:
+        out["_no_representable"] = no_repr
     return out
 
 
@@ -1231,35 +1256,77 @@ def _overrides_to_levers(base: dict, o: dict, atr_med, ppt) -> dict:
     return lev
 
 
-def config_from_overrides(o: dict, atr_med, ppt, alloc, cancel_after_s) -> dict:
+def config_from_overrides(o: dict, atr_med, ppt, alloc, cancel_after_s,
+                          tick=None, activo=None) -> dict:
     """LX-15 — palancas del operador (USD) → config APLICABLE (mismas llaves que
     `activacion_from_study`): backstop_points, tp_nominal_*, scale_entry con
     profundidad de C1 (`c1_depth_atr`, la ÚNICA ruta que la escribe), y
     entry_reserve_timeout_seconds. NO mapea dir (diagnóstico, no aplicable) ni BE.
-    R-T10: se construye de las palancas del operador (crudo+), jamás de la fila OOS."""
+    R-T10: se construye de las palancas del operador (crudo+), jamás de la fila OOS.
+
+    FIX-FX-BACKSTOP — TODA conversión USD→puntos/×ATR pasa por `fx_levers` con la
+    rejilla del tick del catálogo. Fail-honest: una palanca por debajo de 1 tick
+    NO se escribe (jamás un 0 colapsado) y viaja como aviso en `_no_representable`
+    (clave privada — el merge solo copia llaves conocidas → nunca persiste)."""
     o = o or {}
     out: dict = {}
+    no_repr: list[dict] = []
     if o.get("sl_usd"):
-        out["backstop_points"] = round(float(o["sl_usd"]) / ppt, 2)
+        pts, repr_ok, raw = usd_a_puntos(o["sl_usd"], ppt, tick)
+        if repr_ok:
+            out["backstop_points"] = pts
+        else:
+            no_repr.append({"campo": "backstop_points", "usd": float(o["sl_usd"]),
+                            "pts_crudos": raw, "tick": tick, "activo": activo,
+                            "motivo": "backstop < 1 tick — no representable "
+                                      "(OMITIDO, no se escribe 0)"})
     if o.get("tp_usd") and atr_med:
-        a = round(float(o["tp_usd"]) / ppt / atr_med, 4)
-        out["tp_nominal_long"] = a
-        out["tp_nominal_short"] = a
+        a, repr_ok = usd_a_mult_atr(o["tp_usd"], ppt, atr_med, tick)
+        if repr_ok:
+            out["tp_nominal_long"] = out["tp_nominal_short"] = round(a, 4)
+        else:
+            no_repr.append({"campo": "tp_nominal_*", "usd": float(o["tp_usd"]),
+                            "tick": tick, "activo": activo,
+                            "motivo": "TP < 1 tick al ATR mediano — no representable"})
     if cancel_after_s:
         out["entry_reserve_timeout_seconds"] = int(cancel_after_s)
-    c1 = round(float(o.get("l1_usd") or 0) / ppt / atr_med, 2) if atr_med else 0.0
+    # C1 móvil: ×ATR adimensional; solo activa el cable si es representable y >0.
+    c1 = 0.0
+    if o.get("l1_usd") and atr_med:
+        m, repr_ok = usd_a_mult_atr(o["l1_usd"], ppt, atr_med, tick)
+        if repr_ok:
+            c1 = round(m, 4)
+        else:
+            no_repr.append({"campo": "c1_depth_atr", "usd": float(o["l1_usd"]),
+                            "tick": tick, "activo": activo,
+                            "motivo": "profundidad C1 < 1 tick — no se activa el "
+                                      "cable C1-límite (queda a mercado)"})
+
+    def _nivel(usd_key):                  # C2/C3 ×ATR (0 = a mercado/sin nivel)
+        u = o.get(usd_key)
+        if not u or not atr_med:
+            return 0.0
+        m, repr_ok = usd_a_mult_atr(u, ppt, atr_med, tick)
+        if not repr_ok:
+            no_repr.append({"campo": usd_key, "usd": float(u), "tick": tick,
+                            "activo": activo,
+                            "motivo": "nivel < 1 tick al ATR mediano — "
+                                      "por debajo de la resolución del instrumento"})
+        return round(m, 4)                # ×ATR: precisión fina, jamás round(_,2)
+
     # scale_entry si hay escalera (C2/C3) O si el operador movió C1 (C1 límite solo).
     if alloc and atr_med and (any(x > 0 for x in list(alloc)[1:]) or c1 > 0):
         se = {
             "mode": "execute",
             "quantities": list(alloc),
-            "levels": [round(float(o.get("l2_usd") or 0) / ppt / atr_med, 2),
-                       round(float(o.get("l3_usd") or 0) / ppt / atr_med, 2)],
+            "levels": [_nivel("l2_usd"), _nivel("l3_usd")],
             "max_micro_contracts": sum(alloc) or 10,
         }
         if c1 > 0:                       # C1 MÓVIL — activa el cable de despacho
             se["c1_depth_atr"] = c1
         out["scale_entry"] = se
+    if no_repr:
+        out["_no_representable"] = no_repr
     return out
 
 
@@ -1300,8 +1367,12 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
 
     if cancel_after_s is not None:
         cancel_after_s = min(float(cancel_after_s), CANCEL_AFTER_MAX_S)
-    _man, trades, ppt, keys5, idx5, bars5, intrabar, off = _load_master(
+    man, trades, ppt, keys5, idx5, bars5, intrabar, off = _load_master(
         Path(motor_dir) / clave)
+    # FIX-FX-BACKSTOP — instrumento del master → tick del catálogo para la
+    # conversión USD→puntos/×ATR de las palancas aplicables (rejilla real).
+    activo = man.get("activo")
+    tick = tick_de(activo)
     split_in_out(trades, oos)
     sts = from_trades(trades, ppt)
     if not sts:
@@ -1370,7 +1441,8 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
         # que porta c1_depth_atr). El intrabar lo añade gate_palancas desde el study.
         "señales": _señales_de_eval(crudo, crudo_plus, oosm, lev),
         "aplicable": config_from_overrides(overrides, atr_med, ppt, alloc,
-                                           cancel_after_s),
+                                           cancel_after_s, tick=tick,
+                                           activo=activo),
     }
 
 

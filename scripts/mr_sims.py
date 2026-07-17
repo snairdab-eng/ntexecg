@@ -1541,8 +1541,13 @@ def run_studies(sts: list[SimTrade], ppt: float,
                             for l in cfg["legs"]],
                 "total_micros": TOTAL_MICROS,
             },
+            # FIX-FX-BACKSTOP — pts en PRECISIÓN PLENA (usd/ppt): el motor offline
+            # es instrumento-agnóstico (R-T9, sin tick) y el round(_,2) pensado
+            # para índices aplastaba el backstop FX a 0.0 antes de aplicar. La
+            # rejilla del tick la pone el despacho (sl_tp_calculator.round_to_tick
+            # sobre el precio SL final); aquí NO se colapsa.
             "backstop": ({"usd_por_mini": b_opt,
-                          "pts": round(b_opt / ppt, 2),
+                          "pts": b_opt / ppt,
                           "usd_por_micro": round(b_opt / TOTAL_MICROS, 2),
                           "tipo": "stop_precio_fijo_desde_senal"}
                          if b_opt else None),
