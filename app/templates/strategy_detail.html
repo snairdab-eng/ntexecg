@@ -933,6 +933,17 @@
           const D = window.LUXY; if(!D || !document.getElementById('lx-root')) return;
           const SID = window.LUXY_SID, PV = D.pv, R = D.reco, A = R.alloc || [10,0,0];
           const el = id => document.getElementById(id);
+          // LX-15 fix D1/D2 — FUENTE ÚNICA del estado validado/dirty. Puras y
+          // expuestas (testeables por node). El snapshot captura TODO lo que define
+          // la validez: palancas (incluida C1/l1 — el bug era que no entraba) +
+          // toggles de sesión/día. dirty = snapshot actual ≠ snapshot validado
+          // (NO vs el estudio RECO0). Chip, botón Aplicar y botón Recalcular leen
+          // esta única verdad vía refresh().
+          window.luxySnap = function(S, ZON, DON){
+            return JSON.stringify({ sl: S.sl?S.slV:0, tp: S.tp?S.tpV:null,
+              be: S.be?S.beV:null, sc: !!S.sc, l1: S.l1||0, l2: S.l2||0, l3: S.l3||0,
+              dir: S.dir, z: ZON||[], d: DON||{} }); };
+          window.luxyDirty = function(curSnap, validSnap){ return curSnap !== validSnap; };
           const money = v => (v==null?'—':(v<0?'−$':'$')+Math.abs(Math.round(v)).toLocaleString('en-US'));
           const pct = v => (v==null?'—':(+v).toFixed(1)+'%');
           const pf  = v => (v==null?'—':(isFinite(v)?(+v).toFixed(2):'∞'));
@@ -963,6 +974,9 @@
           const ZON = (R.zones||[]).map(function(){return true;});
           const DON = {}; (R.days||[]).forEach(function(z){ DON[z.dow]=true; });
           const ZON0 = ZON.slice(), DON0 = Object.assign({}, DON);
+          // LX-15 fix — snapshot VALIDADO actual. Nace en el ESTUDIO (RECO0+toggles
+          // base), que VLAST=V0 ya valida. Recalcular y Restablecer lo re-fijan.
+          var VSNAP = window.luxySnap(RECO0, ZON0, DON0);
           // LX-9 — persistencia SOLO navegador de la exploración (palancas+toggles).
           // NADA viaja al server; los puentes (Aplicar/Ventanas) son el único camino
           // a producción. Se guarda con la identidad del estudio; si el estudio
@@ -1042,7 +1056,7 @@
             // BREAKEVEN: sin motor NO se acredita su beneficio (orden intrabar
             // desconocido) — jamas un BE optimista en la estimacion.
             if(!S.sc) return e;
-            const lv=[[0,A[0]],[S.l2,A[1]],[S.l3,A[2]]], ep=e/PV; let t=0;
+            const lv=[[S.l1||0,A[0]],[S.l2,A[1]],[S.l3,A[2]]], ep=e/PV; let t=0;  // LX-15 — C1 a su profundidad (participación honesta)
             for(const pair of lv){ const L=pair[0], q=pair[1]; if(L===0||d.mae<=-L) t+=q*(ep+L/PV)*MES; } return t; }
           function statsCard(a, ntot){ if(!a.length) return {net:0,pf:null,dd:0,worst:0,wr:0,part:0,n:0,nl:0};
             const gp=a.filter(x=>x>0).reduce((x,y)=>x+y,0), gl=a.filter(x=>x<0).reduce((x,y)=>x+y,0);
@@ -1135,7 +1149,7 @@
             // palancas VISIBLES: entran siempre en el dominio (nunca se recortan — son
             // la referencia del operador). El recorte solo afecta a las barras de datos.
             const levPos=Math.max(0, S.tp?S.tpV:0, S.be?S.beV:0);
-            const levNeg=Math.max(0, S.sl?S.slV:0, S.sc?(S.l2||0):0, S.sc?(S.l3||0):0);
+            const levNeg=Math.max(0, S.sl?S.slV:0, (S.l1||0), S.sc?(S.l2||0):0, S.sc?(S.l3||0):0);  // LX-15 — C1 en el dominio
             const rawPos=Math.max(1,levPos,Math.max.apply(null,pos.length?pos:[1]));
             const rawNeg=Math.max(1,levNeg,Math.max.apply(null,neg.length?neg:[1]));
             const yMax = CHARTCLIP? Math.max(1,levPos,qtl(pos,0.95)) : rawPos;
@@ -1198,6 +1212,9 @@
             const line=function(v,color,on){ if(!on||v==null)return; const yy=yRaw(v); if(yy<plotT||yy>plotB)return;
               ctx.strokeStyle=color; ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(padL,yy); ctx.lineTo(W-padR,yy); ctx.stroke(); ctx.setLineDash([]); };
             line(S.tpV,'#3fb950',S.tp); line(S.beV,'#a371f7',S.be); line(-S.slV,'#d29922',S.sl);
+            // LX-15 fix D3 — línea de C1 (mismo estilo que C2/C3), visible SOLO con
+            // C1>0 (en 0=mercado no hay línea, la entrada base es a mercado).
+            if(S.l1>0) line(-S.l1,'#58a6ff',true);
             if(S.sc){ line(-S.l2,'#58a6ff',true); line(-S.l3,'#58a6ff',true); }
             // lectores en vivo: contador del SL + estado del toggle de escala
             const slc=el('lx-sl-count');
@@ -1211,6 +1228,7 @@
             const ptf=v=> showPts&&PV? ' ('+Math.round(v/PV)+' pts)':'';
             el('lx-legend').innerHTML=[
               ['TP','var(--lx-tp)',S.tpV], ['BE','#a371f7',S.be?S.beV:null],
+              ['C1','#58a6ff',S.l1>0?-S.l1:null],   // LX-15 — C1 en la leyenda solo con C1>0
               ['C2','#58a6ff',-S.l2], ['C3','#58a6ff',-S.l3], ['SL','#d29922',-S.slV]
             ].filter(function(x){return x[2]!=null;}).map(function(x){return '<span><span style="color:'+x[1]+'">■</span> '+x[0]+' '+money(x[2])+ptf(x[2])+'</span>';}).join('');
           }
@@ -1333,7 +1351,11 @@
             w.innerHTML=h;
           }
           // ---- chips / estado ----
-          function dirty(){ return JSON.stringify(S)!==JSON.stringify(RECO0) || anyOff(); }
+          // LX-15 fix D1/D2 — dirty = estado actual ≠ ÚLTIMO VALIDADO (VSNAP), no vs
+          // el estudio. Con C1≠0, tras Recalcular el snapshot valida C1 → deja de ser
+          // dirty → Aplicar se habilita y el chip 'validado·motor' coincide con el botón.
+          function snap(){ return window.luxySnap(S, ZON, DON); }
+          function dirty(){ return window.luxyDirty(snap(), VSNAP); }
           function setChips(mode){
             const m=el('lx-mode'); if(mode==='val'){ m.textContent='validado · motor'; m.style.background='rgba(63,185,80,.16)'; m.style.color='#3fb950'; }
             else { m.textContent='estimacion · aprox'; m.style.background='rgba(210,153,34,.18)'; m.style.color='#d29922'; }
@@ -1395,7 +1417,9 @@
             for(var i=0;i<ZON.length;i++) ZON[i]=ZON0[i];
             Object.keys(DON).forEach(function(k){ DON[k]=DON0[k]; });
             clearExplore();                           // LX-9: borra el estado guardado
-            VLAST=V0; VROB=D.robustez; setValues(); refresh(); });   // LX-3b: semáforo del estudio
+            // LX-15 fix — el estudio restablecido queda VALIDADO (VLAST=V0 lo respalda):
+            // Aplicar tras Restablecer ≡ aplicar el estudio (no dirty).
+            VLAST=V0; VROB=D.robustez; VSNAP=snap(); setValues(); refresh(); });
           // ---- RECALCULAR = JOB del motor (numeros validados; JAMAS pisa RECO0) ----
           function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(function(r){return r.json();}).then(function(j){
               if(j.status==='running'){ setTimeout(pollEval,2000); return; }
@@ -1403,9 +1427,12 @@
               if(j.status==='done' && j.result){
                 VLAST={ crudo:norm(j.result.base), crudo_plus:norm(j.result.config), oos:norm(j.result.oos) };
                 VROB=j.result.robustez;           // LX-3b: semáforo del OOS revalidado
-                renderTable('val'); setChips('val'); el('lx-hint').style.display='none';
-                el('lx-recalc').disabled=true;
-              } else { el('lx-recalc').disabled=false; }
+                // LX-15 fix D1/D2 — el estado ACTUAL queda VALIDADO. refresh() es el
+                // único driver: chip 'val', Recalcular deshabilitado (nada nuevo),
+                // Aplicar habilitado. Si el operador movió algo mientras corría el job,
+                // snap()≠VSNAP → dirty → Recalcular se RE-HABILITA solo.
+                VSNAP=snap(); refresh();
+              } else { refresh(); }               // error → dirty sigue → Recalcular vivo
             }); }
           el('lx-recalc').addEventListener('click',function(){ el('lx-recalc').textContent='Calculando…'; el('lx-recalc').disabled=true;
             const ov={sl_usd:S.sl?S.slV:0, tp_usd:S.tp?S.tpV:null, dir:S.dir, l1_usd:S.l1||0, l2_usd:S.l2, l3_usd:S.l3};
