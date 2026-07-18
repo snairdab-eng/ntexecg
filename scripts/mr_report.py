@@ -65,6 +65,21 @@ def fmt_stop(activo: str, pts: float | None, usd_mini: float | None) -> str:
     return f"{pts:.0f} pts = ${usd_mini:,.0f}/mini"
 
 
+def _universo_lbl(res: dict) -> str:
+    """AUDITORÍA 2026-07-18 (U-1/U-4) — etiqueta de UNIVERSO para toda métrica
+    que sale de `linea_base` (universo CONTENIDO: ATR real + contenidos LX-13),
+    que comparte el nombre "CRUDO" con el listado completo sin serlo. "N de M"
+    deja el doble universo declarado (GC: −$14,930/41 vs lista −$8,880/44)."""
+    n_uni = (res.get("universo") or {}).get("n")
+    n_lista = (((res.get("listado_crudo") or {}).get("metricas") or {}).get("n")
+               or (res.get("meta") or {}).get("n_trades_listado"))
+    if n_uni is None:
+        return "universo contenido"
+    if n_lista:
+        return f"universo contenido, {n_uni} de {n_lista} trades"
+    return f"universo contenido, {n_uni} trades"
+
+
 # ---------------------------------------------------------------------------
 # Mapa de calor por columna (terciles → 🟩🟨🟥, como la referencia)
 # ---------------------------------------------------------------------------
@@ -168,9 +183,11 @@ def render_md(res: dict) -> str:
     L.append("")
     L.append("## 1. LÍNEA BASE — CRUDO (la señal sin gestión · 1 mini @ "
              "señal · scripted exit)")
-    L.append("*Estos números son del listado CRUDO: la señal sola, sin "
-             "backstop/escalera/TP. El crudo puede decaer fuera de muestra; "
-             "la comparación crudo↔con-config vive en §3/§4.*")
+    L.append(f"*Estos números son la señal sola, sin backstop/escalera/TP, "
+             f"sobre el **{_universo_lbl(res)}** (ATR real y contenidos "
+             f"LX-13) — NO del listado completo (esa fila va aparte, abajo). "
+             f"El crudo puede decaer fuera de muestra; "
+             f"la comparación crudo↔con-config vive en §3/§4.*")
     L.append("")
     L.append("| Métrica | Valor |")
     L.append("|---|---:|")
@@ -238,10 +255,14 @@ def render_md(res: dict) -> str:
     L.append("")
 
     b = res["backstop"]["optimo"]
+    # DISPLAY-FX (linaje FIX-FX-BACKSTOP) — fmt_pts: FX en TICKS del catálogo
+    # (jamás "= 0 pts"); índices en pts. Import diferido: fx_levers importa
+    # las constantes de ESTE módulo (ciclo si fuera top-level).
+    from scripts.fx_levers import fmt_pts
     if b:
         L.append(f"**b) Backstop catastrófico ($ fijo) — el airbag:** "
                  f"óptimo **{_usd(b['backstop_usd'])} = "
-                 f"{b['backstop_pts']:.0f} pts ≈ "
+                 f"{fmt_pts(meta['activo'], b['backstop_pts'])} ≈ "
                  f"{b['x_atr_mediana']}×ATR mediano**. "
                  f"Toca {b['tocados']} de {res['universo']['n']} trades · "
                  f"Δnet {_usd(b['delta_net_usd'])} · "
@@ -256,14 +277,15 @@ def render_md(res: dict) -> str:
         L.append("**b) Backstop:** ningún nivel del grid supera el score "
                  "de la base — revisar el listado.")
     L.append("")
-    L.append("| Backstop | pts | ×ATR med | toca | Δnet | ΔDD% | "
+    L.append("| Backstop | pts (FX en ticks) | ×ATR med | toca | Δnet | ΔDD% | "
              "peor | net/DD |")
     L.append("|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in res["backstop"]["grid"]:
         marca = " ◀ óptimo" if b and r["backstop_usd"] == b["backstop_usd"] \
             else ""
         L.append(f"| {_usd(r['backstop_usd'])}{marca} | "
-                 f"{r['backstop_pts']:.0f} | {r['x_atr_mediana']} | "
+                 f"{fmt_pts(meta['activo'], r['backstop_pts'])} | "
+                 f"{r['x_atr_mediana']} | "
                  f"{r['tocados']} | {_usd(r['delta_net_usd'])} | "
                  f"{_f(r['delta_dd_pct'], 1)} | "
                  f"{_usd(r['peor_trade_usd'])} | {_f(r['score_net_dd'])} |")
@@ -379,7 +401,8 @@ def render_md(res: dict) -> str:
             f"{emo['part'][i]}{_f(f['part'], 1)} | "
             f"{emo['me'][i]}{_f(f['me'], 1)} | "
             f"{emo['wr'][i]}{_f(f['wr'], 1)} | {f['gate']} |")
-    L.append(f"| — | CRUDO (señal, sin gestión) | {_usd(base['net_usd'])} | "
+    L.append(f"| — | CRUDO (señal, sin gestión — {_universo_lbl(res)}) | "
+             f"{_usd(base['net_usd'])} | "
              f"{_f(_pf_base_oos(res))} | {_usd(base['max_dd_usd'])} | "
              f"{_usd(base['peor_trade_usd'])} | 100.0 | 10.0 | "
              f"{_f(base['wr_pct'], 1)} | — |")
@@ -745,7 +768,9 @@ def write_heatmap(res: dict, path: Path) -> bool:
         return False
     base = res["linea_base"]["total"]
     filas = filas + [{
-        "nombre": "CRUDO (señal, sin gestión)",
+        # U-4 — misma etiqueta corta de universo que el .md (celda de PNG)
+        "nombre": (f"CRUDO (señal, sin gestión · contenido "
+                   f"{(res.get('universo') or {}).get('n', '?')} tr)"),
         "net": base.get("net_usd"), "pf_oos": _pf_base_oos(res),
         "dd": base.get("max_dd_usd"), "peor": base.get("peor_trade_usd"),
         "part": 100.0, "me": 10.0, "wr": base.get("wr_pct"), "gate": "—",

@@ -1805,6 +1805,28 @@ async def strategy_detail(
     except Exception:
         pass
 
+    # DISPLAY-FX + SL-RESPIRO (2026-07-18) — enriquecidos AL RENDER (sirven
+    # también a estudios ya persistidos, sin re-Calcular):
+    #  · units.activo/tick/es_fx: catálogo del instrumento para el espejo JS de
+    #    fmt_pts (leyenda/readout/muesca — FX en TICKS, jamás "0 pts").
+    #  · config_sl_usd: backstop VIVO de la config en USD — el fondo del slider
+    #    del SL nunca queda menos profundo que él (luxySlRange).
+    try:
+        _dash = (luxy_study_data or {}).get("dashboard")
+        if _dash and l1_instrument:
+            from scripts.mr_report import FX_INSTRUMENTS, TICK_SIZE
+            _u = _dash.setdefault("units", {})
+            _u["activo"] = l1_instrument
+            _u["tick"] = TICK_SIZE.get(l1_instrument)
+            _u["es_fx"] = l1_instrument in FX_INSTRUMENTS
+            _bp = (_cfg or {}).get("backstop_points")
+            _pv = ((luxy_study_data or {}).get("usd_por_punto")
+                   or _dash.get("pv"))
+            if _bp and _pv:
+                _dash["config_sl_usd"] = round(float(_bp) * float(_pv), 2)
+    except Exception:
+        pass
+
     # L5 — badge de deriva de la config viva frente a la reco IN-SAMPLE de Luxy
     # (refleja también la aplicación hecha desde Luxy).
     luxy_deriva = None

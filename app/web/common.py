@@ -14,11 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.web.units import fmt_atr
+from scripts.fx_levers import fmt_pts
 
 _templates_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
 # fmt_atr disponible en todas las plantillas (tabla del bridge: FX en ticks).
 templates.env.globals["fmt_atr"] = fmt_atr
+# DISPLAY-FX (linaje FIX-FX-BACKSTOP) — fmt_pts(activo, pts): FX en TICKS del
+# catálogo (jamás "0 pts"), índices en pts. Misma fuente que stdout/.md.
+templates.env.globals["fmt_pts"] = fmt_pts
 
 
 async def base_context(request: Request, db: AsyncSession | None = None) -> dict:

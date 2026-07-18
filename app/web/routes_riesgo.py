@@ -48,6 +48,7 @@ from app.web.manifest_store import (               # LAB-1 — fuente única
     lock_integrar as _lock_integrar,
 )
 from scripts.lab_manifest import MICRO_TO_LAB, csv_instrument
+from scripts.mr_report import _universo_lbl            # etiqueta de universo
 from scripts.mr_sims import proteccion_para_cuenta     # selección PURA (v2)
 
 router = APIRouter()
@@ -749,6 +750,10 @@ def _estudio_ctx(clave: str, cuenta: float = CUENTA_DEFAULT,
     return {
         "fecha": res.get("_fecha"),
         "base": res["linea_base"]["total"],
+        # AUDITORÍA 2026-07-18 (U-1) — etiqueta de universo, MISMA fuente que
+        # el stdout/.md del motor: linea_base es el universo contenido, no el
+        # listado completo de la línea de abajo.
+        "universo_lbl": _universo_lbl(res),
         "base_pf_oos": res["linea_base"]["out"].get("pf"),
         # C — listado completo + duración media ganador/perdedor (horas)
         "listado_crudo": res.get("listado_crudo"),

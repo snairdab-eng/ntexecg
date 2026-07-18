@@ -346,7 +346,8 @@
             {% if mrcfg.get('backstop_points') %}
             <div class="bg-amber-900/30 border border-amber-700 rounded p-2 text-xs text-amber-200 mb-2">
                 ⚠ <b>SL × ATR ignorado</b> — stop de <b>precio fijo</b> activo (Motor de Riesgo):
-                <b>{{ mrcfg.get('backstop_points') }} pts</b> desde la señal (<code>backstop_points</code>).
+                {# DISPLAY-FX — fmt_pts: FX en ticks del catálogo (6E/6J), índices en pts #}
+                <b>{{ fmt_pts(l1_instrument, mrcfg.get('backstop_points')) }}</b> desde la señal (<code>backstop_points</code>).
             </div>
             {% endif %}
             {% if mrcfg.get('tp_nominal_long') or mrcfg.get('tp_nominal_short') %}
@@ -887,7 +888,14 @@
               <input type="range" id="lx-r-l2" class="w-full" style="accent-color:var(--lx-scin)">
               <input type="range" id="lx-r-l3" class="w-full" style="accent-color:var(--lx-scin)">
               <label class="flex items-center justify-between gap-2 text-xs" style="color:var(--lx-ink)"><span><input type="checkbox" id="lx-t-sl" checked> <span style="color:var(--lx-sl)">■</span> SL backstop</span><span id="lx-v-sl" class="font-mono"></span></label>
-              <input type="range" id="lx-r-sl" class="w-full" style="accent-color:var(--lx-sl)">
+              <!-- SL-RESPIRO — muesca del pullback más profundo del listado: a su
+                   derecha el SL respira MÁS ALLÁ de todo lo observado (toca 0). El
+                   rango del slider ya no está capado al MAE (luxySlRange). -->
+              <div class="relative">
+                <input type="range" id="lx-r-sl" class="w-full" style="accent-color:var(--lx-sl)">
+                <div id="lx-sl-muesca" style="display:none;position:absolute;top:0;bottom:0;width:2px;background:var(--lx-sl);opacity:.55;pointer-events:none"></div>
+              </div>
+              <div id="lx-sl-muesca-lbl" class="text-xs" style="display:none;color:var(--lx-muted)"></div>
               <!-- BUG-GEOMETRÍA (parte 5a) — aviso de stop DENTRO de la escalera JUNTO
                    al panel de STOP: el operador lo descubre MIRANDO la ficha (no solo
                    al aplicar por el gate, ni al correr el auditor). Dato R-RA6 de ESTA
@@ -967,6 +975,24 @@
               be: S.be?S.beV:null, sc: !!S.sc, l1: S.l1||0, l2: S.l2||0, l3: S.l3||0,
               dir: S.dir, z: ZON||[], d: DON||{} }); };
           window.luxyDirty = function(curSnap, validSnap){ return curSnap !== validSnap; };
+          // DISPLAY-FX — espejo JS de scripts/fx_levers.fmt_pts (misma regla, misma
+          // fuente de tick: el catálogo viaja en D.units). v en USD → sufijo legible:
+          // FX en TICKS (' (~N ticks)', jamás '0 pts'); índices en pts solo con
+          // show_pts. Sin unidades/tick → '' (fail-open, nunca fabricar rejilla).
+          window.luxyFmtPts = function(v, units, pv){
+            const u=units||{}; if(v==null||!pv) return '';
+            const pts=Math.abs(v)/pv;
+            if(u.es_fx){ if(!u.tick) return '';
+              return ' (~'+Math.round(pts/u.tick).toLocaleString('en-US')+' ticks)'; }
+            if(!u.show_pts) return '';
+            const r=Math.round(pts);
+            return ' ('+(r||pts.toPrecision(2))+' pts)'; };
+          // SL-RESPIRO — fondo del slider del backstop: el backstop es seguro de
+          // catástrofe MÁS ALLÁ de lo observado, así que el rango respira ≥1.25×
+          // el pullback más profundo y nunca queda menos profundo que el backstop
+          // del estudio ni el valor vivo de la config (todas las estrategias).
+          window.luxySlRange = function(maeMax, estudioSl, configSl){
+            return Math.ceil(Math.max(1, (maeMax||0)*1.25, estudioSl||0, configSl||0)); };
           const money = v => (v==null?'—':(v<0?'−$':'$')+Math.abs(Math.round(v)).toLocaleString('en-US'));
           const pct = v => (v==null?'—':(+v).toFixed(1)+'%');
           const pf  = v => (v==null?'—':(isFinite(v)?(+v).toFixed(2):'∞'));
@@ -1260,8 +1286,9 @@
           }
           // ---- leyenda ----
           function legend(){
-            const showPts=D.units && D.units.show_pts;
-            const ptf=v=> showPts&&PV? ' ('+Math.round(v/PV)+' pts)':'';
+            // DISPLAY-FX — la leyenda usa el espejo de fmt_pts: FX en TICKS del
+            // catálogo (6J: 'SL −$2,000 (~N ticks)', jamás '0 pts' ni omitido).
+            const ptf=v=> window.luxyFmtPts(v, D.units, PV);
             el('lx-legend').innerHTML=[
               ['TP','var(--lx-tp)',S.tpV], ['BE','#a371f7',S.be?S.beV:null],
               ['C1','#58a6ff',S.l1>0?-S.l1:null],   // LX-15 — C1 en la leyenda solo con C1>0
@@ -1417,7 +1444,9 @@
           }
           function refresh(){
             rebuildBlk();                              // LX-2: BH/BD antes de tabla/diagrama
-            el('lx-v-tp').textContent=money(S.tpV); el('lx-v-sl').textContent=money(-S.slV);
+            el('lx-v-tp').textContent=money(S.tpV);
+            // SL-RESPIRO (d) — readout del SL con fmt_pts (ticks en FX)
+            el('lx-v-sl').textContent=money(-S.slV)+window.luxyFmtPts(S.slV, D.units, PV);
             el('lx-v-be').textContent=S.be?money(S.beV):'—'; el('lx-v-l2').textContent=money(-S.l2); el('lx-v-l3').textContent=money(-S.l3);
             if(el('lx-v-l1')) el('lx-v-l1').textContent=(S.l1>0?money(-S.l1)+' (límite)':'mercado');  // LX-15 C1
             el('lx-alloc').textContent=A.join('/'); el('lx-why').textContent=R.why_alloc||'';
@@ -1441,7 +1470,21 @@
             setupRng('lx-r-tp',mfeMax,function(v){S.tpV=v;}); setupRng('lx-r-be',mfeMax,function(v){S.beV=v;});
             setupRng('lx-r-l1',maeMax,function(v){S.l1=v;},400);   // LX-15 — C1 profundidad (paso fino)
             setupRng('lx-r-l2',maeMax,function(v){S.l2=v;}); setupRng('lx-r-l3',maeMax,function(v){S.l3=v;});
-            setupRng('lx-r-sl',maeMax,function(v){S.slV=v;});
+            // SL-RESPIRO (a) — el SL ya NO está capado al MAE más profundo (eso
+            // forzaba "siempre toca" y castigaba el neto — 6J): respira ≥1.25× el
+            // pullback más profundo y cubre estudio (RECO0) y config viva.
+            const slMax=window.luxySlRange(maeMax, RECO0.slV, D.config_sl_usd);
+            setupRng('lx-r-sl',slMax,function(v){S.slV=v;});
+            // SL-RESPIRO (b) — muesca "pullback más profundo (−$X)": estática por
+            // estudio; el operador VE cuándo el SL cruza a la zona donde toca 0.
+            const mk=el('lx-sl-muesca'), mkl=el('lx-sl-muesca-lbl');
+            if(mk && mkl && Math.abs(D.mae_min)>0){
+              mk.style.left=Math.min(100, maeMax/slMax*100).toFixed(1)+'%'; mk.style.display='';
+              mkl.textContent='▲ pullback más profundo: '+money(-maeMax)
+                +window.luxyFmtPts(maeMax, D.units, PV)
+                +' — un SL más profundo respira por encima de TODO lo observado (toca 0)';
+              mkl.style.display='';
+            }
             [['lx-t-tp','tp'],['lx-t-be','be'],['lx-t-sc','sc'],['lx-t-sl','sl']].forEach(function(pair){ const id=pair[0], k=pair[1];
               el(id).addEventListener('change',function(){ S[k]=el(id).checked; refresh(); }); });
             ['lx-t-mfe','lx-t-mae','lx-t-cls'].forEach(function(id){ el(id).addEventListener('change',drawChart); });
@@ -1619,7 +1662,8 @@
         <p class="text-sm text-gray-500">Corre el <b>estudio Luxy</b> (pestaña Luxy) para el reparto derivado y el peor-caso por cuenta. Los perfiles se editan abajo (Config).</p>
         {% else %}
         {% set P = perfiles_panel %}
-        <p class="text-xs text-gray-500 mb-2">Reparto derivado del estudio; cada perfil re-escala micros y aplica sus caps. SL de referencia: <span class="font-mono">{% if P.sl_pts %}{{ P.sl_pts }} pts (${{ (P.sl_pts * P.pv / 10)|round|int }}/micro){% else %}— (sin backstop){% endif %}</span> · $/punto {{ P.pv }}.</p>
+        {# DISPLAY-FX — fmt_pts: FX en ticks (6E/6J jamás "0 pts" ni notación científica) #}
+        <p class="text-xs text-gray-500 mb-2">Reparto derivado del estudio; cada perfil re-escala micros y aplica sus caps. SL de referencia: <span class="font-mono">{% if P.sl_pts %}{{ fmt_pts(l1_instrument, P.sl_pts) }} (${{ (P.sl_pts * P.pv / 10)|round|int }}/micro){% else %}— (sin backstop){% endif %}</span> · $/punto {{ P.pv }}.</p>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead><tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">
