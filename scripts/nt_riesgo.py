@@ -917,13 +917,25 @@ async def calcular(clave: str, oos: float = 0.3,
 
 def _print_resumen_estudios(clave: str, res: dict) -> None:
     base = res["linea_base"]["total"]
+    lc = res.get("listado_crudo")
+    n_uni = res["universo"]["n"]
+    # AUDITORÍA 2026-07-18 — etiqueta de UNIVERSO (cambio aprobado): esta
+    # línea sale de `linea_base` = eval_config sobre el universo CONTENIDO
+    # (sts: con ATR real y contenidos LX-13), NO del listado completo — ese
+    # es la línea "Listado completo" de abajo. Mismo nombre "CRUDO", dos
+    # universos: aquí queda declarado con "N de M" (la confusión real del
+    # operador: GC −$14,930/41 vs lista −$8,880/44).
+    n_lista = (((lc or {}).get("metricas") or {}).get("n")
+               or (res.get("meta") or {}).get("n_trades_listado"))
+    uni_lbl = (f"universo contenido, {n_uni} de {n_lista} trades" if n_lista
+               else f"universo contenido, {n_uni} trades")
     print(f"\n════ ESTUDIOS DE RIESGO — {clave} "
-          f"(universo {res['universo']['n']} trades, "
+          f"({uni_lbl}, "
           f"{res['universo']['n_atr_estimado']} con ATR estimado) ════")
-    print(f"\nCRUDO (señal, sin gestión): net {_fmt_usd(base['net_usd'])} · "
+    print(f"\nCRUDO (señal, sin gestión — {uni_lbl}): "
+          f"net {_fmt_usd(base['net_usd'])} · "
           f"PF {base['pf']} · DD {_fmt_usd(base['max_dd_usd'])} · "
           f"peor {_fmt_usd(base['peor_trade_usd'])}")
-    lc = res.get("listado_crudo")
     if lc:
         d = lc["duracion_h"]
         print(f"  Listado completo: {lc['metricas']['n']} trades · duración "
@@ -938,9 +950,15 @@ def _print_resumen_estudios(clave: str, res: dict) -> None:
 
     b = res["backstop"]["optimo"]
     if b:
+        # DISPLAY-FX (linaje FIX-FX-BACKSTOP) — fmt_pts: FX en TICKS del
+        # catálogo (6J: jamás "$2,000.00 = 0 pts"); índices en pts.
+        from scripts.fx_levers import fmt_pts
+        activo = (res.get("meta") or {}).get("activo")
         print(f"\n▎Backstop óptimo: {_fmt_usd(b['backstop_usd'])} = "
-              f"{b['backstop_pts']:.0f} pts ≈ {b['x_atr_mediana']}×ATR · "
-              f"toca {b['tocados']} · Δnet {_fmt_usd(b['delta_net_usd'])} · "
+              f"{fmt_pts(activo, b['backstop_pts'])} ≈ "
+              f"{b['x_atr_mediana']}×ATR · "
+              f"toca {b['tocados']} de {n_uni} · "
+              f"Δnet {_fmt_usd(b['delta_net_usd'])} · "
               f"ΔDD {b['delta_dd_pct']}% · peor c/gap {b['peor_con_gap_usd']}")
     else:
         print("\n▎Backstop: NINGÚN nivel del grid suma vs base (revisar).")
