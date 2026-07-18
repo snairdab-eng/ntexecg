@@ -888,6 +888,11 @@
               <input type="range" id="lx-r-l3" class="w-full" style="accent-color:var(--lx-scin)">
               <label class="flex items-center justify-between gap-2 text-xs" style="color:var(--lx-ink)"><span><input type="checkbox" id="lx-t-sl" checked> <span style="color:var(--lx-sl)">■</span> SL backstop</span><span id="lx-v-sl" class="font-mono"></span></label>
               <input type="range" id="lx-r-sl" class="w-full" style="accent-color:var(--lx-sl)">
+              <!-- BUG-GEOMETRÍA (parte 5a) — aviso de stop DENTRO de la escalera JUNTO
+                   al panel de STOP: el operador lo descubre MIRANDO la ficha (no solo
+                   al aplicar por el gate, ni al correr el auditor). Dato R-RA6 de ESTA
+                   estrategia. Poblado desde D.stop_dentro_escalera (misma verdad backend). -->
+              <div id="lx-stop-escalera" class="text-xs rounded p-2 mt-1" style="display:none;background:#2d1a0d;color:#d29922;border:1px solid rgba(210,153,34,.5)"></div>
             </div>
           </div>
 
@@ -1123,15 +1128,21 @@
               + '<th class="px-3 py-2">Fila</th><th class="px-3 py-2">Neto</th><th class="px-3 py-2">$/trade</th><th class="px-3 py-2">PF</th><th class="px-3 py-2">Max DD</th><th class="px-3 py-2">Peor</th><th class="px-3 py-2">Particip.</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">N</th>'
               + '</tr></thead><tbody>'+body+'</tbody></table>';
             const tm=el('lx-t3-mode'); if(tm){ tm.textContent = mode==='val'?'validado · motor':'estimacion · aprox'; tm.style.color = mode==='val'?'#3fb950':'#d29922'; }
-            semaforo(mode);
+            semaforo(mode, oosR);
           }
           // LX-3b — semáforo de robustez: SOLO de la fila OOS validada (motor).
-          function semaforo(mode){
+          function semaforo(mode, oos){
             const r=el('lx-robustez'); if(!r) return;
             // LX-6 — si el estudio es implausible, el semáforo NO se enciende.
             if(D.implausible){ r.style.opacity='0.5'; r.innerHTML='⚪ <b style="color:var(--lx-muted)">robustez OOS</b> <span style="color:#f85149">sin veredicto — números implausibles</span>'; return; }
             // LX-7 — estado PROPIO: PF no evaluable por muestra (muy pocos perdedores). NO es "implausible".
             if(D.pf_no_evaluable){ r.style.opacity='0.6'; r.innerHTML='⚪ <b style="color:var(--lx-muted)">robustez OOS</b> <span style="color:#d29922">no evaluable por muestra — PF sin significado (muy pocos perdedores)</span>'; return; }
+            // BUG-LX7 (parte 1) — el semáforo aplica LA MISMA regla que la fila OOS:
+            // con <MIN_PERDEDORES_PF perdedores el PF no es evaluable → ⚪ (antes
+            // mentía 🟢 con PF alto mientras la fila decía "n/s"). Se juzga por la
+            // fila OOS A LA VISTA → honesto aun con un estudio viejo (verdict congelado).
+            const _NLMIN=3, _oc=oos||{};
+            if(_oc.nl!=null && _oc.nl<_NLMIN){ r.style.opacity=(mode==='est')?'0.5':'0.6'; r.innerHTML='⚪ <b style="color:var(--lx-muted)">robustez OOS</b> <span style="color:#d29922">no evaluable — muy pocos perdedores ('+_oc.nl+')</span>'; return; }
             const v=(VROB&&VROB.verdict)||'rojo';
             // LX-14 — ⚪ sin veredicto (OOS muestra chica): ni verde ni rojo.
             const map={verde:['🟢','#3fb950','robusto'],amarillo:['🟡','#d29922','frágil'],rojo:['🔴','#f85149','no generaliza'],sin_veredicto:['⚪','#8b949e','sin veredicto — muestra chica']};
@@ -1147,7 +1158,14 @@
             if(im){ if(D.implausible){ im.textContent='⛔ '+D.implausible_msg; im.style.display=''; } else im.style.display='none'; }
             // LX-7 — aviso ÁMBAR honesto (no rojo) cuando el PF no es evaluable por muestra.
             const pn=el('lx-pf-noeval');
-            if(pn){ if(D.pf_no_evaluable && !D.implausible){ pn.textContent='ⓘ '+D.pf_no_evaluable_msg; pn.style.display=''; } else pn.style.display='none'; } }
+            if(pn){ if(D.pf_no_evaluable && !D.implausible){ pn.textContent='ⓘ '+D.pf_no_evaluable_msg; pn.style.display=''; } else pn.style.display='none'; }
+            // BUG-GEOMETRÍA (parte 5a) — stop DENTRO de la escalera: aviso junto al
+            // panel de STOP con el dato R-RA6 de ESTA estrategia. El gate habla al
+            // aplicar y el auditor al correrlo; aquí habla al MIRAR la ficha.
+            const se=el('lx-stop-escalera'), sd=D.stop_dentro_escalera;
+            if(se){ if(sd){ const hp=(sd.huerfana_pct!=null)?(' · huérfana R-RA6 '+sd.huerfana_pct+'%'):'';
+                se.innerHTML='⚠ Stop DENTRO de la escalera — <b>'+sd.pierna+' a '+sd.pierna_atr+'×ATR</b> opera MÁS ALLÁ del backstop ('+sd.backstop_atr+'×ATR)'+hp+'. Esa pierna puede llenarse fuera de la protección (huérfana R-RA6): el motor lo modela coherente, pero es geometría frágil — decide con el dato.';
+                se.style.display=''; } else se.style.display='none'; } }
           // ---- LX-1 #3: UN diagrama a todo el ancho, corte del split + OOS tenue ----
           function drawChart(){
             const cv=el('lx-chart'); if(!cv) return; const ctx=cv.getContext('2d');
@@ -1298,8 +1316,15 @@
              ['rearmado','re-armado ('+_mc+' ciclo'+(_mc===1?'':'s')+' · informativo)'],
              ['duracion','sin corte (techo MAE)']].forEach(function(kv){
               const m=C[kv[0]]||{}; const net=m.net_usd;
-              const dnet=(prev==null||net==null)?'':((net-prev>=0?'+':'−')+'$'+Math.abs(Math.round(net-prev)).toLocaleString('en-US'));
-              const dcol=(prev==null||net==null)?'var(--lx-muted)':(net-prev>=0?'var(--lx-green)':'var(--lx-red)');
+              // BUG-Δ (parte 3) — el re-armado NO se compara vs la fila anterior (3h)
+              // sino vs CORTE 1h (baseline del despacho vigente): así re-armado(1
+              // ciclo)==1h ⇒ Δ=$0 sin verde (antes mostraba +$X verde contra 3h,
+              // un espejismo). El resto de cortes sí es Δ vs fila anterior (escalera).
+              const es_rearm=(kv[0]==='rearmado');
+              const ref=es_rearm?((C['1h']||{}).net_usd):prev;
+              const dz=(ref!=null&&net!=null&&net-ref===0);
+              const dnet=(ref==null||net==null)?'':((net-ref>=0?'+':'−')+'$'+Math.abs(Math.round(net-ref)).toLocaleString('en-US'));
+              const dcol=(ref==null||net==null||dz)?'var(--lx-muted)':(net-ref>0?'var(--lx-green)':'var(--lx-red)');
               filas+='<tr style="border-top:1px solid var(--lx-line)"><td class="py-1 pr-3" style="color:var(--lx-ink)">'+kv[1]+'</td>'
                 +'<td class="py-1 pr-3 font-mono" style="color:'+(net<0?'var(--lx-red)':'var(--lx-ink)')+'">'+money(net)+'</td>'
                 +'<td class="py-1 pr-3 font-mono">'+dnet+'&nbsp;<span style="color:'+dcol+'">▸</span></td>'
@@ -1307,7 +1332,9 @@
                 +'<td class="py-1 pr-3 font-mono" style="color:var(--lx-muted)">'+money(m.max_dd_usd==null?null:-m.max_dd_usd)+'</td>'
                 +'<td class="py-1 pr-3 font-mono" style="color:var(--lx-muted)">'+money(m.peor_trade_usd)+'</td>'
                 +'<td class="py-1 font-mono" style="color:var(--lx-muted)">'+(m.n==null?'—':m.n)+'</td></tr>';
-              if(net!=null) prev=net;
+              // el re-armado es informativo (fuera de la escalera) → NO desplaza el
+              // baseline: la fila `duracion` sigue comparándose contra 3h.
+              if(net!=null && !es_rearm) prev=net;
             });
             h+='<div><div class="uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Pregunta de oro '
               +'<span style="text-transform:none">— ladder por política de corte (Δ vs. corte anterior = aporte marginal del fill más tardío: ¿suma o es cuchillo?)</span></div>'

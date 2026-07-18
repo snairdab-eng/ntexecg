@@ -1061,7 +1061,7 @@ async def luxy_aplicar_palancas_preview(
     aplicable = ev.get("aplicable") or {}
     activo = (ctx["clave"] or "").split("_")[0] or None
     gate = mrl.gate_palancas(ctx["study"], ev.get("señales") or {},
-                             aplicable.get("scale_entry"))
+                             aplicable.get("scale_entry"), aplicable=aplicable)
     fecha = ctx["study"].get("fecha")
     # FIX-FX-BACKSTOP — palancas que NO se pudieron escribir por caer bajo 1 tick
     # (fail-honest): jamás un 0 colapsado en silencio; se avisan arriba, ruidoso.
@@ -1109,7 +1109,7 @@ async def luxy_aplicar_palancas(
     aplicable = ev.get("aplicable") or {}
     # LX-11 — GATE recomputado SERVER-SIDE (nunca del cliente) + C1>0 fuerza ámbar.
     gate = mrl.gate_palancas(ctx["study"], ev.get("señales") or {},
-                             aplicable.get("scale_entry"))
+                             aplicable.get("scale_entry"), aplicable=aplicable)
     gate_err = _gate_enforce(gate, body)
     if gate_err:
         return gate_err

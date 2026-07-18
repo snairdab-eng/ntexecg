@@ -55,6 +55,8 @@ from scripts.pullback_timing import pctl
 # FIX-FX-BACKSTOP — conversión ÚNICA USD→puntos/×ATR con la rejilla del tick del
 # catálogo (representabilidad fail-honest). Reemplaza los round(_,2/4) dispersos.
 from scripts.fx_levers import tick_de, usd_a_mult_atr, usd_a_puntos, snap_puntos
+# RA-2b — config del re-armado (módulo puro; el gate y el job lo comparten).
+from app.services.rearm import normalize_rearm, rearm_enabled, ttl_coherente
 
 TOTAL_MICROS = 10
 
@@ -488,22 +490,64 @@ def _expectativa(m: dict):
     return (net / n) if (net is not None and n) else None
 
 
+def stop_dentro_escalera(b_pts, levels_atr, atr_med, huerfana_pct=None):
+    """R-RA6 geometría (BUG-GEOMETRÍA, parte 5) — ¿el backstop (PUNTOS de precio)
+    es MÁS SOMERO que alguna pierna de la escalera (C2/C3, en ×ATR)? La comparación
+    es en ×ATR: `backstop_atr = b_pts/atr_med` vs los `levels_atr`. Si una pierna
+    incluida cae MÁS ALLÁ del stop, opera fuera de la protección → fill huérfano si
+    el broker no reacciona limpio (el motor lo modela coherente, pero es geometría
+    frágil que HOY es silenciosa). Devuelve None (sin riesgo/sin datos) o la pierna
+    MÁS PROFUNDA invertida: {pierna, backstop_atr, pierna_atr, huerfana_pct}."""
+    try:
+        b = float(b_pts) if b_pts else 0.0
+        a = float(atr_med) if atr_med else 0.0
+    except (TypeError, ValueError):
+        return None
+    if b <= 0 or a <= 0 or not levels_atr:
+        return None
+    b_atr = b / a                                  # backstop en ×ATR
+    peor = None
+    for i, lv in enumerate(levels_atr):            # levels = [C2_atr, C3_atr]
+        try:
+            lv = float(lv or 0)
+        except (TypeError, ValueError):
+            continue
+        if lv > 0 and lv > b_atr:                  # la pierna cae MÁS ALLÁ del stop
+            peor = {"pierna": f"C{i + 2}", "backstop_atr": round(b_atr, 2),
+                    "pierna_atr": round(lv, 2)}
+    if peor is not None and huerfana_pct is not None:
+        peor["huerfana_pct"] = huerfana_pct
+    return peor
+
+
 def robustez_semaforo(oos: dict) -> dict:
-    """Semáforo de robustez desde la fila OOS VALIDADA (net/pf):
-    ⚪ SIN VEREDICTO n_oos<RETENCION_N_MIN (muestra chica: un verde/rojo sin
-    sustancia, LX-14) · 🟢 verde neto>0 y PF≥1.3 · 🟡 amarillo neto>0 y PF
-    1.0–1.3 · 🔴 rojo neto≤0 o PF<1.0."""
+    """Semáforo de robustez desde la fila OOS VALIDADA (net/pf) — FUENTE ÚNICA
+    (la lee el gate LX-11 Y la muestra el front; deben coincidir con la fila OOS):
+    ⚪ SIN VEREDICTO si n_oos<RETENCION_N_MIN (muestra chica, LX-14) O
+    n_perdedores<MIN_PERDEDORES_PF (LX-7: el PF no es evaluable con casi sin
+    pérdidas — LA MISMA regla que rotula la fila OOS 'n/s (N perdedores)'; sin
+    esto el semáforo mentía 🟢 mientras la fila decía n/s) · 🟢 verde neto>0 y
+    PF≥1.3 · 🟡 amarillo neto>0 y PF 1.0–1.3 · 🔴 rojo neto≤0 o PF<1.0.
+
+    `reason` acompaña al ⚪ (muestra_chica | pocos_perdedores) para que el front
+    muestre el mensaje correcto. `n_perdedores` None (caller sin dato) → LX-7 no
+    se juzga (retrocompat), solo LX-14."""
     net, pf = oos.get("net_usd"), oos.get("pf")
     n = oos.get("n") or 0
+    nl = oos.get("n_perdedores")
+    reason = None
     if n < RETENCION_N_MIN:                       # LX-14 — muestra chica: ni verde ni rojo
-        verd = "sin_veredicto"
+        verd, reason = "sin_veredicto", "muestra_chica"
+    elif nl is not None and nl < MIN_PERDEDORES_PF:   # LX-7 — PF sin significado
+        verd, reason = "sin_veredicto", "pocos_perdedores"
     elif net is None or pf is None or net <= 0 or pf < ROBUSTEZ_PF_MIN:
         verd = "rojo"
     elif pf >= ROBUSTEZ_PF_VERDE:
         verd = "verde"
     else:
         verd = "amarillo"
-    return {"verdict": verd, "net_usd": net, "pf": pf, "n": oos.get("n")}
+    return {"verdict": verd, "net_usd": net, "pf": pf, "n": oos.get("n"),
+            "n_perdedores": nl, "reason": reason}
 
 
 def retencion_oos(oos: dict, crudo_plus: dict) -> dict:
@@ -920,6 +964,17 @@ def luxy_study(trades, ppt: float, *, oos: float = 0.3,
                     ppt=ppt)
         except Exception as _exc:            # informativo — jamás rompe el estudio
             dashboard["piernas"] = {"error": repr(_exc)}
+        # BUG-GEOMETRÍA (parte 5a) — ¿el backstop queda DENTRO de la escalera? Se
+        # computa UNA VEZ aquí (misma verdad que el gate y el auditor) y el front
+        # lo muestra como banner junto al panel de STOP: el operador lo descubre
+        # MIRANDO la ficha, no solo al aplicar. Adjunta el % huérfana R-RA6 de ESTA
+        # estrategia (de la sección piernas) cuando existe.
+        _ladder_lv = (levers_in.get("ladder") or {}).get("levels") or []
+        dashboard["stop_dentro_escalera"] = stop_dentro_escalera(
+            levers_in.get("b_pts"), _ladder_lv[1:],
+            (dashboard.get("units") or {}).get("atr_med_pts"),
+            huerfana_pct=(((dashboard.get("piernas") or {}).get("orden_eventos")
+                           or {}).get("pct_c3_huerfana")))
 
     return {
         "version": 3,               # v3: BE same_bar recortado (walk aditivo)
@@ -1085,18 +1140,41 @@ def _gate_build(s: dict, scale_entry: dict | None = None) -> dict:
     if scale_entry and float(scale_entry.get("c1_depth_atr") or 0.0) > 0:
         amber.append("C1 móvil (profundidad>0) — participación <100% por diseño "
                      "(la entrada base es límite, no mercado)")
+    # RA-2b E1 — re-armado ON con TTL≠3600 → ROJO (el ciclo no mapea al horizonte
+    # del estudio; corrige entry_reserve_timeout_seconds antes de aplicar).
+    if s.get("rearm_ttl_incoherente"):
+        rojo.append("re-armado ON con TTL≠3600s (ttl_incoherente, E1) — fija "
+                    "entry_reserve_timeout_seconds=3600 antes de aplicar")
+    # RA-2b — re-armado ON = riesgo (órdenes que se re-envían solas) → mínimo ÁMBAR.
+    elif s.get("rearm_on"):
+        amber.append("re-armado de piernas ON — órdenes límite que se RE-ENVÍAN "
+                     "solas por ciclo; observar en demo antes de vivo")
+    # BUG-GEOMETRÍA (parte 5) — backstop DENTRO de la escalera: una pierna opera
+    # más allá del stop (huérfana R-RA6). No se prohíbe; el operador decide con el
+    # aviso, pero jamás en silencio → mínimo ÁMBAR.
+    _sde = s.get("stop_dentro_escalera")
+    if _sde:
+        _hp = (f" · huérfana R-RA6 {_sde.get('huerfana_pct')}%"
+               if _sde.get("huerfana_pct") is not None else "")
+        amber.append(f"stop DENTRO de la escalera — {_sde['pierna']} a "
+                     f"{_sde['pierna_atr']}×ATR opera MÁS ALLÁ del backstop "
+                     f"({_sde['backstop_atr']}×ATR){_hp}")
     nivel = "rojo" if rojo else ("amber" if amber else "verde")
     return {"nivel": nivel, "triggers": rojo + amber,
             "frase_rojo": GATE_FRASE_ROJO, "señales": s}
 
 
 def gate_palancas(study: dict, señales_eval: dict,
-                  scale_entry: dict | None = None) -> dict:
+                  scale_entry: dict | None = None,
+                  aplicable: dict | None = None) -> dict:
     """LX-15 — gate del «Aplicar estas palancas»: la robustez/participación/flip/
     mejora vienen de la evaluación de ESTAS palancas (`evaluate_overrides.señales`),
     el intrabar/contención del master (study), y el C1 móvil de `scale_entry`.
-    Recomputado SIEMPRE server-side (nunca del cliente)."""
+    RA-2b — `aplicable` (config completa a escribir) añade las señales del re-armado
+    (ON = ámbar; TTL≠3600 con ON = rojo, E1). Recomputado SIEMPRE server-side."""
     st = _señales_gate(study)
+    rearm_on = rearm_enabled(aplicable) if aplicable is not None else False
+    ttl_ok, _mot = ttl_coherente(aplicable) if aplicable is not None else (True, None)
     s = {
         "robustez": señales_eval.get("robustez"),
         "implausible": señales_eval.get("implausible"),
@@ -1106,6 +1184,10 @@ def gate_palancas(study: dict, señales_eval: dict,
         "participacion_pct": señales_eval.get("participacion_pct"),
         "intrabar_no_confiable": st["intrabar_no_confiable"],
         "contencion_pct": st["contencion_pct"],
+        "rearm_on": rearm_on,
+        "rearm_ttl_incoherente": rearm_on and not ttl_ok,
+        # BUG-GEOMETRÍA (parte 5) — stop dentro de la escalera (privado del aplicable).
+        "stop_dentro_escalera": (aplicable or {}).get("_stop_dentro_escalera"),
     }
     return _gate_build(s, scale_entry)
 
@@ -1324,9 +1406,23 @@ def config_from_overrides(o: dict, atr_med, ppt, alloc, cancel_after_s,
         }
         if c1 > 0:                       # C1 MÓVIL — activa el cable de despacho
             se["c1_depth_atr"] = c1
+        # RA-2b — re-armado de piernas: se escribe SOLO aquí (vía Aplicar), jamás
+        # nace solo. `o["rearm"]` lo siembra el operador desde el veredicto RA-0v3
+        # (max_ciclos/k_sobre_c0). enabled=true solo si viene explícito. El gate
+        # LX-11 lo trata como riesgo (ámbar) + E1 (ttl_incoherente) como rojo.
+        rearm = normalize_rearm(o.get("rearm"))
+        if rearm is not None:
+            se["rearm"] = rearm
         out["scale_entry"] = se
     if no_repr:
         out["_no_representable"] = no_repr
+    # BUG-GEOMETRÍA (parte 5) — ¿el backstop queda DENTRO de la escalera (una
+    # pierna opera más allá del stop)? Clave privada (_): el gate la lee como ámbar
+    # y el preview la muestra; jamás persiste (el merge solo copia llaves conocidas).
+    _sde = stop_dentro_escalera(out.get("backstop_points"),
+                                (out.get("scale_entry") or {}).get("levels"), atr_med)
+    if _sde:
+        out["_stop_dentro_escalera"] = _sde
     return out
 
 

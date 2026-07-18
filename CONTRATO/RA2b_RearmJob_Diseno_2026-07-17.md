@@ -85,6 +85,35 @@ risk_plan_json["rearm"] = {
 - **JAMÁS dos órdenes vivas al mismo precio** (fill doble = 2× posición). La ventana
   ciega [60,62) es costo aceptado (asimetría de la misión).
 
+### E1 — guard `ttl_incoherente` (aprobación del arquitecto 2026-07-17)
+
+El modelo sin-solape y el horizonte `max_ciclos` del veredicto RA-0v3 se calibraron
+con ciclos de **62 min sobre un TTL de 3600 s** (RA-1 `REARM_CYCLE_MIN=62` sobre el
+cancelAfter de 60 min). Si `rearm.enabled=true` pero
+`entry_reserve_timeout_seconds ≠ 3600`, el ciclo real deja de mapear al horizonte
+del estudio y el timing sin-solape ya no está garantizado.
+
+**Guard (fail-closed en dos puntos):**
+1. **En Aplicar** (`gate_palancas`/preview): encender `rearm` con TTL≠3600 → **ROJO**
+   (`ttl_incoherente`), exige corregir el `entry_reserve_timeout_seconds` a 3600
+   ANTES de aplicar. No se aplica un re-armado con ciclo incoherente.
+2. **En el job** (cada barrido): si `rearm` ON y el `cancelAfter` efectivo ≠ 3600 →
+   **no re-arma**, AuditLog `REARM_SKIP{motivo:"ttl_incoherente"}`. Defensa en
+   profundidad por si la config se editó por fuera del gate.
+
+Fuente única del requisito: `REARM_REQUIRED_TTL_S = 3600` (constante nueva).
+
+### E2 — `assumed_filled` NO muta la posición (aprobación 2026-07-17)
+
+R-RA2 con toque de orden viva ⇒ ASUMIR FILL. `assumed_filled` es un estado de la
+**pierna** (`risk_plan_json["rearm"].legs[i].state = "assumed_filled"`) cuyo ÚNICO
+efecto es **bloquear el re-envío de esa pierna** (y contarla para exposición/
+peor-caso en el razonamiento del job). **JAMÁS** toca `PositionState.state`/
+`direction`/`quantity` — la autoridad de la posición es `position_service` (fills
+reales/inferidos de cierre), no el job de re-armado. El job infiere para SU decisión
+de re-envío, no para reescribir la posición. Invariante con test explícito: tras un
+`assumed_filled`, `PositionState` queda idéntico (solo cambia `risk_plan_json.rearm`).
+
 ## 4. Motor de inferencia — jerarquía R-RA9 (primera que dispara, corta)
 
 Orden: **R-RA5/6 > R-RA1 > R-RA2 > R-RA7 > R-RA3/4/8**.
@@ -138,6 +167,8 @@ object_id=f"{account}:{symbol}", new_value={…})` (`audit_service.py:16-53`).
 | dry_run / pausa (kill-switch) | corta re-armados como entradas |
 | perfil cambió a media vida | recalcula qty con catálogo vigente |
 | > max_ciclos | no re-arma (R-RA4) |
+| **TTL≠3600 con rearm ON (E1)** | Aplicar→ROJO; job→no re-arma (`ttl_incoherente`) |
+| **assumed_filled (E2)** | bloquea SOLO el re-envío de la pierna; posición intacta |
 
 Tests adversariales: **cada R-RA1..9 una por una**, sin-solape (60 vs 61-62),
 cotas, correlación de ids, kill-switch corta, perfil→recalcula qty, post-exit no
