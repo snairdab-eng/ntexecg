@@ -205,10 +205,14 @@ def luxy_outcome(
     vía `leg_filled` con corte (R-T1); exit COMÚN de la posición vía
     `_luxy_exit_atr`. `fav` = {tp_atr: minuto} (touch_minutes favorable);
     `be_ret` = {be_atr: minuto} (be_return_minutes). Cada pierna llenada a
-    profundidad d gana (exit + d)×ATR."""
+    profundidad d gana (exit + d)×ATR — SALVO con exit por STOP y pierna MÁS
+    PROFUNDA que el stop (d > sl_atr): esa sale ≈ AL FILL (pnl 0, recorte
+    min(exit+d, 0)) porque el stop ya reventó cuando la pierna llena — jamás
+    aporta positivo (FIX-D-EJECUCION 2026-07-18; paridad con
+    mr_sims.ladder_outcome y position_sizing.worst_case_loss)."""
     sl_atr = (b_pts / st.atr_pts) if b_pts else None
     tp_atr = (tp_by_side or {}).get(st.side)
-    ex, _motivo = _luxy_exit_atr(
+    ex, motivo = _luxy_exit_atr(
         st, sl_atr=sl_atr, be_atr=be_atr, tp_atr=tp_atr,
         t_sl=None,                                   # producción: stop manda
         t_tp=(fav or {}).get(tp_atr) if tp_atr else None,
@@ -220,7 +224,8 @@ def luxy_outcome(
         if not leg_filled(st, d, cancel_after_s)[0]:
             continue
         filled_w += w
-        acc += w * (ex + d) * st.atr_pts
+        leg_ex = min(ex + d, 0.0) if motivo == "stop" else (ex + d)
+        acc += w * leg_ex * st.atr_pts
     usd = acc * ppt
     return (usd if filled_w > 0 else 0.0), filled_w > 0
 

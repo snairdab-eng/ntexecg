@@ -570,13 +570,15 @@ def test_determinismo_dos_corridas_mismo_json(golden):
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 6) HALLAZGO D — pierna MÁS PROFUNDA que el stop (GC, operador 2026-07-18)
+#    FIX-D-EJECUCION aplicado: el contrato correcto es VERDE en las 4 rutas.
 # ═══════════════════════════════════════════════════════════════════════════
 # Construcción a mano: ATR 5, backstop 40 pts (8×ATR), pierna profunda a
 # 9×ATR = 45 pts, MAE 50 pts → el trade ESTÁ stoppeado y la pierna llena MÁS
-# ALLÁ del stop. El modelo vigente la valora saliendo AL PRECIO DEL STOP:
-# pnl = −(b − d·ATR) = −(40−45) = +5 pts POSITIVOS (dinero fantasma). En
-# ejecución real el stop ya reventó cuando la pierna llena → salida ≈ al
-# precio del fill → pnl ≈ 0 − gap/slippage.
+# ALLÁ del stop. El stop ya reventó cuando la pierna llena → salida ≈ al
+# precio del fill → pnl ≈ 0 − gap (JAMÁS positivo). El modelo viejo la
+# valoraba saliendo al precio del stop: +(d·ATR − b) = +$100 fantasma por
+# 0.4 de contrato (cuantificado en flota: GC +$5,167 · NQ +$5,901 con OOS
+# honesto NEGATIVO — CONTRATO/AUDITORIA_Total_Luxy_FixtureOro_2026-07-18.md).
 
 _ST_D = SimTrade(number=99, side="long", in_sample=True, entry_price=5000.0,
                  atr_pts=ATR, mae_pts=50.0, mfe_pts=0.0,
@@ -585,33 +587,28 @@ _LEGS_D = ((0.0, 0.6), (9.0, 0.4))
 _B_PTS_D = 40.0
 
 
-def test_pierna_mas_profunda_que_stop_MODELO_VIGENTE_optimista():
-    """PIN del comportamiento vigente (BORRAR al aplicar el fix del triage).
-
-    Documenta el hallazgo: la pierna a 9×ATR en un trade stoppeado a 8×ATR
-    aporta +5 pts·0.4·50$ = +$100 fantasma. Total vigente = 0.6·(−40)·50 +
-    0.4·(+5)·50 = −$1100 (el honesto sería ≈ −$1200)."""
+def test_pierna_mas_profunda_que_stop_COMPORTAMIENTO_CORRECTO():
+    """El contrato honesto: exit ≈ fill para la pierna con d·ATR > b_pts.
+    A MANO: 0.6·(−40 pts)·50$ + 0.4·(0 pts)·50$ = −$1200 — y el evaluador
+    Luxy debe dar EXACTAMENTE lo mismo (paridad v1↔Luxy)."""
     usd, fw, _amb = ladder_outcome(_ST_D, _LEGS_D, _B_PTS_D, None, PPT,
                                    HaircutCfg())
-    assert usd == pytest.approx(-1100.0)
+    assert usd == pytest.approx(-1200.0)
     assert fw == pytest.approx(1.0)
-    # El evaluador Luxy comparte el modelo (ex = −sl_atr; pierna gana (ex+d)):
     lux, part = mrl.luxy_outcome(_ST_D, {}, {}, legs=_LEGS_D, b_pts=_B_PTS_D,
                                  tp_by_side=None, be_atr=None, ppt=PPT,
                                  cancel_after_s=None)
     assert part is True
-    assert lux == pytest.approx(-1100.0)
+    assert lux == pytest.approx(-1200.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="HALLAZGO D 2026-07-18 (GC): pierna llenada MÁS ALLÁ del stop debe "
-           "salir ≈ al precio del fill (pnl ≈ 0 − gap), no al precio del stop "
-           "(pnl positivo fantasma). Fix pendiente de triage del arquitecto — "
-           "al aplicarlo, este test pasa y el PIN de arriba se borra.")
-def test_pierna_mas_profunda_que_stop_COMPORTAMIENTO_CORRECTO():
-    """El contrato honesto: exit ≈ fill para la pierna con d·ATR > b_pts.
-    A MANO: 0.6·(−40 pts)·50$ + 0.4·(≈0 pts)·50$ = −$1200."""
+def test_pierna_mas_profunda_que_stop_paga_el_gap_no_gana_jamas():
+    """Con estrés de gap, la pierna profunda paga el gap del exit (0 − gap):
+    0.6·(−(40+5)) + 0.4·(−(0+5)) = −29 pts → −$1450. Nunca positivo."""
     usd, _fw, _amb = ladder_outcome(_ST_D, _LEGS_D, _B_PTS_D, None, PPT,
-                                    HaircutCfg())
-    assert usd == pytest.approx(-1200.0)
+                                    HaircutCfg(gap_pts=5.0))
+    assert usd == pytest.approx(-1450.0)
+    # y una pierna ligeramente MENOS honda que el stop sigue perdiendo lo suyo
+    usd2, _, _ = ladder_outcome(_ST_D, ((0.0, 0.6), (7.0, 0.4)), _B_PTS_D,
+                                None, PPT, HaircutCfg())
+    assert usd2 == pytest.approx((0.6 * -40.0 + 0.4 * -5.0) * PPT)  # −$1300

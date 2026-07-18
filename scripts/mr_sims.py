@@ -32,7 +32,11 @@ Modelo de la escalera (validado contra la referencia ES):
     retrocedió d×ATR (mae_atr ≥ d — el MAE de LuxAlgo es intra-trade, así
     que "límite trabajando hasta la salida" ≡ fill por MAE).
   - Backstop = stop de PRECIO a B pts de la señal (no ×ATR): pierna llenada
-    pierde (B − d·ATR) pts (+gap). Peor trade Config A referencia −$3,328 ✓.
+    pierde max(0, B − d·ATR) pts (+gap). Peor trade Config A referencia
+    −$3,328 ✓. FIX-D-EJECUCION (2026-07-18): una pierna MÁS PROFUNDA que el
+    stop (d·ATR > B) sale ≈ AL FILL (el stop ya reventó cuando llena) →
+    aporta 0 − gap, JAMÁS pnl positivo — misma semántica que el peor-caso
+    del Portafolio (position_sizing.worst_case_loss / portfolio_guard).
   - TP anclado a la señal: pierna gana (tp + d)·ATR pts. Stop manda si el
     trade alcanzó ambos (conservador); pierna profunda + TP en el mismo
     trade se cuenta con la pierna llenando primero (se marca ambigüedad).
@@ -406,7 +410,10 @@ def ladder_outcome(st: SimTrade, legs: tuple, b_pts: float | None,
             continue                       # la pierna no llenó (a tiempo)
         filled_w += w
         if stopped:
-            pnl_pts = -(b_pts + hc.gap_pts - d * st.atr_pts)
+            # FIX-D-EJECUCION: pierna llenada MÁS ALLÁ del stop (d·ATR > B)
+            # sale ≈ al fill (pnl 0 − gap), no al precio del stop — el modelo
+            # viejo le pagaba +(d·ATR − B) fantasma (hallazgo GC 2026-07-18).
+            pnl_pts = -(max(b_pts - d * st.atr_pts, 0.0) + hc.gap_pts)
         elif tp_hit:
             pnl_pts = (tp_atr + d) * st.atr_pts
             if d > 0:
@@ -864,7 +871,9 @@ def _eval_proteccion(sts: list[SimTrade], ppt: float, hc: HaircutCfg,
                 continue
             fw += w
             if stopped:
-                pnl_pts = -(stop_pts + hc.gap_pts - d * st.atr_pts)
+                # FIX-D-EJECUCION: exit ≈ fill si la pierna quedó más allá
+                # del stop (mismo recorte que ladder_outcome).
+                pnl_pts = -(max(stop_pts - d * st.atr_pts, 0.0) + hc.gap_pts)
             elif tp_hit:
                 pnl_pts = (tp_atr + d) * st.atr_pts
             else:
@@ -1262,7 +1271,9 @@ def deep_leg_stress(sts: list[SimTrade], legs: tuple,
         tp_hit = (not stopped and tp_atr is not None
                   and st.mfe_atr >= tp_atr)
         if stopped:
-            pnl_pts = -(b_pts + hc.gap_pts - d_max * st.atr_pts)
+            # FIX-D-EJECUCION: exit ≈ fill si la pierna profunda quedó más
+            # allá del stop — el estrés mide su contribución HONESTA.
+            pnl_pts = -(max(b_pts - d_max * st.atr_pts, 0.0) + hc.gap_pts)
         elif tp_hit:
             pnl_pts = (tp_atr + d_max) * st.atr_pts
         else:
