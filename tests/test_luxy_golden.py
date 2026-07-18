@@ -602,6 +602,77 @@ def test_pierna_mas_profunda_que_stop_COMPORTAMIENTO_CORRECTO():
     assert lux == pytest.approx(-1200.0)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 7) BUG-SL-INSENSIBLE (ES_CS, operador 2026-07-18) — contraste y honestidad
+# ═══════════════════════════════════════════════════════════════════════════
+# En el fixture, el ÚNICO trade con MAE profundo es el #5 (CORTO, 170 pts).
+# Dos SL que solo tocan al #5: $2,500 = 50 pts = 10×ATR y $4,000 = 80 pts =
+# 16×ATR. A MANO (escalera base [5,3,2]@0/2/4×): #5 stoppeado vale
+#   10×: (0.5·(−10) + 0.3·(−8) + 0.2·(−6))·250 = −2,150
+#   16×: (0.5·(−16) + 0.3·(−14) + 0.2·(−12))·250 = −3,650
+# → net = 6331 − (X − 1650) ⇒ 5,831 y 4,331.
+
+def test_sl_contraste_dos_sl_distintos_mueven_la_fila(golden):
+    """Con el trade stoppeado PARTICIPANTE, dos SL distintos ⇒ filas distintas
+    (el candado contra cualquier futuro bug de plomería del sl_usd)."""
+    r1 = mrl.evaluate_overrides(CLAVE, golden.motor, {"sl_usd": 2500.0})
+    r2 = mrl.evaluate_overrides(CLAVE, golden.motor, {"sl_usd": 4000.0})
+    assert r1["config"]["net"] == pytest.approx(5831.0, abs=0.01)
+    assert r2["config"]["net"] == pytest.approx(4331.0, abs=0.01)
+    assert r1["config"]["worst"] == pytest.approx(-2150.0, abs=0.01)
+    assert r2["config"]["worst"] == pytest.approx(-3650.0, abs=0.01)
+    # sl_toca honesto: 1 tocado, 1 participante, 0 excluidos
+    assert r1["sl_toca"] == {"b_pts": pytest.approx(50.0), "tocados": 1,
+                             "participantes": 1, "excluidos_dir": 0,
+                             "excluidos_toggles": 0}
+
+
+def test_sl_insensible_legitimo_cuando_el_tocado_queda_excluido(golden):
+    """El caso ES_CS del operador, reproducido en el oro: con dir=solo largos
+    el único tocado (#5, corto) queda FUERA de la fila → dos SL distintos dan
+    filas IDÉNTICAS — legítimo, y `sl_toca` lo DECLARA (jamás en silencio)."""
+    r1 = mrl.evaluate_overrides(CLAVE, golden.motor,
+                                {"sl_usd": 2500.0, "dir": "long"})
+    r2 = mrl.evaluate_overrides(CLAVE, golden.motor,
+                                {"sl_usd": 4000.0, "dir": "long"})
+    assert r1["config"] == r2["config"]              # insensible… y declarado:
+    for r in (r1, r2):
+        assert r["sl_toca"]["tocados"] == 1
+        assert r["sl_toca"]["participantes"] == 0
+        assert r["sl_toca"]["excluidos_dir"] == 1
+        assert r["peor_desglose"]["side"] == "long"  # el peor es un largo
+
+
+def test_peor_desglose_predecible_a_mano(golden):
+    """El peor trade validado, pierna a pierna — la suma cierra con la tesela
+    y cada pierna es (peso·(exit+d)·ATR·ppt) verificable con lápiz."""
+    r = mrl.evaluate_overrides(CLAVE, golden.motor, {"sl_usd": 2500.0})
+    d = r["peor_desglose"]
+    assert d["number"] == 5 and d["side"] == "short" and d["motivo"] == "stop"
+    assert d["total_usd"] == pytest.approx(r["config"]["worst"], abs=0.01)
+    assert [p["micros"] for p in d["piernas"]] == [5, 3, 2]
+    assert [p["pnl_usd"] for p in d["piernas"]] == [
+        pytest.approx(-1250.0), pytest.approx(-600.0), pytest.approx(-300.0)]
+    assert sum(p["pnl_usd"] for p in d["piernas"]) == \
+        pytest.approx(d["total_usd"], abs=0.01)
+
+
+def test_luxy_desglose_es_la_fuente_de_luxy_outcome():
+    """Paridad núcleo↔envoltura (fuente única) — incluido el caso D: la pierna
+    más profunda que el stop llena con pnl 0.00 en el desglose."""
+    d = mrl.luxy_desglose(_ST_D, {}, {}, legs=_LEGS_D, b_pts=_B_PTS_D,
+                          tp_by_side=None, be_atr=None, ppt=PPT,
+                          cancel_after_s=None)
+    usd, part = mrl.luxy_outcome(_ST_D, {}, {}, legs=_LEGS_D, b_pts=_B_PTS_D,
+                                 tp_by_side=None, be_atr=None, ppt=PPT,
+                                 cancel_after_s=None)
+    assert d["total_usd"] == usd and d["participo"] == part
+    assert d["motivo"] == "stop"
+    profunda = d["piernas"][1]
+    assert profunda["depth_atr"] == 9.0 and profunda["llena"] is True
+    assert profunda["pnl_usd"] == 0.0                # exit ≈ fill, jamás +
+
+
 def test_pierna_mas_profunda_que_stop_paga_el_gap_no_gana_jamas():
     """Con estrés de gap, la pierna profunda paga el gap del exit (0 − gap):
     0.6·(−(40+5)) + 0.4·(−(0+5)) = −29 pts → −$1450. Nunca positivo."""

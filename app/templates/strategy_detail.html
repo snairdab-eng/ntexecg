@@ -1096,6 +1096,9 @@
           // LX-3b — semáforo de robustez VALIDADO (solo motor): Recalcular lo
           // actualiza, Restablecer vuelve al del estudio; la estimacion NO lo enciende.
           let VROB = D.robustez;
+          // BUG-SL-INSENSIBLE — desglose VALIDADO del peor trade + toques del SL
+          // (solo motor: Recalcular los trae; Restablecer los apaga).
+          let VDESG=null, VTOCA=null;
           function ept(c){ return (c && c.n) ? c.net/c.n : null; }   // $/trade
           // ---- estimacion client-side POR SUBCONJUNTO (BE nunca acredita beneficio) ----
           const MES = PV/10;
@@ -1148,11 +1151,30 @@
               return '<tr class="border-b border-gray-800 last:border-0"><td class="px-3 py-2 font-medium '+cls+'" title="'+tip+'">'+name
                 + (note?' <span class="text-amber-500/80 text-xs font-normal">'+note+'</span>':'')
                 + '</td>'+cells.map(function(v){return '<td class="px-3 py-2 font-mono">'+v+'</td>';}).join('')+'</tr>'; }).join('');
+            // BUG-SL-INSENSIBLE — pie VALIDADO: el peor trade pierna a pierna
+            // (predecible a mano) + los toques del SL con sus excluidos. Solo en
+            // modo validado·motor (Recalcular); Restablecer lo apaga.
+            var desg='';
+            if(mode==='val' && VDESG){
+              const mm={stop:'STOP', tp:'TP', breakeven:'BE',
+                        native:'cierre nativo (LuxAlgo)', breakeven_ambiguo:'BE ambiguo'};
+              desg='<div class="px-3 py-2 text-xs border-t border-gray-800" style="color:var(--lx-muted)">'
+                +'Peor trade validado: <b style="color:var(--lx-ink)">#'+VDESG.number+' '+(VDESG.side==='long'?'largo':'corto')+'</b>'
+                +' · salida: '+(mm[VDESG.motivo]||VDESG.motivo)
+                +' · piernas: '+ (VDESG.piernas||[]).map(function(p){
+                    return p.micros+'µ@'+p.depth_atr+'×'+(p.llena?' '+money(p.pnl_usd):' no llena');
+                  }).join(' · ')
+                +' · <b style="color:var(--lx-ink)">Σ '+money(VDESG.total_usd)+'</b> (nativo '+money(VDESG.nativo_usd)+')';
+              if(VTOCA){ const ex=(VTOCA.excluidos_dir||0)+(VTOCA.excluidos_toggles||0);
+                desg+='<br>SL del motor: toca '+VTOCA.participantes+' participante(s)'
+                  +(ex?' · <b style="color:#d29922">'+ex+' tocado(s) EXCLUIDO(s) por dirección/toggles — la fila no los ve</b>':''); }
+              desg+='</div>';
+            }
             el('lx-table3').innerHTML =
               '<div class="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">Metricas — <span id="lx-t3-mode">validado</span></div>'
               + '<table class="w-full text-sm"><thead><tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-800">'
               + '<th class="px-3 py-2">Fila</th><th class="px-3 py-2">Neto</th><th class="px-3 py-2">$/trade</th><th class="px-3 py-2">PF</th><th class="px-3 py-2">Max DD</th><th class="px-3 py-2">Peor</th><th class="px-3 py-2">Particip.</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">N</th>'
-              + '</tr></thead><tbody>'+body+'</tbody></table>';
+              + '</tr></thead><tbody>'+body+'</tbody></table>'+desg;
             const tm=el('lx-t3-mode'); if(tm){ tm.textContent = mode==='val'?'validado · motor':'estimacion · aprox'; tm.style.color = mode==='val'?'#3fb950':'#d29922'; }
             semaforo(mode, oosR);
           }
@@ -1245,7 +1267,7 @@
               if(down){ ctx.moveTo(cx-s,edgeY); ctx.lineTo(cx+s,edgeY); ctx.lineTo(cx,edgeY+5); }
               else { ctx.moveTo(cx-s,edgeY); ctx.lineTo(cx+s,edgeY); ctx.lineTo(cx,edgeY-5); }
               ctx.closePath(); ctx.fill(); };
-            let slHit=0, slTot=0; const slOn=!!(S.sl&&S.slV);
+            let slHit=0, slTot=0, slExcl=0; const slOn=!!(S.sl&&S.slV);
             rows.forEach(function(d,i){ const x=xAt(i), oos=!d.in, excl=BH.has(d.hr)||BD.has(d.dow);
               ctx.save(); if(excl) ctx.globalAlpha=0.30;
               // MFE (verde) — simétrico con MAE en tratamiento
@@ -1264,7 +1286,13 @@
                 ctx.fillRect(x+ins,Math.min(zeroY,cy),cbw,Math.abs(cy-zeroY)); }
               ctx.restore();
               // LX-DIAG — lector del SL: ¿este trade (MAE adverso) cruzaría el SL?
-              if(slOn && d.mae<0){ slTot++; if(-d.mae >= S.slV) slHit++; } });
+              // BUG-SL-INSENSIBLE (2026-07-18) — el contador respeta DIRECCIÓN y
+              // toggles: un tocado EXCLUIDO de la fila no la mueve (caso ES_CS: el
+              // único tocado era un corto con dir=solo largos → SL "insensible"
+              // con toda legitimidad). Los tocados excluidos se DECLARAN aparte.
+              if(slOn && d.mae<0){ const inRow=(S.dir==='both'||(S.dir==='long'?d.long:!d.long))&&!excl;
+                if(inRow){ slTot++; if(-d.mae >= S.slV) slHit++; }
+                else if(-d.mae >= S.slV) slExcl++; } });
             // línea vertical de corte del split
             if(cut>0 && cut<rows.length){ ctx.strokeStyle='#8b949e'; ctx.setLineDash([3,3]);
               ctx.beginPath(); ctx.moveTo(xCut,0); ctx.lineTo(xCut,H); ctx.stroke(); ctx.setLineDash([]);
@@ -1280,7 +1308,8 @@
             if(S.sc){ line(-S.l2,'#58a6ff',true); line(-S.l3,'#58a6ff',true); }
             // lectores en vivo: contador del SL + estado del toggle de escala
             const slc=el('lx-sl-count');
-            if(slc) slc.textContent = slOn? ('el SL toca '+slHit+' de '+slTot+' operaciones') : 'SL apagado';
+            if(slc) slc.textContent = slOn? ('el SL toca '+slHit+' de '+slTot+' operaciones'
+              +(slExcl?' · +'+slExcl+' tocada(s) EXCLUIDA(s) por dirección/toggles — no mueven la fila':'')) : 'SL apagado';
             const stg=el('lx-scale-toggle');
             if(stg) stg.textContent = CHARTCLIP? 'escala: recortada (p95) ▸' : 'escala: completa';
           }
@@ -1511,7 +1540,8 @@
             clearExplore();                           // LX-9: borra el estado guardado
             // LX-15 fix — el estudio restablecido queda VALIDADO (VLAST=V0 lo respalda):
             // Aplicar tras Restablecer ≡ aplicar el estudio (no dirty).
-            VLAST=V0; VROB=D.robustez; VSNAP=snap(); setValues(); refresh(); });
+            VLAST=V0; VROB=D.robustez; VDESG=null; VTOCA=null;
+            VSNAP=snap(); setValues(); refresh(); });
           // ---- RECALCULAR = JOB del motor (numeros validados; JAMAS pisa RECO0) ----
           function pollEval(){ fetch('/ui/strategies/'+SID+'/luxy/evaluar/status').then(function(r){return r.json();}).then(function(j){
               if(j.status==='running'){ setTimeout(pollEval,2000); return; }
@@ -1519,6 +1549,8 @@
               if(j.status==='done' && j.result){
                 VLAST={ crudo:norm(j.result.base), crudo_plus:norm(j.result.config), oos:norm(j.result.oos) };
                 VROB=j.result.robustez;           // LX-3b: semáforo del OOS revalidado
+                // BUG-SL-INSENSIBLE — desglose del peor + toques del SL (motor)
+                VDESG=j.result.peor_desglose||null; VTOCA=j.result.sl_toca||null;
                 // LX-15 fix D1/D2 — el estado ACTUAL queda VALIDADO. refresh() es el
                 // único driver: chip 'val', Recalcular deshabilitado (nada nuevo),
                 // Aplicar habilitado. Si el operador movió algo mientras corría el job,

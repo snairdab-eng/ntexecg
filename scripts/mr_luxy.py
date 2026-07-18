@@ -196,20 +196,25 @@ def _luxy_exit_atr(
     return ex_no_be, motivo
 
 
-def luxy_outcome(
+def luxy_desglose(
     st: SimTrade, fav: dict, be_ret: dict, *,
     legs: tuple, b_pts: float | None, tp_by_side: dict | None,
     be_atr: float | None, ppt: float, cancel_after_s: float | None,
-) -> tuple[float, bool]:
-    """(pnl_usd, participó) de un trade bajo las palancas Luxy. Fills de piernas
-    vía `leg_filled` con corte (R-T1); exit COMÚN de la posición vía
-    `_luxy_exit_atr`. `fav` = {tp_atr: minuto} (touch_minutes favorable);
-    `be_ret` = {be_atr: minuto} (be_return_minutes). Cada pierna llenada a
-    profundidad d gana (exit + d)×ATR — SALVO con exit por STOP y pierna MÁS
-    PROFUNDA que el stop (d > sl_atr): esa sale ≈ AL FILL (pnl 0, recorte
-    min(exit+d, 0)) porque el stop ya reventó cuando la pierna llena — jamás
-    aporta positivo (FIX-D-EJECUCION 2026-07-18; paridad con
-    mr_sims.ladder_outcome y position_sizing.worst_case_loss)."""
+) -> dict:
+    """Desenlace de UN trade bajo las palancas Luxy, POR PIERNA — el NÚCLEO
+    (`luxy_outcome` delega aquí: una sola aritmética, cero doble-fuente).
+
+    Fills de piernas vía `leg_filled` con corte (R-T1); exit COMÚN de la
+    posición vía `_luxy_exit_atr`. `fav` = {tp_atr: minuto} (touch_minutes
+    favorable); `be_ret` = {be_atr: minuto} (be_return_minutes). Cada pierna
+    llenada a profundidad d gana (exit + d)×ATR — SALVO con exit por STOP y
+    pierna MÁS PROFUNDA que el stop (d > sl_atr): esa sale ≈ AL FILL (pnl 0,
+    recorte min(exit+d, 0)) porque el stop ya reventó cuando la pierna llena —
+    jamás aporta positivo (FIX-D-EJECUCION 2026-07-18; paridad con
+    mr_sims.ladder_outcome y position_sizing.worst_case_loss).
+
+    BUG-SL-INSENSIBLE (2026-07-18): el desglose alimenta el panel del peor
+    trade — que el peor sea PREDECIBLE a mano (pierna × salida)."""
     sl_atr = (b_pts / st.atr_pts) if b_pts else None
     tp_atr = (tp_by_side or {}).get(st.side)
     ex, motivo = _luxy_exit_atr(
@@ -220,14 +225,37 @@ def luxy_outcome(
         native_close_atr=st.native_pnl_pts(ppt) / st.atr_pts)
     acc = 0.0
     filled_w = 0.0
+    piernas = []
     for d, w in legs:
-        if not leg_filled(st, d, cancel_after_s)[0]:
-            continue
-        filled_w += w
-        leg_ex = min(ex + d, 0.0) if motivo == "stop" else (ex + d)
-        acc += w * leg_ex * st.atr_pts
+        llena = leg_filled(st, d, cancel_after_s)[0]
+        pnl_usd = 0.0
+        if llena:
+            filled_w += w
+            leg_ex = min(ex + d, 0.0) if motivo == "stop" else (ex + d)
+            acc += w * leg_ex * st.atr_pts
+            pnl_usd = w * leg_ex * st.atr_pts * ppt
+        piernas.append({"depth_atr": round(d, 4),
+                        "micros": round(w * TOTAL_MICROS),
+                        "llena": llena, "pnl_usd": round(pnl_usd, 2)})
     usd = acc * ppt
-    return (usd if filled_w > 0 else 0.0), filled_w > 0
+    return {"number": st.number, "side": st.side, "motivo": motivo,
+            "exit_atr": round(ex, 4), "atr_pts": st.atr_pts,
+            "nativo_usd": st.native_pnl_usd,
+            "piernas": piernas,
+            "total_usd": (usd if filled_w > 0 else 0.0),
+            "participo": filled_w > 0}
+
+
+def luxy_outcome(
+    st: SimTrade, fav: dict, be_ret: dict, *,
+    legs: tuple, b_pts: float | None, tp_by_side: dict | None,
+    be_atr: float | None, ppt: float, cancel_after_s: float | None,
+) -> tuple[float, bool]:
+    """(pnl_usd, participó) — delega en `luxy_desglose` (fuente única)."""
+    d = luxy_desglose(st, fav, be_ret, legs=legs, b_pts=b_pts,
+                      tp_by_side=tp_by_side, be_atr=be_atr, ppt=ppt,
+                      cancel_after_s=cancel_after_s)
+    return d["total_usd"], d["participo"]
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +385,14 @@ def _eval_net(win, ppt, *, legs, b_pts, tp_by_side, be_atr,
 # Evaluación de una ventana bajo unas palancas → métricas (Tabla A)
 # ---------------------------------------------------------------------------
 
+def _solo_de(levers: dict) -> str | None:
+    """Filtro de lado de unas palancas: 'long'/'short' si la recomendación es
+    CORTAR (R-T6), None si operan ambos lados — FUENTE ÚNICA (la usan
+    eval_levers y el desglose/contador del SL del panel)."""
+    lado = (levers or {}).get("lado") or {}
+    return lado.get("lado_bueno") if lado.get("accion") == "cortar" else None
+
+
 def eval_levers(eval_sts: list[SimTrade], levers: dict, ppt: float, *,
                 cancel_after_s: float | None, touches: dict | None) -> dict:
     """Métricas (metrics_usd) al aplicar `levers` sobre `eval_sts`. No-participado
@@ -365,10 +401,7 @@ def eval_levers(eval_sts: list[SimTrade], levers: dict, ppt: float, *,
     b_pts = levers["b_pts"]
     tp = levers["tp_por_lado_atr"]
     be = (levers.get("breakeven") or {}).get("be_atr")
-    lado_reco = (levers.get("lado") or {})
-    solo = None
-    if lado_reco.get("accion") == "cortar":
-        solo = lado_reco.get("lado_bueno")           # R-T6 (diagnóstico aplicado)
+    solo = _solo_de(levers)                          # R-T6 (diagnóstico aplicado)
     pnls = []
     n_part = 0
     for st in eval_sts:
@@ -1531,6 +1564,47 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
                        touches=touches) if sts_oos_f else {"n": 0}
     crudo = metrics_usd([t.pnl_usd for t in trades])
     alloc = (lev.get("ladder") or {}).get("alloc") or []
+
+    # BUG-SL-INSENSIBLE (2026-07-18) — dos piezas de honestidad para el panel:
+    # (1) peor_desglose — el PEOR trade PARTICIPANTE de la config, pierna a
+    #     pierna (la MISMA aritmética: luxy_desglose): el peor es predecible
+    #     a mano y se ve si viene de un stop o de un cierre nativo.
+    # (2) sl_toca — a cuántos trades del universo simulable les llega el SL y
+    #     cuántos de esos quedan FUERA de la fila (dirección/toggles). La fila
+    #     puede ser INSENSIBLE al SL con total legitimidad (caso ES_CS
+    #     2026-07-18: el único tocado era un CORTO con dir=solo largos) — pero
+    #     JAMÁS en silencio.
+    solo = _solo_de(lev)
+    _legs = lev["ladder"]["legs"]
+    _be = (lev.get("breakeven") or {}).get("be_atr")
+    peor = None
+    for s in sts_f:
+        if solo and s.side != solo:
+            continue
+        fav_be = (touches or {}).get(s.number, ({}, {}))
+        dsg = luxy_desglose(s, fav_be[0], fav_be[1], legs=_legs,
+                            b_pts=lev["b_pts"], tp_by_side=lev["tp_por_lado_atr"],
+                            be_atr=_be, ppt=ppt, cancel_after_s=cancel_after_s)
+        if dsg["participo"] and (peor is None
+                                 or dsg["total_usd"] < peor["total_usd"]):
+            peor = dsg
+    if peor is not None:
+        peor["total_usd"] = round(peor["total_usd"], 2)
+    b_pts_ov = lev.get("b_pts")
+    sl_toca = {"b_pts": b_pts_ov, "tocados": 0, "participantes": 0,
+               "excluidos_dir": 0, "excluidos_toggles": 0}
+    if b_pts_ov:
+        for s in sts:
+            if s.mae_pts < b_pts_ov:
+                continue
+            sl_toca["tocados"] += 1
+            if _filt and not _passes(s):
+                sl_toca["excluidos_toggles"] += 1
+            elif solo and s.side != solo:
+                sl_toca["excluidos_dir"] += 1
+            else:
+                sl_toca["participantes"] += 1
+
     return {
         "validado": True, "clave": clave,
         "base": _card(crudo), "config": _card(crudo_plus), "oos": _card(oosm),
@@ -1541,6 +1615,10 @@ def evaluate_overrides(clave: str, motor_dir, overrides: dict, *,
         # LX-15 — señales del gate de ESTAS palancas + config aplicable (la única
         # que porta c1_depth_atr). El intrabar lo añade gate_palancas desde el study.
         "señales": _señales_de_eval(crudo, crudo_plus, oosm, lev),
+        # BUG-SL-INSENSIBLE — desglose del peor participante + toques del SL
+        # (con los excluidos por dirección/toggles A LA VISTA).
+        "peor_desglose": peor,
+        "sl_toca": sl_toca,
         "aplicable": config_from_overrides(overrides, atr_med, ppt, alloc,
                                            cancel_after_s, tick=tick,
                                            activo=activo),
