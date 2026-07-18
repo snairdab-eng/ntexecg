@@ -1268,7 +1268,19 @@
               else { ctx.moveTo(cx-s,edgeY); ctx.lineTo(cx+s,edgeY); ctx.lineTo(cx,edgeY-5); }
               ctx.closePath(); ctx.fill(); };
             let slHit=0, slTot=0, slExcl=0; const slOn=!!(S.sl&&S.slV);
-            rows.forEach(function(d,i){ const x=xAt(i), oos=!d.in, excl=BH.has(d.hr)||BD.has(d.dow);
+            // VISUAL-EXCLUSIONES (2026-07-19) — LENGUAJE ÚNICO de exclusión: TODA
+            // barra excluida de la fila (día, sesión O DIRECCIÓN/lado) se atenúa
+            // con el MISMO estilo. Antes la exclusión por dirección no atenuaba:
+            // con solo-largos, el corto MAE −$11.8k seguía a todo color siendo la
+            // barra dominante — el gráfico contradecía al contador. (Los excluidos
+            // por contención LX-13 no llegan a la nube: se filtran aguas arriba y
+            // los declara el banner de muestra.)
+            const EXCL_MOT=new Array(rows.length);
+            rows.forEach(function(d,i){ const x=xAt(i), oos=!d.in;
+              const dirOk=(S.dir==='both'||(S.dir==='long'?d.long:!d.long));
+              const excl=BH.has(d.hr)||BD.has(d.dow)||!dirOk;
+              EXCL_MOT[i]=excl?(!dirOk?('dirección: solo '+(S.dir==='long'?'largos':'cortos'))
+                                :(BH.has(d.hr)?'sesión apagada':'día apagado')):null;
               ctx.save(); if(excl) ctx.globalAlpha=0.30;
               // MFE (verde) — simétrico con MAE en tratamiento
               if(mfeOn && d.mfe>0){ const yTop=y(d.mfe);
@@ -1290,9 +1302,20 @@
               // toggles: un tocado EXCLUIDO de la fila no la mueve (caso ES_CS: el
               // único tocado era un corto con dir=solo largos → SL "insensible"
               // con toda legitimidad). Los tocados excluidos se DECLARAN aparte.
-              if(slOn && d.mae<0){ const inRow=(S.dir==='both'||(S.dir==='long'?d.long:!d.long))&&!excl;
-                if(inRow){ slTot++; if(-d.mae >= S.slV) slHit++; }
+              // VISUAL-EXCLUSIONES: `excl` ya incluye la dirección — contador y
+              // atenuado comparten UNA definición de "fuera de la fila".
+              if(slOn && d.mae<0){ if(!excl){ slTot++; if(-d.mae >= S.slV) slHit++; }
                 else if(-d.mae >= S.slV) slExcl++; } });
+            // VISUAL-EXCLUSIONES — tooltip nativo por barra: atenuada → motivo.
+            cv._lxHit={padL:padL, step:step, n:rows.length, mot:EXCL_MOT};
+            if(!cv._lxTipBound){ cv._lxTipBound=true;
+              cv.addEventListener('mousemove',function(ev){ const ht=cv._lxHit;
+                if(!ht){ cv.title=''; return; }
+                const r=cv.getBoundingClientRect();
+                const mx=(ev.clientX-r.left)*(cv.width/Math.max(1,r.width));
+                const k=Math.floor((mx-ht.padL)/Math.max(1e-9,ht.step));
+                const m=(k>=0&&k<ht.n)?ht.mot[k]:null;
+                cv.title=m?('excluida de la fila — '+m):''; }); }
             // línea vertical de corte del split
             if(cut>0 && cut<rows.length){ ctx.strokeStyle='#8b949e'; ctx.setLineDash([3,3]);
               ctx.beginPath(); ctx.moveTo(xCut,0); ctx.lineTo(xCut,H); ctx.stroke(); ctx.setLineDash([]);
@@ -1311,7 +1334,15 @@
             if(slc) slc.textContent = slOn? ('el SL toca '+slHit+' de '+slTot+' operaciones'
               +(slExcl?' · +'+slExcl+' tocada(s) EXCLUIDA(s) por dirección/toggles — no mueven la fila':'')) : 'SL apagado';
             const stg=el('lx-scale-toggle');
-            if(stg) stg.textContent = CHARTCLIP? 'escala: recortada (p95) ▸' : 'escala: completa';
+            if(stg){ stg.textContent = CHARTCLIP? 'escala: recortada (p95) ▸' : 'escala: completa';
+              // VISUAL-EXCLUSIONES — decisión DELIBERADA: la escala SÍ incluye las
+              // barras atenuadas (excluidas de la fila). Razones: (1) la barra sigue
+              // dibujada — sacarla del eje recortaría sus propios píxeles; (2) mover
+              // un toggle no hace saltar la escala (comparación estable); (3) para la
+              // distorsión ya existe la escala recortada (p95). La nota vive aquí:
+              stg.title='la escala incluye también las barras atenuadas (excluidas de '
+                +'la fila) — así el eje no salta al mover toggles; si una excluida '
+                +'domina el eje, usa la escala recortada (p95)'; }
           }
           // ---- leyenda ----
           function legend(){
@@ -1353,16 +1384,50 @@
             const nmin=P.n_min_celda||10;
             const p1=(v,u)=> v==null?'—':(+v).toFixed(1)+(u||'');
             const min1=v=> v==null?'—':v+'m';
-            // 1) Curva de llegada por profundidad (R-RA4)
+            // PIERNAS-CLARIDAD (2026-07-19) — conversión ATR↔$ del estudio: cada
+            // profundidad ×ATR lleva su equivalente en $ al lado (ATR mediano del
+            // estudio × $/punto); FX en ticks vía luxyFmtPts (espejo de fmt_pts).
+            const atrMed=(D.units||{}).atr_med_pts;
+            const atrUsd=(atrMed&&PV)?atrMed*PV:null;
+            const cUsd=x=> (atrUsd&&x)?(' ≈ '+money(-x*atrUsd)):'';
+            // PIERNAS-CLARIDAD — (2) ANCLA DECLARADA + chip ámbar (lo enciende
+            // refresh() cuando las palancas del panel difieren de la escalera del
+            // estudio) y (1) línea de conversión en el header.
+            let h='<div class="mb-1" style="color:var(--lx-muted)">⚓ Anclado a la escalera del <b style="color:var(--lx-ink)">ESTUDIO</b>'
+              +' (C2 '+P.c2+'× · C3 '+P.c3+'×ATR · reparto '+(P.quantities||[]).join('/')+')'
+              +' — se recalcula con <b>Calcular estudio</b>; NO sigue las palancas del panel.'
+              +' <span id="lx-piernas-ancla-chip" class="px-1 rounded" style="display:none;background:rgba(210,153,34,.18);color:#d29922">⚠ tus palancas actuales difieren de la escalera del estudio</span></div>';
+            if(atrUsd) h+='<div class="mb-1" style="color:var(--lx-muted)">1 ATR (mediana del estudio) ≈ '
+              +'<b style="color:var(--lx-ink)">'+money(atrUsd)+'</b>'+window.luxyFmtPts(atrUsd, D.units, PV)
+              +' · C2 '+P.c2+'×ATR'+cUsd(P.c2)+' · C3 '+P.c3+'×ATR'+cUsd(P.c3)+'</div>';
+            // PIERNAS-CLARIDAD — (3) JERARQUÍA: el VEREDICTO (🟢/🔴/⚪ + constantes
+            // RA-2) encabeza el panel; curvas/tablas quedan DEBAJO como evidencia.
+            const R2=P.recomendacion||{};
+            const rec=function(lbl,val,ev){ const ns=/n\/s/.test(ev||'');
+              return '<div class="flex justify-between gap-3 flex-wrap"><span class="font-mono" style="color:var(--lx-ink)">'+lbl+' = <b>'+val+'</b></span>'
+                +'<span style="color:'+(ns?'var(--lx-sl)':'var(--lx-muted)')+'">'+(ev||'')+'</span></div>'; };
+            // RA-0v3 — VEREDICTO económico (de la tabla de oro, no de la curva
+            // ciega): 🟢 recomendado · 🔴 no recomendado · ⚪ n/s.
+            const vmap={recomendado:['🟢','var(--lx-green)'],no_recomendado:['🔴','var(--lx-red)'],'n/s':['⚪','var(--lx-sl)']};
+            const vm=vmap[R2.veredicto]||vmap['n/s'];
+            h+='<div class="rounded p-2 space-y-1" style="background:#0d1117;border:1px solid var(--lx-line)">'
+              +'<div style="color:'+vm[1]+'" title="El horizonte sale de la tabla de oro: mejor Δnet acumulado sin degradar el peor-trade ni el PF. Si ningún corte >1h mejora → NO recomendado.">'+vm[0]+' <b>'+(R2.veredicto_texto||'—')+'</b></div>'
+              +'<div class="uppercase tracking-wide" style="color:var(--lx-muted)">Constantes propuestas para RA-2 '
+              +'<span style="text-transform:none">(por estrategia · con evidencia · jamás sin muestra)</span></div>'
+              +rec('MAX_CICLOS (R-RA4)',R2.MAX_CICLOS,R2.MAX_CICLOS_evidencia)
+              +rec('K_SOBRE_C0 (R-RA3)',R2.K_SOBRE_C0,R2.K_SOBRE_C0_evidencia)
+              +rec('UMBRAL_ATR_EXPANSION (R-RA7)',R2.UMBRAL_ATR_EXPANSION,R2.UMBRAL_ATR_EXPANSION_evidencia)+'</div>';
+            // 1) Curva de llegada por profundidad (R-RA4) — evidencia
             const arr=(lbl,a)=> '<div class="flex justify-between gap-3 flex-wrap"><span style="color:var(--lx-muted)">'+lbl
               +' <span style="opacity:.7">(n='+a.n+')</span></span>'
               +'<span class="font-mono" style="color:var(--lx-ink)">toca '+p1(a.touch_rate_pct,'%')
               +' · med '+min1(a.mediana_min)+' p90 '+min1(a.p90_min)+' p95 '+min1(a.p95_min)
               +' · ≤1h '+p1(a.pct_le_1h,'%')+' ≤2h '+p1(a.pct_le_2h,'%')+' ≤3h '+p1(a.pct_le_3h,'%')
               +' · nunca '+p1(a.pct_nunca,'%')+'</span></div>';
-            let h='<div><div class="uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Curva de llegada '
+            h+='<div><div class="uppercase tracking-wide mb-1" style="color:var(--lx-muted)">Curva de llegada '
               +'<span style="text-transform:none">(minuto del primer toque, vida completa del trade)</span></div>'
-              +arr('C2 · '+P.c2+'×ATR',P.arrival_c2)+arr('C3 · '+P.c3+'×ATR',P.arrival_c3)+'</div>';
+              +arr('C2 · '+P.c2+'×ATR'+cUsd(P.c2),P.arrival_c2)
+              +arr('C3 · '+P.c3+'×ATR'+cUsd(P.c3),P.arrival_c3)+'</div>';
             // 2) PREGUNTA DE ORO: tabla de cortes (¿fills tardíos suman o son cuchillos?)
             const C=P.cortes||{}; let prev=null, filas='';
             // RA-1 — columna de RE-ARMADO (MAX_CICLOS del veredicto) entre corte 1h
@@ -1420,22 +1485,7 @@
               +'<div style="color:var(--lx-ink)">R-RA6 orden (huérfanas si backstop/TP toca antes que la pierna): C2 <b>'+p1(oe.pct_c2_huerfana,'%')+'</b> · C3 <b>'+p1(oe.pct_c3_huerfana,'%')+'</b></div>'
               +'<div style="color:var(--lx-ink)">§1 ventana ciega (toque en franja [60,62)m de su ciclo = fill perdido honesto): C2 '+p1(cc2.pct_en_ciega,'%')+' · C3 '+p1(cc3.pct_en_ciega,'%')+' de los toques</div>'
               +'<div style="color:var(--lx-ink)">R-RA7 ATR_t/ATR_señal en toques tardíos C3: '+ae(P.atr_exp_c3)+'</div></div>';
-            // 5) Recomendación de constantes (evidencia; n/s → default conservador)
-            const R2=P.recomendacion||{};
-            const rec=function(lbl,val,ev){ const ns=/n\/s/.test(ev||'');
-              return '<div class="flex justify-between gap-3 flex-wrap"><span class="font-mono" style="color:var(--lx-ink)">'+lbl+' = <b>'+val+'</b></span>'
-                +'<span style="color:'+(ns?'var(--lx-sl)':'var(--lx-muted)')+'">'+(ev||'')+'</span></div>'; };
-            // RA-0v3 — VEREDICTO económico encabeza el bloque (de la tabla de oro,
-            // no de la curva ciega): 🟢 recomendado · 🔴 no recomendado · ⚪ n/s.
-            const vmap={recomendado:['🟢','var(--lx-green)'],no_recomendado:['🔴','var(--lx-red)'],'n/s':['⚪','var(--lx-sl)']};
-            const vm=vmap[R2.veredicto]||vmap['n/s'];
-            h+='<div class="rounded p-2 space-y-1" style="background:#0d1117;border:1px solid var(--lx-line)">'
-              +'<div style="color:'+vm[1]+'" title="El horizonte sale de la tabla de oro: mejor Δnet acumulado sin degradar el peor-trade ni el PF. Si ningún corte >1h mejora → NO recomendado.">'+vm[0]+' <b>'+(R2.veredicto_texto||'—')+'</b></div>'
-              +'<div class="uppercase tracking-wide" style="color:var(--lx-muted)">Constantes propuestas para RA-2 '
-              +'<span style="text-transform:none">(por estrategia · con evidencia · jamás sin muestra)</span></div>'
-              +rec('MAX_CICLOS (R-RA4)',R2.MAX_CICLOS,R2.MAX_CICLOS_evidencia)
-              +rec('K_SOBRE_C0 (R-RA3)',R2.K_SOBRE_C0,R2.K_SOBRE_C0_evidencia)
-              +rec('UMBRAL_ATR_EXPANSION (R-RA7)',R2.UMBRAL_ATR_EXPANSION,R2.UMBRAL_ATR_EXPANSION_evidencia)+'</div>';
+            // (el VEREDICTO + constantes RA-2 viven ARRIBA — PIERNAS-CLARIDAD (3))
             h+='<div style="color:var(--lx-muted)">Base: '+P.n+' trades contenidos (los de frontera de roll se excluyen, LX-13) · C2 '+P.c2+'× · C3 '+P.c3+'×ATR · reparto '+(P.quantities||[]).join('/')+'.</div>';
             host.innerHTML=h;
           }
@@ -1481,6 +1531,12 @@
             el('lx-alloc').textContent=A.join('/'); el('lx-why').textContent=R.why_alloc||'';
             el('lx-be-note').style.display=S.be?'':'none';
             const d=dirty(); el('lx-recalc').disabled=!d; el('lx-hint').style.display=d?'':'none';
+            // PIERNAS-CLARIDAD (2) — chip ámbar del ancla: el panel Piernas está
+            // anclado a la escalera del ESTUDIO; si las palancas actuales (C1/C2/C3)
+            // difieren, se declara (el panel NO las sigue).
+            const pan=el('lx-piernas-ancla-chip');
+            if(pan){ const dif=((S.l1||0)!==(RECO0.l1||0))||(S.l2!==RECO0.l2)||(S.l3!==RECO0.l3);
+              pan.style.display=dif?'':'none'; }
             legend(); drawChart();
             const mode = d?'est':'val';
             renderTable(mode); setChips(mode);
