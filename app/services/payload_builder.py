@@ -21,6 +21,27 @@ if TYPE_CHECKING:
 _ENTRY_ROLES = {"entry_long", "entry_short", "reversal_to_long", "reversal_to_short"}
 _EXIT_ROLES = {"exit_long", "exit_short"}
 
+# RA-2a — TradersPost `cancelAfter` (segundos, 1..3600): TTL de una orden límite
+# de trabajo. TradersPost la caduca sola al vencer. Es el reloj del ciclo que el
+# re-armado (RA-2b) usa para la ventana SIN SOLAPE (re-envía DESPUÉS de que el
+# cancelAfter ejecutó con certeza), y elimina la config manual de "Cancel entry
+# after" por cuenta. Cap duro 3600 = máximo que TradersPost acepta (verificado RA-1).
+_CANCEL_AFTER_MAX_S = 3600
+_CANCEL_AFTER_MIN_S = 1
+
+
+def _cancel_after_seconds(config: dict) -> int:
+    """TTL en segundos para una pierna LÍMITE: el `entry_reserve_timeout_seconds`
+    del config (la MISMA fuente que la reserva NX-28, así el fantasma symbol_busy
+    y el corte de TradersPost caducan juntos), acotado a [1, 3600]. Ausente o
+    inválido → 3600 (el techo, comportamiento de despacho vigente)."""
+    v = config.get("entry_reserve_timeout_seconds")
+    try:
+        s = int(v) if v is not None else _CANCEL_AFTER_MAX_S
+    except (TypeError, ValueError):
+        s = _CANCEL_AFTER_MAX_S
+    return max(_CANCEL_AFTER_MIN_S, min(s, _CANCEL_AFTER_MAX_S))
+
 
 def _short_size_factor(config: dict) -> float | None:
     """Factor de tamaño para ENTRADAS CORTAS (MR-5c, opt-in): motor de
@@ -248,6 +269,11 @@ class PayloadBuilder:
                 # FIX-D2 — al tick del catálogo (múltiplo más cercano), nunca un
                 # round(x,6) fijo que desalinea FX (6J tick 5e-7). Sin tick → intacto.
                 leg["limitPrice"] = round_to_tick(limit_price, config.get("tick_size"))
+            # RA-2a — TTL del ciclo en TODA pierna LÍMITE (C1 móvil incluida): le da
+            # a la orden de trabajo un vencimiento cierto en TradersPost. El mercado
+            # (C1 a mercado) llena al instante → jamás lleva cancelAfter.
+            if leg.get("orderType") == "limit":
+                leg["cancelAfter"] = _cancel_after_seconds(config)
             leg["stopLoss"] = dict(sl_block)
             if tp_block is not None:
                 leg["takeProfit"] = dict(tp_block)
