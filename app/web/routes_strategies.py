@@ -921,9 +921,12 @@ async def luxy_aplicar_preview(
             "valor": f"{ctx['be_info']['be_atr']}×ATR",
             "nota": "palanca no aplicable aún — informativa (no hay BE en el "
                     "despacho; sería un cambio de motor a auditar aparte)"})
+    activo = ((ctx["study"] or {}).get("clave") or "").split("_")[0] or None
     return JSONResponse({
         "strategy": strategy_id, "fecha_estudio": ctx["fecha"], "fuente": "luxy",
-        "filas": rr._diff_aplicar(pcfg, act, ctx["fecha"], sl_vivo, tp_vivo),
+        "no_representable": act.get("_no_representable") or [],
+        "filas": rr._diff_aplicar(pcfg, act, ctx["fecha"], sl_vivo, tp_vivo,
+                                  activo=activo),
         "deriva": rr.deriva_estudio(pcfg, act, ctx["fecha"]),
         "informativos": informativos,
         "gate": gate,                               # LX-11 — nivel + triggers + señales
@@ -1056,28 +1059,37 @@ async def luxy_aplicar_palancas_preview(
         return err
     ev, pcfg = ctx["ev"], ctx["pcfg"]
     aplicable = ev.get("aplicable") or {}
+    activo = (ctx["clave"] or "").split("_")[0] or None
     gate = mrl.gate_palancas(ctx["study"], ev.get("señales") or {},
                              aplicable.get("scale_entry"))
     fecha = ctx["study"].get("fecha")
+    # FIX-FX-BACKSTOP — palancas que NO se pudieron escribir por caer bajo 1 tick
+    # (fail-honest): jamás un 0 colapsado en silencio; se avisan arriba, ruidoso.
+    avisos = [
+        "Aplica el ESTADO ACTUAL de las palancas (no la fila in-sample).",
+        "La fila OOS es ESPEJO de robustez (evidencia), JAMÁS aplicable (R-T10).",
+        "Toggles de sesión/día NO viajan; el BE no se aplica (informativo).",
+        "No toca mode/dry_run/traderspost_enabled/status (kill-switch).",
+        "⚠ cancel_after: fijar el mismo valor A MANO en TradersPost.",
+    ]
+    for nr in aplicable.get("_no_representable") or []:
+        avisos.insert(0, f"⛔ {nr['campo']}: {nr['motivo']} — NO se aplica "
+                         f"(${nr.get('usd', '?')}). Ajusta la palanca o el "
+                         f"instrumento no la resuelve.")
     return JSONResponse({
         "strategy": strategy_id, "fuente": "luxy · palancas del operador",
         "fecha_estudio": fecha,
         "aplicable": aplicable,
+        "no_representable": aplicable.get("_no_representable") or [],
         "filas": rr._diff_aplicar(pcfg, aplicable, fecha, ctx["sl_vivo"],
-                                  ctx["tp_vivo"]),
+                                  ctx["tp_vivo"], activo=activo),
         "deriva": rr.deriva_estudio(pcfg, aplicable, fecha),
         # evidencia = fila OOS ESPEJO de ESTAS palancas (R-T10: no aplicable)
         "evidencia": {"base": ev.get("base"), "config": ev.get("config"),
                       "oos": ev.get("oos"), "robustez": ev.get("robustez"),
                       "retencion": ev.get("retencion")},
         "gate": gate,
-        "avisos": [
-            "Aplica el ESTADO ACTUAL de las palancas (no la fila in-sample).",
-            "La fila OOS es ESPEJO de robustez (evidencia), JAMÁS aplicable (R-T10).",
-            "Toggles de sesión/día NO viajan; el BE no se aplica (informativo).",
-            "No toca mode/dry_run/traderspost_enabled/status (kill-switch).",
-            "⚠ cancel_after: fijar el mismo valor A MANO en TradersPost.",
-        ],
+        "avisos": avisos,
     })
 
 
@@ -1129,6 +1141,9 @@ async def luxy_aplicar_palancas(
     return JSONResponse({
         "ok": True, "strategy": strategy_id,
         "aplicado": {k: cfg.get(k) for k in llaves},
+        # FIX-FX-BACKSTOP — llaves que NO se escribieron por caer bajo 1 tick
+        # (fail-honest: jamás un 0 colapsado). El operador ajusta y reaplica.
+        "no_representable": aplicable.get("_no_representable") or [],
         "deriva": rr.deriva_estudio(cfg, aplicable, ctx["study"].get("fecha")),
         "recordatorio": "⚠ cancel_after a mano en TradersPost; BE no aplicado.",
     })

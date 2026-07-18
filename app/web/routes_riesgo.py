@@ -477,14 +477,16 @@ async def _viva_y_reco(db: AsyncSession, strategy: str):
             {"error": "sin estrategia viva con este id — dala de alta en "
                       "Estrategias primero (o promuévela desde el estudio)"},
             status_code=400)
-    return {"profile": prow, "reco": reco,
+    return {"profile": prow, "reco": reco, "instrument": entry["instrument"],
             "fecha": (res or {}).get("_fecha")}, None
 
 
 def _diff_aplicar(pcfg: dict, act: dict, fecha: str | None,
-                  sl_atr_vivo, tp_atr_vivo) -> list[dict]:
+                  sl_atr_vivo, tp_atr_vivo, activo: str | None = None) -> list[dict]:
     """Filas del diff vivo → recomendado (P2 preview). Solo informa; el
-    merge real es _merge_activacion."""
+    merge real es _merge_activacion. `activo` (opcional) → el backstop se muestra
+    en TICKS para FX (FIX-FX-BACKSTOP, nunca '0 pts'/notación científica cruda)."""
+    from scripts.fx_levers import fmt_pts
     filas: list[dict] = []
 
     def fila(campo, vivo, reco, cambia, nota=None):
@@ -494,10 +496,10 @@ def _diff_aplicar(pcfg: dict, act: dict, fecha: str | None,
     if "backstop_points" in act:
         vivo_bk = pcfg.get("backstop_points")
         fila("SL / stop de precio fijo (backstop_points)",
-             (f"{vivo_bk:g} pts" if vivo_bk
+             (fmt_pts(activo, vivo_bk) if vivo_bk
               else (f"SL {sl_atr_vivo}×ATR (legacy)" if sl_atr_vivo
                     else "SL ×ATR heredado")),
-             f"{act['backstop_points']:g} pts desde la señal",
+             f"{fmt_pts(activo, act['backstop_points'])} desde la señal",
              not _num_eq(vivo_bk, act["backstop_points"]),
              nota="el SL×ATR queda IGNORADO mientras el backstop esté activo")
     for k, lado in (("tp_nominal_long", "largos"),
@@ -572,7 +574,8 @@ async def riesgo_aplicar_preview(strategy: str,
     return JSONResponse({
         "strategy": strategy.strip(),
         "fecha_estudio": ctx["fecha"],
-        "filas": _diff_aplicar(pcfg, act, ctx["fecha"], sl_vivo, tp_vivo),
+        "filas": _diff_aplicar(pcfg, act, ctx["fecha"], sl_vivo, tp_vivo,
+                               activo=ctx.get("instrument")),
         "deriva": deriva_estudio(pcfg, act, ctx["fecha"]),
         "avisos": [
             "No toca mode/dry_run/traderspost_enabled/status.",
