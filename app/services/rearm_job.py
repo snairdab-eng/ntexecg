@@ -119,11 +119,17 @@ def _failed_ambiguo(result) -> bool:
 async def _reenviar_pierna(db, pos, config, estado, leg, settings,
                            now: datetime, decision_box: dict) -> str:
     """Ejecuta el re-envío de UNA pierna por TODOS los destinos con el MISMO
-    gate por capas que una entrada. Devuelve: "ok" (≥1 SENT/DRY_RUN),
-    "fallido" (todos FAILED, TODOS inequívocos — reintento legítimo),
-    "ambiguo" (todos FAILED y ≥1 ambiguo — E3: la pierna se MATA, jamás se
-    re-envía sobre ambigüedad) o "sin_qty" (el perfil vigente ya no asigna
-    contratos a la pierna en el destino BASE)."""
+    gate por capas que una entrada. Devuelve:
+      "ok"              ≥1 SENT/DRY_RUN y CERO ambigüedad — el ciclo avanza.
+      "ambiguo_parcial" E3b — ≥1 destino ok PERO ≥1 intento AMBIGUO en el
+                        mismo re-envío (FAILED-ambiguo en otro destino, o un
+                        SENT que necesitó un intento ambiguo antes): las
+                        órdenes enviadas de ESTE ciclo viven hasta su
+                        cancelAfter; la pierna se MATA — el FUTURO re-envío
+                        duplicaría contra la posible orden fantasma.
+      "ambiguo"         E3 — todos FAILED y ≥1 ambiguo: matar, jamás reintentar.
+      "fallido"         todos FAILED, TODOS inequívocos — reintento legítimo.
+      "sin_qty"         el perfil vigente no asigna contratos (destino BASE)."""
     from app.api.webhooks_luxalgo import resolve_effective_dry_run
     from app.models.webhook_delivery import WebhookDelivery
     from app.services import dispatch_profiles as dprof
@@ -169,12 +175,17 @@ async def _reenviar_pierna(db, pos, config, estado, leg, settings,
             sent_at=_utcnow() if result.status == "SENT" else None))
         if result.status in ("SENT", "DRY_RUN"):
             any_ok = True
+            # E3b — un SENT que necesitó un intento AMBIGUO antes de entrar
+            # también contamina (posible orden fantasma del intento previo
+            # en el MISMO destino).
+            if getattr(result, "any_ambiguous_attempt", False):
+                any_ambiguo = True
         if result.status == "FAILED":
             any_failed = True
             if _failed_ambiguo(result):
-                any_ambiguo = True         # E3
+                any_ambiguo = True         # E3/E3b
     if any_ok:
-        return "ok"
+        return "ambiguo_parcial" if any_ambiguo else "ok"   # E3b
     if any_failed and any_ambiguo:
         return "ambiguo"                   # E3 — matar, jamás reintentar
     return "fallido" if any_failed else "sin_qty"
@@ -295,6 +306,22 @@ async def procesar_posicion(db, pos_id, settings, market_data,
                           "regla": "perfil_sin_qty",
                           "detalle": "el perfil vigente no asigna qty a la "
                                      "pierna (o viola max_micro_contracts)"})
+            cambio, resultado = True, "kill"
+        elif envio == "ambiguo_parcial":
+            # E3b — mixto: un destino recibió la orden (vive hasta su
+            # cancelAfter) y otro intento quedó AMBIGUO en el mismo re-envío.
+            # Las deliveries del ciclo YA quedaron registradas; lo que se
+            # prohíbe es el FUTURO re-envío (duplicaría contra la posible
+            # orden fantasma).
+            estado["legs"][i] = marcar_muerta(leg, "envio_ambiguo_parcial")
+            await _audit(db, pos, "REARM_KILL",
+                         {"leg_index": leg["leg_index"],
+                          "regla": "envio_ambiguo_parcial",
+                          "detalle": "posible orden fantasma en un destino — "
+                                     "el siguiente ciclo duplicaría; asimetría "
+                                     "de la misión (las órdenes enviadas de "
+                                     "este ciclo viven hasta su cancelAfter; "
+                                     "solo se prohíbe el futuro re-envío)"})
             cambio, resultado = True, "kill"
         elif envio == "ambiguo":
             # E3 — FAILED AMBIGUO ⇒ MATAR, jamás reintentar: un timeout sin
