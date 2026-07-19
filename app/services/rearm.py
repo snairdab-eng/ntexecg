@@ -369,8 +369,8 @@ def tramo_valido(bars, *, opened_at, timeframe, now,
     try:
         t0 = _a_et_naive(opened_at)
         t1 = _a_et_naive(now)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError, AttributeError):
+        return None                        # opened_at/now ilegibles ⇒ fail-closed
     tramo = []
     for b in bars:
         if not isinstance(b, dict):
@@ -654,8 +654,8 @@ async def obtener_inferencia(market_data, symbol: str, *, opened_at,
     try:
         t0 = _a_et_naive(opened_at)
         t1 = _a_et_naive(now)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError, AttributeError):
+        return None                        # opened_at/now ilegibles ⇒ fail-closed
     limite = barras_esperadas(t0, t1, tf_s) + 100        # margen de borde
     bars = await market_data.get_bars(symbol, timeframe, limit=limite)
     tramo = tramo_valido(

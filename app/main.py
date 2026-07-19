@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.services.market_data_service import get_market_data_service
     from app.core.scheduler import (
-        HeartbeatMonitor, ExitManagerJob, HMMTrainerJob,
+        HeartbeatMonitor, ExitManagerJob, HMMTrainerJob, RearmJob,
     )
 
     market_data = get_market_data_service(settings)
@@ -42,6 +42,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     exit_manager = ExitManagerJob(settings)
     exit_manager.start()
 
+    # RA-2b sub-paso 5 — re-armado de piernas (default OFF ABSOLUTO: solo
+    # actúa sobre estrategias con scale_entry.rearm.enabled=true en la config
+    # efectiva; sin eso cada barrido es un no-op). Junto a ExitManagerJob,
+    # mismo supuesto 1-worker (P1-2 del diseño).
+    rearm_job = RearmJob(settings, market_data)
+    rearm_job.start()
+
     # MarketBarsUpdater JUBILADO (CSV-only): el bridge deja de persistir barras
     # en ohlcv_bars (era la 2ª historia duplicada). El bridge sigue intacto para
     # ATR/régimen/heartbeat/ejecución en vivo; la historia la aporta el CSV master.
@@ -52,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     monitor.stop()
     exit_manager.stop()
+    rearm_job.stop()
     hmm_trainer_job.stop()
 
 

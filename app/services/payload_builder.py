@@ -297,3 +297,64 @@ class PayloadBuilder:
         if not payloads:
             return [self.build(signal, strategy, config, pipeline_result)]
         return payloads
+
+    def build_rearm_leg(
+        self, *, symbol: str, side: str, leg_state: dict, config: dict,
+        sl_price, tp_price, strategy_id: str, signal_id: str,
+        client_id: str, cycle_n: int,
+    ) -> dict | None:
+        """RA-2b §5 — UNA pierna límite RE-ARMADA (jamás re-emite C1/C2/C3
+        completos). `leg_state` = la pierna del estado persistente (sub-paso 2).
+
+        · misma orden: `limit_price` y lado idénticos, RE-SNAPPED al tick del
+          catálogo vigente (FIX-D2 — si el tick cambió, la orden va en rejilla).
+        · qty RECALCULADA del perfil VIGENTE: quantities[leg_index-1] de la
+          config efectiva del destino (respeta max_micro_contracts y el
+          short_size_factor EXACTO de una entrada).
+        · stopLoss/takeProfit del ESTADO CONGELADO (los mismos precios que
+          protegen a las piernas ya vivas — un re-armado no re-deriva bracket).
+        · cancelAfter = TTL vigente (RA-2a) · extras con rearm_cycle y
+          client_id "<base>-r{n}" para correlación (diseño §5).
+
+        None ⇒ NO enviable (pierna sin qty en el perfil vigente, total fuera
+        de max_micro_contracts, o sin stop) — el job decide qué hacer; jamás
+        se fabrica una orden inválida en silencio."""
+        se = config.get("scale_entry") or {}
+        quantities = [int(q or 0) for q in (se.get("quantities") or [])]
+        idx = int(leg_state["leg_index"]) - 1
+        if idx < 0 or idx >= len(quantities):
+            return None
+        factor = _short_size_factor(config)
+        if factor is not None and side == "short":
+            quantities = _apportion(quantities, factor)
+        qty = quantities[idx]
+        total = sum(q for q in quantities if q > 0)
+        maxm = se.get("max_micro_contracts")
+        if qty <= 0 or total <= 0 or (maxm and total > int(maxm)):
+            return None
+        if sl_price is None:
+            return None                    # jamás una pierna sin stop
+        leg: dict = {
+            "ticker": symbol,
+            "action": "buy" if side == "long" else "sell",
+            "quantity": qty,
+            "sentiment": "long" if side == "long" else "short",
+            "orderType": "limit",
+            "limitPrice": round_to_tick(float(leg_state["limit_price"]),
+                                        config.get("tick_size")),
+            "cancelAfter": _cancel_after_seconds(config),
+            "stopLoss": {"type": "stop", "stopPrice": float(sl_price)},
+        }
+        if tp_price is not None:
+            leg["takeProfit"] = {"type": "limit",
+                                 "limitPrice": float(tp_price)}
+        leg["extras"] = {
+            "strategy_id": strategy_id,
+            "signal_id": signal_id,
+            "leg_index": int(leg_state["leg_index"]),
+            "leg_quantity": qty,
+            "level_atr": leg_state["level_atr"],
+            "rearm_cycle": int(cycle_n),
+            "client_id": client_id,
+        }
+        return leg

@@ -202,6 +202,48 @@ class ExitManagerJob:
                 await db.rollback()
 
 
+class RearmJob:
+    """RA-2b sub-paso 5 — barrido del re-armado de piernas cada 60 s.
+
+    Mismo patrón que ExitManagerJob: scheduler propio, sesión de DB propia
+    por posición (dentro de rearm_sweep), supuesto 1-worker (P1-2 del diseño:
+    sin lock distribuido; la persistencia en risk_plan_json hace el job
+    idempotente ante RESTART, no ante concurrencia de workers — anotado como
+    riesgo si algún día hay >1). Default OFF absoluto: sin
+    scale_entry.rearm.enabled=true en la config efectiva de una estrategia,
+    el barrido es un no-op para sus posiciones."""
+
+    def __init__(self, settings_obj: object, market_data_service: object) -> None:
+        self._settings = settings_obj
+        self._svc = market_data_service
+        self._scheduler = AsyncIOScheduler(timezone="UTC")
+
+    def start(self) -> None:
+        self._scheduler.add_job(
+            self._run, trigger="interval", seconds=60,
+            id="rearm_job", replace_existing=True,
+        )
+        self._scheduler.start()
+        logger.info("rearm_job_started interval=60s")
+
+    def stop(self) -> None:
+        if self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
+            logger.info("rearm_job_stopped")
+
+    async def _run(self) -> None:
+        from app.services.rearm_job import rearm_sweep
+
+        try:
+            resumen = await rearm_sweep(self._settings, self._svc)
+            # silencio en el no-op (solo {posiciones, errores:0}); con acción
+            # o errores se deja rastro en el log además del AuditLog.
+            if resumen.get("errores") or len(resumen) > 2:
+                logger.info("rearm_sweep {}", resumen)
+        except Exception as exc:           # el job JAMÁS muere
+            logger.error("rearm_sweep_failed error={}", exc)
+
+
 class MarketBarsUpdater:
     """JUBILADO (CSV-only) — YA NO SE ARRANCA (ver app/main.py lifespan).
 

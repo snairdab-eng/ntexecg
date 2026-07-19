@@ -40,6 +40,15 @@ class WebhookDeliveryResult:
     attempts: int = 0
     latency_ms: int | None = None
     error_message: str | None = None
+    # E3 (RA-2b) — ¿ALGÚN intento terminó AMBIGUO? (timeout/errores sin
+    # respuesta: la petición PUDO llegar al broker y la orden PUDO quedar
+    # viva). Solo el rechazo claro de conexión (ConnectError: el canal nunca
+    # se estableció, la petición jamás se escribió) y las respuestas HTTP son
+    # inequívocos. Se acumula POR INTENTO porque el resultado solo conserva
+    # el ÚLTIMO error: un timeout en el intento 1 seguido de un 500 en el 3
+    # deja una posible orden viva que el último intento no delata. Campo
+    # ADITIVO (default False): entradas/exits no lo consumen (sin cambio).
+    any_ambiguous_attempt: bool = False
 
 
 def mask_token(url: str) -> str:
@@ -124,6 +133,7 @@ class TradersPostClient:
         last_status: int | None = None
         last_body: str | None = None
         last_error: str | None = None
+        ambiguous_any = False              # E3 — ver WebhookDeliveryResult
         start = time.monotonic()
 
         # FIX-D2 — serialize with tp_format.dumps (fixed-decimal, NEVER scientific
@@ -153,12 +163,24 @@ class TradersPostClient:
                             response_body=last_body,
                             attempts=attempt,
                             latency_ms=latency_ms,
+                            # E3 — informativo también en SENT: un envío que
+                            # entró tras un intento ambiguo puede coexistir
+                            # con una orden fantasma del intento anterior
+                            # (observación para los adversariales RA-2b/6).
+                            any_ambiguous_attempt=ambiguous_any,
                         )
                     # Non-2xx → will retry if attempts remain
                     last_error = f"http_{resp.status_code}"
                 except Exception as exc:
                     last_status = None
                     last_error = type(exc).__name__
+                    # E3 — clasificación del intento: SOLO ConnectError es
+                    # inequívoco (nunca hubo canal → la orden seguro NO
+                    # existe). Todo lo demás (Read/Write/Pool/ConnectTimeout,
+                    # protocolo roto, genéricos) es AMBIGUO: la petición pudo
+                    # llegar sin que viéramos respuesta.
+                    if not isinstance(exc, httpx.ConnectError):
+                        ambiguous_any = True
                     logger.warning(
                         "traderspost_attempt_failed role={} attempt={} error={}",
                         signal_role, attempt, exc,
@@ -183,6 +205,7 @@ class TradersPostClient:
             attempts=max_attempts,
             latency_ms=latency_ms,
             error_message=last_error,
+            any_ambiguous_attempt=ambiguous_any,
         )
 
     @staticmethod
