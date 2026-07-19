@@ -78,6 +78,22 @@ class PositionService:
         await db.flush()
         return position
 
+    async def set_rearm_state(
+        self, db: AsyncSession, strategy_id: str, account_id: str,
+        symbol: str, estado: dict,
+    ) -> PositionState:
+        """RA-2b sub-paso 2 — escribe SOLO `risk_plan_json["rearm"]` (el estado
+        del ciclo, diseño §2). INVARIANTE (d): este escritor jamás toca
+        state/direction/quantity ni ninguna otra llave del plan — la posición
+        es dominio del resto de este servicio; el re-armado solo persiste su
+        propio bloque."""
+        position = await self.get_state(db, strategy_id, account_id, symbol)
+        plan = dict(position.risk_plan_json or {})
+        plan["rearm"] = estado
+        position.risk_plan_json = plan
+        await db.flush()
+        return position
+
     async def on_delivery_confirmed(
         self, db: AsyncSession, strategy_id: str, account_id: str, symbol: str
     ) -> PositionState:

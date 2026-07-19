@@ -381,6 +381,7 @@ async def _dispatch_approved(
     any_failed = False
     primary_qty = 0
     primary_all_limit = False
+    primary_payloads: list[dict] = []      # RA-2b — piernas del destino primario
     for di, dest in enumerate(destinations):
         dest_config = dprof.make_dest_config(config, dest)
 
@@ -426,6 +427,7 @@ async def _dispatch_approved(
             primary_all_limit = bool(payloads) and all(
                 p.get("orderType") == "limit" for p in payloads
             )
+            primary_payloads = payloads    # RA-2b — para sembrar el estado del ciclo
         for leg_idx, payload in enumerate(payloads, start=1):
             result = await client.send(
                 webhook_url or "",
@@ -488,6 +490,25 @@ async def _dispatch_approved(
             norm.id,
             entry_style="limit_only" if primary_all_limit else "market",
         )
+        # RA-2b sub-paso 2 — estado del ciclo PERSISTENTE (diseño §2): con
+        # rearm.enabled en la config efectiva se siembra risk_plan_json["rearm"]
+        # desde las piernas LÍMITE del destino primario tal como se despacharon.
+        # Sin enabled (o sin piernas límite) NO se siembra nada — cero cambio de
+        # comportamiento. E1: TTL≠3600 queda REGISTRADO (ttl_incoherente) para
+        # que el job (sub-paso 5) no re-arme. El job aún no existe: aquí solo
+        # se persiste el estado.
+        from app.services.rearm import (
+            rearm_enabled, sembrar_estado, ttl_coherente,
+        )
+        if rearm_enabled(config):
+            _ttl_ok, _ = ttl_coherente(config)
+            _estado = sembrar_estado(
+                primary_payloads, side=direction,
+                now_iso=_utcnow().isoformat(), ttl_ok=_ttl_ok)
+            if _estado is not None:
+                await position_service.set_rearm_state(
+                    db, norm.strategy_id, account_id, norm.mapped_symbol,
+                    _estado)
 
     # SENT (not DRY_RUN) → count as dispatched, confirm estimated position
     if any_sent:
