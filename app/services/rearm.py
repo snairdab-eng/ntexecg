@@ -454,6 +454,187 @@ def atr_expandido(atr_vivo, signal_atr, umbral) -> bool | None:
     return (atr_vivo / signal_atr) > umbral
 
 
+# ---------------------------------------------------------------------------
+# RA-2b sub-paso 4 — MOTOR DE REGLAS R-RA9 (PURO: sin DB, sin scheduler, sin
+# despacho; consume el estado del sub-paso 2 y la inferencia del sub-paso 3).
+# `decidir_pierna` devuelve UNA acción {accion, regla, detalle} lista para el
+# AuditLog del sub-paso 5. Jerarquía estricta — la primera que dispara, corta.
+#
+# DECISIONES DE DISEÑO (justificadas):
+# · El TIMING (toca_reenviar) se evalúa DESPUÉS de las muertes/toques
+#   (R-RA5/6, E1, R-RA1, R-RA2, R-RA7) y ANTES de las reglas de re-envío
+#   (R-RA3/4/8): una huérfana con el stop tocado se mata YA, no al minuto 62;
+#   y R-RA4 (agotado) solo puede juzgarse cuando un re-envío ESTÁ debido —
+#   matar la pierna antes de que expire su orden viva perdería el rastreo que
+#   R-RA2 necesita (la orden del ciclo actual sigue viva hasta su cancelAfter).
+# · ASSUMED_FILLED es la 5ª acción (además de REENVIAR/ESPERAR/MATAR/SKIP):
+#   R-RA2 con toque en ventana viva exige la transición del sub-paso 2
+#   (marcar_assumed_filled) — semánticamente distinta de MATAR (bloquea el
+#   re-envío Y cuenta para exposición, E2; jamás toca la posición).
+# · R-RA8 ⇒ ESPERAR (no MATAR): si llegamos a R-RA8 es que aún queda
+#   horizonte de ciclos (R-RA4 va antes en la jerarquía); matar por reloj
+#   quemaría horizonte del estudio por un artefacto del cierre — la pierna
+#   podrá re-armarse tras la reapertura, y la orden viva ya tiene su
+#   cancelAfter. Con el mercado ya cerrado la inferencia cae en R-RA1 antes.
+# ---------------------------------------------------------------------------
+
+# §3 — ciclo SIN SOLAPE: re-envío SOLO cuando now ≥ last_sent + TTL + GUARDA
+# (minuto 61-62). GUARDA=120 s ⇒ ciclo = 3720 s = 62 min — EXACTAMENTE el
+# REARM_CYCLE_MIN=62 del modelo RA-1 del estudio (coherencia de horizonte).
+REARM_GUARDA_CIEGA_S = 120
+REARM_CICLO_S = REARM_REQUIRED_TTL_S + REARM_GUARDA_CIEGA_S    # 3720
+
+# Estados de posición que MATAN los re-armados (diseño §4, R-RA5). LONG/SHORT
+# continúan; cualquier otro (PENDING_*, None, basura) ⇒ SKIP fail-closed (un
+# tránsito no destruye estado, pero tampoco se re-arma sin posición razonable).
+_POS_MATAR = ("EXITING", "FLAT", "REVERSING", "UNKNOWN", "LOCKED")
+_POS_ABIERTA = ("LONG", "SHORT")
+
+
+def _acc(accion: str, regla, detalle: str) -> dict:
+    """Acción única del motor — (regla, detalle) viajan al AuditLog tal cual."""
+    return {"accion": accion, "regla": regla, "detalle": detalle}
+
+
+def toca_reenviar(last_sent_at, now) -> bool:
+    """§3 — ¿ya toca re-enviar? SOLO cuando now ≥ last_sent + TTL + GUARDA
+    (el cancelAfter ejecutó con CERTEZA; jamás dos órdenes vivas al mismo
+    precio). Antes de eso el caller devuelve ESPERAR sin evaluar reglas de
+    re-envío. Acepta ISO/datetime en cualquier tz (se normaliza a ET)."""
+    delta = (_a_et_naive(now) - _a_et_naive(last_sent_at)).total_seconds()
+    return delta >= REARM_CICLO_S
+
+
+def atribuir_toque(t_toque, last_sent_at) -> str:
+    """R-RA2, doble lectura — ¿el toque cayó con orden VIVA o en la ventana
+    CIEGA? Aritmética modular de ciclos (los envíos van cada REARM_CICLO_S):
+    pos = (t_toque − last_sent) mod ciclo; pos < TTL ⇒ "viva" (la orden
+    trabajaba → ASUMIR FILL), pos ∈ [TTL, ciclo) ⇒ "ciega" (fill perdido
+    honesto → pierna muerta). Funciona también para toques de ciclos PREVIOS
+    (delta negativo: el mod lo lleva a su posición dentro de su ciclo).
+    Granularidad de barra: t_toque = INICIO de la primera barra que toca —
+    una barra que abre en viva se atribuye viva (lado assumed_filled, el
+    conservador: cuenta exposición y bloquea re-envío)."""
+    delta = (_a_et_naive(t_toque) - _a_et_naive(last_sent_at)).total_seconds()
+    pos = delta % REARM_CICLO_S
+    return "viva" if pos < REARM_REQUIRED_TTL_S else "ciega"
+
+
+def _mins_a_cierre_et(now_et) -> float:
+    """Minutos hasta las 17:00 ET del día de `now_et` (negativo si ya pasó)."""
+    return (17 * 60) - (now_et.hour * 60 + now_et.minute
+                        + now_et.second / 60.0)
+
+
+def decidir_pierna(leg: dict, *, estado: dict, posicion: dict,
+                   inferencia: dict | None, cfg_rearm: dict,
+                   now_et) -> dict:
+    """LA decisión del motor para UNA pierna (PURA) → {accion, regla, detalle}
+    con accion ∈ {REENVIAR, ESPERAR, MATAR, SKIP, ASSUMED_FILLED}.
+
+    `posicion` = {"state", "entry_price"} (lo arma el job desde
+    PositionState). `estado` = el bloque rearm VALIDADO (leer_estado).
+    `inferencia` = dict de obtener_inferencia o None. `cfg_rearm` = config
+    normalizada (normalize_rearm). `now_et` = datetime ET-naive.
+
+    Jerarquía R-RA9 (primera que dispara, corta):
+      E1 → guard pierna → R-RA5 → R-RA6 → R-RA1 → R-RA2 (doble lectura) →
+      R-RA7 → timing §3 → R-RA3 → R-RA4 → R-RA8 → REENVIAR."""
+    # E1 — TTL incoherente REGISTRADO en la siembra ⇒ nada que razonar.
+    if estado.get("ttl_incoherente"):
+        return _acc("SKIP", "E1", "ttl_incoherente — el ciclo real no mapea "
+                                  "al horizonte del estudio (corrige el TTL)")
+    # guard (fuera de jerarquía): una pierna no-working no tiene acción.
+    if leg.get("state") != "working":
+        return _acc("ESPERAR", None,
+                    f"pierna '{leg.get('state')}' — sin acción")
+    # R-RA5 — la posición manda: cerrada/saliendo/incierta ⇒ matar re-armados.
+    st = (posicion or {}).get("state")
+    if st in _POS_MATAR:
+        return _acc("MATAR", "R-RA5", f"posición {st} — re-armados mueren")
+    if st not in _POS_ABIERTA:
+        return _acc("SKIP", "R-RA5",
+                    f"posición no razonable ({st!r}) — fail-closed sin matar")
+    side = leg["side"]
+    # R-RA6 — backstop/TP tocados ⇒ huérfana: matar YA (no espera al reloj).
+    if inferencia is not None:
+        ext = inferencia["extremos"]
+        if backstop_tocado(side, estado.get("sl_price"), ext):
+            return _acc("MATAR", "R-RA6",
+                        f"backstop {estado.get('sl_price')} tocado — "
+                        f"pierna huérfana post-stop")
+        if tp_tocado(side, estado.get("tp_price"), ext):
+            return _acc("MATAR", "R-RA6",
+                        f"TP {estado.get('tp_price')} tocado — huérfana")
+    # R-RA1 — feed ciego/hueco (o ATR vivo ilegible) ⇒ SKIP, jamás matar a ciegas.
+    expandido = (atr_expandido(inferencia.get("atr_vivo"),
+                               estado.get("signal_atr"),
+                               cfg_rearm.get("umbral_atr"))
+                 if inferencia is not None else None)
+    if inferencia is None or expandido is None:
+        return _acc("SKIP", "R-RA1",
+                    "feed ciego/hueco o ATR ilegible — no se infiere, "
+                    "no se re-arma")
+    # R-RA2 — nivel tocado: DOBLE LECTURA por atribución del toque (una sola
+    # lectura por toque: el PRIMER toque del tramo decide).
+    if nivel_tocado(side, leg["limit_price"], inferencia["extremos"]):
+        t_toque = next(
+            (b["time"] for b in inferencia["tramo"]
+             if (float(b["low"]) <= leg["limit_price"] if side == "long"
+                 else float(b["high"]) >= leg["limit_price"])), None)
+        ventana = (atribuir_toque(t_toque, leg["last_sent_at"])
+                   if t_toque is not None else "viva")
+        if ventana == "viva":
+            return _acc("ASSUMED_FILLED", "R-RA2",
+                        f"nivel {leg['limit_price']} tocado con orden VIVA "
+                        f"(ciclo {leg['cycle_n']}) — asumir fill, jamás "
+                        f"re-enviar (E2: la posición no se toca)")
+        return _acc("MATAR", "R-RA2",
+                    f"nivel {leg['limit_price']} tocado en ventana CIEGA — "
+                    f"fill perdido honesto, pierna muerta")
+    # R-RA7 — régimen expandido (None ya cayó en R-RA1).
+    if expandido:
+        return _acc("MATAR", "R-RA7",
+                    f"ATR vivo {inferencia['atr_vivo']} / señal "
+                    f"{estado['signal_atr']} > {cfg_rearm['umbral_atr']} — "
+                    f"régimen expandido")
+    # §3 — timing sin solape: antes de TTL+guarda no hay NADA que re-enviar.
+    if not toca_reenviar(leg["last_sent_at"], now_et):
+        return _acc("ESPERAR", "timing",
+                    f"ciclo {leg['cycle_n']} vivo — re-envío al cumplirse "
+                    f"TTL {REARM_REQUIRED_TTL_S}s + guarda "
+                    f"{REARM_GUARDA_CIEGA_S}s")
+    # R-RA3 — precio k×ATR favorable a C0 ⇒ pullback improbable ESTE ciclo.
+    entry = (posicion or {}).get("entry_price")
+    ultimo = inferencia["tramo"][-1].get("close")
+    if entry is None or ultimo is None:
+        return _acc("SKIP", "R-RA3",
+                    "sin entry_price/close para la excursión — fail-closed")
+    favorable = (float(ultimo) - float(entry)) if side == "long" \
+        else (float(entry) - float(ultimo))
+    if favorable >= cfg_rearm["k_sobre_c0"] * estado["signal_atr"]:
+        return _acc("ESPERAR", "R-RA3",
+                    f"precio {favorable:+.2f} pts favorable ≥ "
+                    f"{cfg_rearm['k_sobre_c0']}×ATR señal — pullback "
+                    f"improbable este ciclo")
+    # R-RA4 — horizonte agotado (solo juzgable con el re-envío debido).
+    if leg["cycle_n"] >= cfg_rearm["max_ciclos"]:
+        return _acc("MATAR", "R-RA4",
+                    f"agotado: ciclo {leg['cycle_n']} ≥ max_ciclos "
+                    f"{cfg_rearm['max_ciclos']}")
+    # R-RA8 — cerca del cierre: ESPERAR (ver decisión de diseño arriba).
+    mins = _mins_a_cierre_et(now_et)
+    if mins < cfg_rearm["min_antes_cierre_min"]:
+        return _acc("ESPERAR", "R-RA8",
+                    f"{mins:.0f} min a las 17:00 ET < "
+                    f"{cfg_rearm['min_antes_cierre_min']} — no se re-arma "
+                    f"pegado al cierre (la pierna sigue; tras la reapertura "
+                    f"se re-evalúa)")
+    return _acc("REENVIAR", None,
+                f"ciclo {leg['cycle_n'] + 1} de {cfg_rearm['max_ciclos']} — "
+                f"misma orden límite {leg['limit_price']}")
+
+
 async def obtener_inferencia(market_data, symbol: str, *, opened_at,
                              timeframe: str, now=None) -> dict | None:
     """Wrapper NO-puro MÍNIMO (P3): obtiene barras y ATR vivo de
