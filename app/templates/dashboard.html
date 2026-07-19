@@ -142,6 +142,20 @@
                             <span class="{% if p.since_from_open %}text-gray-500{% else %}text-amber-500/70{% endif %} not-italic">{{ p.since_label }}</span>
                             {{ p.since.strftime('%m-%d %H:%M') if p.since else '—' }}</td>
                     </tr>
+                    {# RA-3 — ciclos del re-armado (read-only: risk_plan_json +
+                       última acción REARM_* del AuditLog). Solo con rearm sembrado. #}
+                    {% if p.rearm %}
+                    <tr class="border-b border-gray-800 last:border-0 bg-gray-900/40">
+                        <td colspan="5" class="px-3 pb-2 pt-0 text-xs text-gray-500">
+                            <span class="uppercase tracking-wide">re-armado:</span>
+                            {% for l in p.rearm.legs %}
+                            <span class="ml-2 font-mono {% if l.estado == 'working' %}text-sky-400{% elif l.estado == 'assumed_filled' %}text-amber-400{% else %}text-gray-600{% endif %}"
+                                  title="pierna C{{ l.i }} · estado {{ l.estado }} · ciclo {{ l.ciclo }}">C{{ l.i }}·{{ l.estado }}·c{{ l.ciclo }}</span>
+                            {% else %}<span class="ml-2 text-gray-600">estado ilegible</span>{% endfor %}
+                            {% if p.rearm.ultima %}<span class="ml-3 text-gray-600">última: {{ p.rearm.ultima }}</span>{% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
                     {% else %}
                     <tr><td colspan="5" class="px-3 py-6 text-center text-gray-600">Sin posiciones abiertas.</td></tr>
                     {% endfor %}

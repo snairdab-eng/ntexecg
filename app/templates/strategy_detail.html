@@ -485,6 +485,27 @@
                 <button class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-sm">Quitar diseño</button>
             </form>
             {% endif %}
+
+            {# RA-3 — re-armado: APAGAR sin fricción (reducir riesgo = un clic +
+               AuditLog REARM_DISABLED). Encender desde aquí NO existe — la única
+               puerta es Luxy → Aplicar (veredicto 🟢 + gate ámbar). #}
+            {% set rearm = (se.rearm if se and se.rearm else none) %}
+            <div class="border-t border-gray-800 mt-3 pt-3">
+                <div class="text-xs uppercase tracking-wider text-gray-500 mb-1">Re-armado de piernas (RA-2b)</div>
+                {% if rearm and rearm.enabled %}
+                <div class="flex items-center gap-3 text-sm flex-wrap">
+                    <span class="text-amber-300">● ON — max_ciclos {{ rearm.max_ciclos }} · k_sobre_c0 {{ rearm.k_sobre_c0 }} · umbral_atr {{ rearm.umbral_atr }}</span>
+                    <form method="post" action="/ui/strategies/{{ strategy.strategy_id }}/rearm/off">
+                        <button class="bg-red-900 hover:bg-red-800 text-white px-3 py-1.5 rounded text-sm">Apagar re-armado</button>
+                    </form>
+                </div>
+                <p class="text-xs text-gray-500 mt-1">apagar es reducir riesgo — un clic, con AuditLog; volver a encender SOLO vía Luxy → Aplicar (gate).</p>
+                {% elif rearm %}
+                <p class="text-sm text-gray-400">○ OFF — constantes sembradas del veredicto (max_ciclos {{ rearm.max_ciclos }} · k_sobre_c0 {{ rearm.k_sobre_c0 }}); se enciende SOLO desde Luxy → Aplicar (veredicto 🟢 + gate ámbar).</p>
+                {% else %}
+                <p class="text-sm text-gray-500">sin sembrar — exige veredicto 🟢 en el panel Piernas y se siembra al Aplicar (Luxy).</p>
+                {% endif %}
+            </div>
         </div>
 
         <div class="border-t border-gray-800 mt-3 pt-3">
@@ -684,18 +705,21 @@
              viejo (fila in-sample) se RETIRA — «Aplicar tras Restablecer ≡ aplicar el
              estudio», así que quedaba redundante. -->
         <div class="flex items-center gap-2 flex-wrap"
-             x-data="{ open:false, loading:false, aerr:null, prev:null, confirmRiesgo:false, frase:'', validated:false,
+             x-data="{ open:false, loading:false, aerr:null, prev:null, confirmRiesgo:false, frase:'', rearmOn:false, validated:false,
                sync(){ this.validated = window.luxyPalancas ? window.luxyPalancas().validated : false; },
                get gate(){ return this.prev ? this.prev.gate : null; },
                get bloqueado(){ const g=this.gate; if(!g) return false;
                  if(g.nivel==='rojo') return this.frase.trim() !== g.frase_rojo;
                  if(g.nivel==='amber') return !this.confirmRiesgo; return false; },
-               load(){ if(!this.validated || !window.luxyPalancas) return; this.loading=true; this.aerr=null; this.prev=null; this.confirmRiesgo=false; this.frase=''; this.open=true;
-                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar_palancas/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(window.luxyPalancas().overrides)})
+               ov(){ return Object.assign({}, window.luxyPalancas().overrides, {rearm_incluir:this.rearmOn}); },
+               load(keep){ if(!this.validated || !window.luxyPalancas) return; this.loading=true; this.aerr=null; this.prev=null; this.confirmRiesgo=false; this.frase='';
+                 if(!keep){ this.rearmOn=false; }
+                 this.open=true;
+                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar_palancas/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.ov())})
                   .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200) this.prev=j; else this.aerr=j.error||('error '+s); })
                   .catch(e=>{this.loading=false;this.aerr=String(e);}); },
                apply(){ if(this.bloqueado || !window.luxyPalancas) return; this.loading=true;
-                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar_palancas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overrides:window.luxyPalancas().overrides, confirm_riesgo:this.confirmRiesgo, frase:this.frase})})
+                 fetch('/ui/strategies/{{ strategy.strategy_id }}/luxy/aplicar_palancas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overrides:this.ov(), confirm_riesgo:this.confirmRiesgo, frase:this.frase})})
                   .then(r=>r.json().then(j=>({s:r.status,j}))).then(({s,j})=>{ this.loading=false; if(s===200){ this.open=false; location.reload(); } else this.aerr=j.error||('error '+s); }); } }"
              x-init="sync()" @luxy-refresh.window="sync()">
           {% if luxy_deriva %}
@@ -727,6 +751,26 @@
                       <b :style="'color:'+((prev.evidencia.robustez.verdict==='verde')?'#3fb950':(prev.evidencia.robustez.verdict==='rojo'?'#f85149':'#d29922'))" x-text="prev.evidencia.robustez.verdict||'—'"></b>
                       · OOS net <span class="font-mono text-gray-300" x-text="(prev.evidencia.oos&&prev.evidencia.oos.net!=null)?('$'+Math.round(prev.evidencia.oos.net).toLocaleString('en-US')):'—'"></span>
                       · particip <span class="font-mono text-gray-300" x-text="(prev.evidencia.config&&prev.evidencia.config.part!=null)?(prev.evidencia.config.part+'%'):'—'"></span>
+                    </div>
+                  </template>
+                  {# RA-3 — sembrado del RE-ARMADO: checkbox SOLO con veredicto 🟢
+                     del panel Piernas (RA-0v3); DEFAULT DESMARCADO. Marcarlo
+                     re-pide el preview (el aplicable y el gate cambian). Con
+                     🔴/⚪ la sección aparece DESHABILITADA y el backend además
+                     RECHAZA enabled:true server-side (jamás confiar el front). #}
+                  <template x-if="prev.rearm && prev.rearm.disponible">
+                    <div class="rounded p-2 text-xs space-y-1" style="background:rgba(88,166,255,.07);border:1px solid #30363d;color:#8b949e">
+                      <label class="flex items-center gap-2">
+                        <input type="checkbox" x-model="rearmOn" @change="load(true)" class="rounded">
+                        <span>incluir <b style="color:#e6edf3">re-armado de piernas</b> (max_ciclos <span class="font-mono" x-text="prev.rearm.constantes.max_ciclos"></span> del veredicto 🟢)</span>
+                      </label>
+                      <div x-show="rearmOn" style="color:#d29922">re-armado ON viaja al aplicable — el gate lo marca ÁMBAR (jamás verde con re-armado). Constantes del veredicto RA-0v3: k_sobre_c0 <span class="font-mono" x-text="prev.rearm.constantes.k_sobre_c0"></span> · umbral_atr <span class="font-mono" x-text="prev.rearm.constantes.umbral_atr"></span> · cierre 30m · 5m.</div>
+                      <div x-show="!rearmOn">sin marcar: las constantes del veredicto se siembran con <span class="font-mono">enabled:false</span> — sembrar ≠ encender (quedan visibles en Config; encender siempre pasa por aquí).</div>
+                    </div>
+                  </template>
+                  <template x-if="prev.rearm && !prev.rearm.disponible">
+                    <div class="rounded p-2 text-xs" style="background:#161b22;border:1px solid #30363d;color:#8b949e">
+                      Re-armado <b>deshabilitado</b> — <span x-text="prev.rearm.motivo"></span>. El backend rechaza <span class="font-mono">enabled:true</span> server-side.
                     </div>
                   </template>
                   <ul class="text-xs text-gray-500 list-disc pl-4">

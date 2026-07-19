@@ -1007,9 +1007,66 @@ _APLICABLE_LLAVES = ("backstop_points", "tp_nominal_long", "tp_nominal_short",
                      "entry_reserve_timeout_seconds", "scale_entry")
 
 
+def _rearm_desde_veredicto(study: dict, overrides: dict):
+    """RA-3 — SEMBRADO server-side del re-armado. (overrides', info, err).
+
+    JAMÁS se confía el guard al front: cualquier bloque `rearm` que venga del
+    cliente se DESCARTA y se reconstruye del VEREDICTO RA-0v3 del panel
+    Piernas (fuente única). El front solo manda la intención
+    (`rearm_incluir`, el checkbox — default desmarcado).
+
+    · Veredicto 🟢 "recomendado" ⇒ SIEMPRE se siembran las constantes del
+      veredicto; `enabled` = checkbox. DECISIÓN (sembrar ≠ encender): sin
+      checkbox se siembra `enabled:false` — la config aplicada registra QUÉ
+      recomendó el estudio en el momento de aplicar (reproducibilidad y
+      deriva visibles en Config) sin encender nada; no abre atajo alguno
+      porque encender exige checkbox+gate (única puerta) y Config solo APAGA.
+    · Veredicto 🔴/⚪/ausente ⇒ NO se siembra nada (constantes de un
+      veredicto no recomendado no tienen lugar en la config) y pedir
+      `enabled` se RECHAZA con 409 — aunque el front lo pida."""
+    o = dict(overrides or {})
+    o.pop("rearm", None)                     # jamás del cliente
+    incluir = bool(o.pop("rearm_incluir", False))
+    r2 = (((study or {}).get("dashboard") or {}).get("piernas") or {}) \
+        .get("recomendacion") or {}
+    verd = r2.get("veredicto")
+
+    def _n(v, cast, default):
+        try:
+            return cast(v)
+        except (TypeError, ValueError):
+            return default
+
+    if verd == "recomendado":
+        o["rearm"] = {
+            "enabled": incluir,
+            "max_ciclos": _n(r2.get("MAX_CICLOS"), int, 1),
+            "k_sobre_c0": _n(r2.get("K_SOBRE_C0"), float, 1.0),
+            "umbral_atr": _n(r2.get("UMBRAL_ATR_EXPANSION"), float, 1.5),
+            "min_antes_cierre_min": 30,
+            "timeframe": "5m",
+        }
+        return o, {"veredicto": verd, "disponible": True, "incluido": incluir,
+                   "constantes": {k: o["rearm"][k] for k in
+                                  ("max_ciclos", "k_sobre_c0", "umbral_atr")},
+                   "motivo": None}, None
+    if incluir:
+        return None, None, JSONResponse(
+            {"error": f"re-armado RECHAZADO server-side: veredicto RA-0v3 "
+                      f"'{verd or 'ausente'}' — solo 🟢 recomendado puede "
+                      f"encenderlo (el guard no vive en el front)"},
+            status_code=409)
+    return o, {"veredicto": verd, "disponible": False, "incluido": False,
+               "constantes": None,
+               "motivo": f"veredicto {verd or 'ausente'} — re-armado "
+                         f"deshabilitado"}, None
+
+
 async def _luxy_palancas_ctx(db: AsyncSession, strategy_id: str, overrides: dict):
     """(ctx, err). Corre evaluate_overrides IN-PROCESS (hilo) sobre las palancas del
-    operador. ctx = {clave, study, ev, prof, pcfg, sl_vivo, tp_vivo}."""
+    operador. ctx = {clave, study, ev, prof, pcfg, sl_vivo, tp_vivo, rearm}.
+    RA-3: el bloque `rearm` de los overrides se reconstruye AQUÍ del veredicto
+    (server-side, ambos endpoints — preview y aplicar — pasan por esta puerta)."""
     import app.web.routes_riesgo as rr
     import scripts.mr_luxy as mrl
     srow = (await db.execute(select(Strategy).where(
@@ -1029,6 +1086,10 @@ async def _luxy_palancas_ctx(db: AsyncSession, strategy_id: str, overrides: dict
         return None, JSONResponse(
             {"error": "estudio degradado (sin HOLC/intrabar) — recalcula antes de "
                       "aplicar"}, status_code=409)
+    # RA-3 — el re-armado se siembra del VEREDICTO, server-side (guard 🟢).
+    overrides, rearm_info, rerr = _rearm_desde_veredicto(study, overrides)
+    if rerr:
+        return None, rerr
     ev = await _asyncio.to_thread(
         mrl.evaluate_overrides, clave, rr.MOTOR_DIR, overrides,
         cancel_after_s=study.get("cancel_after_s"))
@@ -1044,7 +1105,8 @@ async def _luxy_palancas_ctx(db: AsyncSession, strategy_id: str, overrides: dict
     tp_vivo = (float(prof.tp_atr_multiplier)
                if prof and prof.tp_atr_multiplier is not None else None)
     return {"clave": clave, "study": study, "ev": ev, "prof": prof,
-            "pcfg": pcfg, "sl_vivo": sl_vivo, "tp_vivo": tp_vivo}, None
+            "pcfg": pcfg, "sl_vivo": sl_vivo, "tp_vivo": tp_vivo,
+            "rearm": rearm_info}, None
 
 
 @router.post("/ui/strategies/{strategy_id}/luxy/aplicar_palancas/preview")
@@ -1090,6 +1152,9 @@ async def luxy_aplicar_palancas_preview(
                       "retencion": ev.get("retencion")},
         "gate": gate,
         "avisos": avisos,
+        # RA-3 — sección Re-armado del preview: veredicto + constantes del
+        # sembrado (o el motivo del deshabilitado). El guard vive en el server.
+        "rearm": ctx.get("rearm"),
     })
 
 
@@ -2540,6 +2605,40 @@ async def update_sltp(
     return redirect(
         f"/ui/strategies/{strategy_id}", flash="SL/TP actualizados",
     )
+
+
+@router.post("/ui/strategies/{strategy_id}/rearm/off")
+async def rearm_off(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> RedirectResponse:
+    """RA-3 — APAGADO SIN FRICCIÓN del re-armado: apagar es reducir riesgo ⇒
+    un clic + AuditLog REARM_DISABLED. Encender desde aquí NO existe — la
+    única puerta de entrada es Aplicar (Luxy) con veredicto 🟢 + gate ámbar
+    (una puerta de entrada, dos de salida: este toggle y el propio Aplicar)."""
+    from app.services.audit_service import AuditService
+
+    prof = (await db.execute(select(StrategyProfile).where(
+        StrategyProfile.strategy_id == strategy_id))).scalar_one_or_none()
+    cfg = dict(prof.pipeline_config_json or {}) if prof else {}
+    se = dict(cfg.get("scale_entry") or {})
+    rearm = dict(se.get("rearm") or {})
+    if prof is None or not rearm:
+        return redirect(f"/ui/strategies/{strategy_id}",
+                        flash="sin re-armado sembrado — nada que apagar",
+                        category="error")
+    antes = rearm.get("enabled") is True
+    rearm["enabled"] = False
+    se["rearm"] = rearm
+    cfg["scale_entry"] = se
+    prof.pipeline_config_json = cfg
+    await AuditService().log(
+        db, actor="operador", action="REARM_DISABLED",
+        object_type="StrategyProfile", object_id=strategy_id,
+        old_value={"enabled": antes}, new_value={"enabled": False})
+    await db.commit()
+    return redirect(f"/ui/strategies/{strategy_id}",
+                    flash="re-armado APAGADO (las constantes sembradas se "
+                          "conservan; encender exige Aplicar + gate)")
 
 
 @router.post("/ui/strategies/{strategy_id}/scale-entry")
