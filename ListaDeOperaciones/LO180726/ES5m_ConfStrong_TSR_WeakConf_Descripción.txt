@@ -1,0 +1,43 @@
+Descripción técnica
+Esta estrategia direccional en 5 minutos aprovecha señales fuertes (Strong) buscando capturar movimientos extendidos, pero requiere confirmación dual. Entra al mercado solo cuando detecta señales sólidas respaldadas por una fuerza de tendencia en estado de rango y una confluencia débil. Al filtrar de este modo, intenta tomar operaciones que salen de periodos de consolidación antes de que la tendencia principal gane fuerza total.
+
+ID / Nombre de la estrategia
+
+Nombre: Confirmation Strong - Trend Strength Ranging - Weak Confluence
+ID: ES|5|LONG=CONFStrBl&TSR&WkBlCONF|SHORT=CONFStrBr&TSR&WkBrCONF|EXIT=null
+Herramientas utilizadas
+
+Confirmation Signals (Signals & Overlays)
+Trend Strength (Signals & Overlays)
+Confluence (Oscillator Matrix)
+Gatillo (Trigger)
+
+Largos: Confirmation Strong Bullish
+Cortos: Confirmation Strong Bearish
+Filtros
+
+Largos: Trend Strength Ranging y Weak Bullish Confluence
+Cortos: Trend Strength Ranging y Weak Bearish Confluence
+Salida (Exit)
+
+Ninguna definida (las posiciones se cierran/revierten por señales opuestas).
+Rendimiento del Backtest
+
+Capital de inicio calculado: 10,000 USD
+Backtest inicio: 6 de Marzo, 2026
+Backtest final: 11 de Junio, 2026
+Número de operaciones: 54
+Winrate %: 42.59%
+Profit factor: 1.479
+Beneficio neto: $26,425 USD
+Max drawdown %: 33.59%
+Caída máxima en dólares: $13,012.50 USD
+Operaciones rentables: 23 de 54
+Frecuencia de señales: Aproximadamente 17 operaciones por mes
+Tamaño de orden usado: 1 unidad (1 contrato estándar ES)
+Rango de tiempo recomendado: 5 minutos (5m)
+Análisis de Rachas y Tiempos de Posición
+
+Tiempo promedio de las operaciones: Las posiciones se mantuvieron abiertas durante un promedio de 2,585 minutos (poco más de 43 horas). Esto refleja que, aunque la temporalidad de entrada es de 5 minutos, la estrategia captura oscilaciones macro que duran en promedio casi dos días.
+Operaciones en racha ganadora máxima: 1 sola operación (no ha hilado victorias consecutivas, su fortaleza reside en que las ganancias superan con creces a las pérdidas cuando acierta).
+Operaciones en racha perdedora máxima: 0 (el sistema intercala resultados y no presentó un histórico de rachas perdedoras persistentes).

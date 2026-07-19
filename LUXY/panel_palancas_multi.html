@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel de palancas — multi-instrumento</title>
+<style>
+  :root{
+    --paper:#F4F6F7; --panel:#FFFFFF; --ink:#15181C; --muted:#6B7278; --faint:#9AA0A6;
+    --line:#E4E8EB; --line2:#EEF1F3;
+    --green:#1BAF7A; --red:#E34948; --tp:#0F6E56; --be:#6A5ACD; --scin:#2A78D6; --sl:#8A6D1E;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans)}
+  .wrap{max-width:1100px;margin:0 auto;padding:20px 20px 28px}
+  header{margin-bottom:12px}
+  h1{font-size:19px;font-weight:600;letter-spacing:-.01em;margin:0}
+  .sub{margin:4px 0 0;color:var(--muted);font-size:12.5px;font-family:var(--mono)}
+
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0}
+  .tab{font-family:var(--sans);font-size:13px;padding:7px 14px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px;transition:all .12s}
+  .tab:hover{background:var(--paper)}
+  .tab.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .tab .warn{color:var(--sl);font-size:12px}
+  .tab.active .warn{color:#f0c469}
+
+  .compare{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px}
+  .chead{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:11px;flex-wrap:wrap}
+  .chead .lft{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ctitle{font-size:12px;color:var(--muted)}
+  .tag{font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;padding:3px 9px;border-radius:20px;font-weight:500}
+  .tag.val{background:rgba(27,175,122,.14);color:#0F6E56}
+  .tag.est{background:rgba(237,161,0,.18);color:#8A6D1E}
+  .tag.recon{background:var(--paper);color:var(--muted)}
+  .tag.frag{background:rgba(227,73,72,.13);color:#B4342F}
+  .hint{font-size:11px;color:var(--sl);opacity:0;transition:opacity .15s}
+  .hint.on{opacity:1}
+  .btns{display:flex;gap:8px}
+  .btn{font-family:var(--sans);font-size:12.5px;padding:6px 13px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer;transition:background .12s}
+  .btn:hover{background:var(--paper)}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .btn.primary:disabled{opacity:.35;cursor:default}
+  .btn.ghost{background:transparent;color:var(--muted)}
+  .fragbar{display:none;font-size:11.5px;color:#B4342F;background:rgba(227,73,72,.07);border:1px solid rgba(227,73,72,.2);border-radius:8px;padding:7px 11px;margin-bottom:12px}
+  .fragbar.on{display:block}
+  .tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  .tile{background:var(--paper);border-radius:8px;padding:9px 10px}
+  .tile .tl{font-size:9px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);display:flex;align-items:center;gap:4px;min-height:22px}
+  .tile .tv{font-family:var(--mono);font-size:13px;margin-top:3px;display:flex;align-items:baseline;gap:5px;flex-wrap:wrap}
+  .tile .tv .to{color:var(--muted)} .tile .tv .arw{color:var(--faint);font-size:11px}
+  .tile .td{font-family:var(--mono);font-size:11px;margin-top:3px}
+  .pos{color:var(--green)} .neg{color:var(--red)} .neu{color:var(--faint)}
+  .star{color:var(--be);font-size:11px}
+
+  .board{display:block}
+  .chartcard{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:10px 8px 6px}
+  canvas{display:block;width:100%;height:460px}
+  .chartlegend{display:flex;flex-wrap:wrap;gap:6px 16px;padding:8px 6px 2px;border-top:1px solid var(--line2);margin-top:4px}
+  .lg{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);font-family:var(--mono)}
+  .lg i{width:14px;height:3px;border-radius:2px;flex:none}
+  .lg b{color:var(--ink);font-weight:600}
+  .controls{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px 12px;margin-top:16px}
+  .cgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px 30px}
+  .cgroup{min-width:0}
+  .eyebrow{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);margin:2px 0 8px;display:flex;justify-content:space-between}
+  .eyebrow.mt{margin-top:16px;padding-top:14px;border-top:1px solid var(--line2)}
+  .dirsel{display:flex;gap:4px}
+  .dirsel button{font-family:var(--sans);font-size:10px;padding:2px 7px;border-radius:5px;border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer;text-transform:none;letter-spacing:0}
+  .dirsel button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .lev{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;padding:5px 0}
+  .lev .name{display:flex;align-items:center;gap:8px;font-size:13px}
+  .chip{width:14px;height:3px;border-radius:2px;flex:none}
+  .chip.sq{height:11px;width:11px;border-radius:3px}
+  .val{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:64px;text-align:right}
+  .hlp{font-size:11px;color:var(--faint);line-height:1.4;margin:2px 0 6px}
+  .whybox{font-size:11px;line-height:1.55;color:var(--muted);background:rgba(42,120,214,.06);border-left:2px solid var(--scin);border-radius:0 6px 6px 0;padding:8px 10px;margin:2px 0 8px}
+  .whybox b{color:var(--ink);font-weight:600}
+  .whybox .na{color:var(--faint);font-style:italic}
+  .zones{margin-top:16px;padding-top:14px;border-top:1px solid var(--line2)}
+  .ztable{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+  .zrow{display:grid;grid-template-columns:auto 1.5fr .7fr 1.1fr .9fr;align-items:center;gap:12px;padding:5px 4px;font-size:12.5px;border-radius:6px}
+  .zrow.warn{background:rgba(237,161,0,.07)}
+  .zrow .zn{display:flex;align-items:center;gap:7px}
+  .zrow .num{font-family:var(--mono);text-align:right;color:var(--muted)}
+  .zbadge{font-size:9px;letter-spacing:.03em;text-transform:uppercase;color:var(--sl);border:1px solid rgba(138,109,30,.4);border-radius:4px;padding:0 5px}
+  .tag.regime{background:rgba(42,120,214,.10);color:#2a78d6}
+  .tsrow{display:grid;grid-template-columns:1.3fr .6fr 2fr auto;align-items:center;gap:12px;padding:5px 4px;font-size:12.5px}
+  .tsrow .tsr{color:var(--muted)}
+  .tsbar{height:6px;background:var(--line2);border-radius:3px;overflow:hidden}
+  .tsbar>span{display:block;height:100%;border-radius:3px}
+  .waterfall{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-top:16px}
+  .wtitle{font-size:14px;font-weight:600;letter-spacing:-.01em}
+  .wsubtitle{font-size:11.5px;color:var(--muted);line-height:1.5;margin:3px 0 12px;max-width:840px}
+  .wrow{display:grid;grid-template-columns:1.5fr 2fr 1fr auto;align-items:center;gap:14px;padding:7px 8px;border-radius:7px}
+  .wrow.config{background:rgba(27,175,122,.08)}
+  .wrow.diag{opacity:.6}
+  .wlabel{font-size:12.5px;font-weight:500}
+  .wrow.crudo .wlabel{color:var(--muted);font-weight:400}
+  .wbar{height:16px;background:var(--line2);border-radius:4px;overflow:hidden}
+  .wbar>span{display:block;height:100%;border-radius:4px;transition:width .2s}
+  .wnet{font-family:var(--mono);font-size:13px}
+  .wsub{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+  .wdelta{font-family:var(--mono);font-size:12px}
+  .wdiv{margin:10px 0 4px;padding-top:9px;border-top:1px dashed var(--line);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--sl)}
+  @media (max-width:560px){ .wrow{grid-template-columns:1fr 1fr;gap:6px} .wbar{grid-column:1/-1} }
+  .lev.range{grid-template-columns:1fr;gap:6px;padding:2px 0 8px}
+  .lev.range .rowtop{display:flex;justify-content:space-between;align-items:center}
+  input[type=range]{width:100%;cursor:pointer}
+  .sw{position:relative;width:34px;height:19px;flex:none;cursor:pointer}
+  .sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+  .sw .track{position:absolute;inset:0;background:#D5DADE;border-radius:19px;transition:background .15s}
+  .sw .knob{position:absolute;top:2px;left:2px;width:15px;height:15px;background:#fff;border-radius:50%;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+  .sw input:checked + .track{background:var(--ink)}
+  .sw input:checked ~ .knob{transform:translateX(15px)}
+  .readout{margin-top:14px;padding-top:14px;border-top:1px solid var(--line2);display:flex;flex-direction:column;gap:9px}
+  .ro{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12.5px}
+  .ro .lab{color:var(--muted)} .ro .num{font-family:var(--mono);font-weight:500}
+  .foot{color:var(--faint);font-size:11px;line-height:1.5;margin:14px 2px 0;max-width:940px}
+  .tip{position:absolute;pointer-events:none;background:var(--ink);color:#fff;font-family:var(--mono);font-size:11px;line-height:1.5;padding:7px 9px;border-radius:7px;opacity:0;transition:opacity .08s;white-space:nowrap;z-index:5}
+  @media (max-width:820px){ .cgrid{grid-template-columns:1fr 1fr} }
+  @media (max-width:560px){ .cgrid{grid-template-columns:1fr} canvas{height:360px} .tiles{grid-template-columns:repeat(2,1fr)} }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Panel de palancas — recorrido vs. cierre</h1>
+    <p class="sub" id="subline">cargando…</p>
+  </header>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="fragbar" id="fragbar"></div>
+
+  <section class="compare">
+    <div class="chead">
+      <div class="lft">
+        <span class="ctitle">Crudo → con config · dentro de muestra, 100% de los trades</span>
+        <span class="tag val" id="mode-tag">validado · motor</span>
+        <span class="tag recon" id="recon-tag">recon —</span>
+        <span class="tag regime" id="regime-tag"></span>
+        <span class="hint" id="hint">cambios sin aplicar — pulsa recalcular</span>
+      </div>
+      <div class="btns">
+        <button class="btn primary" id="btn-recalc" disabled>Recalcular</button>
+        <button class="btn ghost" id="btn-reset">Restablecer</button>
+      </div>
+    </div>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <div class="board">
+    <div class="chartcard">
+      <canvas id="chart"></canvas>
+      <div class="chartlegend" id="chartlegend"></div>
+      <div class="tip" id="tip"></div>
+    </div>
+
+    <aside class="controls">
+      <div class="cgrid">
+        <div class="cgroup">
+          <div class="eyebrow">Vistas de la nube</div>
+          <div class="lev"><label class="sw"><input type="checkbox" id="t-mfe" checked><span class="track"></span><span class="knob"></span></label>
+            <span class="name"><span class="chip sq" style="background:rgba(27,175,122,.22)"></span>Recorrido a favor (MFE)</span><span class="val"></span></div>
+          <div class="lev"><label class="sw"><input type="checkbox" id="t-mae" checked><span class="track"></span><span class="knob"></span></label>
+            <span class="name"><span class="chip sq" style="background:rgba(227,73,72,.20)"></span>Pullback (MAE)</span><span class="val"></span></div>
+          <div class="lev"><label class="sw"><input type="checkbox" id="t-cls" checked><span class="track"></span><span class="knob"></span></label>
+            <span class="name"><span class="chip sq" style="background:var(--green)"></span>Cierre real</span><span class="val"></span></div>
+          <div class="eyebrow mt">Dirección</div>
+          <div id="dirwrap" class="dirsel"></div>
+          <div class="readout" id="readout"></div>
+        </div>
+
+        <div class="cgroup">
+          <div class="eyebrow">Palancas · salida (USD)</div>
+          <div class="lev"><label class="sw"><input type="checkbox" id="t-tp" checked><span class="track"></span><span class="knob"></span></label>
+            <span class="name"><span class="chip" style="background:var(--tp)"></span>TP techo</span><span class="val" id="v-tp"></span></div>
+          <div class="lev range"><input type="range" id="r-tp" style="accent-color:var(--tp)"></div>
+          <div class="lev"><label class="sw"><input type="checkbox" id="t-be"><span class="track"></span><span class="knob"></span></label>
+            <span class="name"><span class="chip" style="background:var(--be)"></span>Breakeven</span><span class="val" id="v-be"></span></div>
+          <div class="lev range"><input type="range" id="r-be" style="accent-color:var(--be)"></div>
+        </div>
+
+        <div class="cgroup">
+          <div class="eyebrow">Palancas · entrada y stop (USD)</div>
+          <div class="lev"><label class="sw"><input type="checkbox" id="t-sc" checked><span class="track"></span><span class="knob"></span></label>
+            <span class="name"><span class="chip" style="background:var(--scin)"></span>Escalonado <span id="sc-alloc" style="font-family:var(--mono)">—</span></span><span class="val" id="v-sc"></span></div>
+          <div class="whybox" id="sc-why"></div>
+          <div class="lev range"><div class="rowtop"><span class="val" style="min-width:auto">C2 · C3 (adverso)</span><span class="val"><span id="v-l2"></span> · <span id="v-l3"></span></span></div>
+            <input type="range" id="r-l2" style="accent-color:var(--scin)">
+            <input type="range" id="r-l3" style="accent-color:var(--scin)"></div>
+          <div class="lev"><label class="sw"><input type="checkbox" id="t-sl" checked><span class="track"></span><span class="knob"></span></label>
+            <span class="name"><span class="chip" style="background:var(--sl)"></span>SL backstop</span><span class="val" id="v-sl"></span></div>
+          <div class="lev range"><input type="range" id="r-sl" style="accent-color:var(--sl)"></div>
+        </div>
+      </div>
+      <div class="zones">
+        <div class="eyebrow">Sesiones / zonas de bolsa (hora NY) — bloquea las que resten</div>
+        <div class="ztable" id="ztable"></div>
+        <div class="hlp">Diagnóstico dentro de muestra. Las marcadas <b>pierde</b> tienen neto negativo con ≥8 trades — candidatas a bloquear, pero hazlo solo con una razón real (noticias, iliquidez), no solo porque perdieron en la muestra.</div>
+      </div>
+      <div class="zones">
+        <div class="eyebrow">Días de la semana (hora NY) — bloquea los que resten</div>
+        <div class="ztable" id="dtable"></div>
+        <div class="hlp">Mismo criterio. Ojo con el <b>viernes</b>: suele cargar el dato de empleo (NFP) y en varias estrategias es el peor día.</div>
+      </div>
+      <div class="zones">
+        <div class="eyebrow">Time-stop — neto por duración de la operación (barras)</div>
+        <div class="ztable" id="tstable"></div>
+        <div class="whybox" id="ts-why"></div>
+      </div>
+    </aside>
+  </div>
+
+  <section class="waterfall">
+    <div class="wtitle">Integrador — cómo se apilan las palancas</div>
+    <div class="wsubtitle">Aporte marginal de cada palanca al <b>neto</b> y al <b>drawdown</b>, en orden riesgo → filtros. Se recalcula al mover las palancas de arriba. Es la vista de <b>estimación</b> (misma que «Recalcular»); el «con config» <b>validado por el motor</b> está en el bloque de arriba y suele quedar ~10% por encima por la precisión intrabar. La cascada oficial cierra en <b>dirección</b>; abajo, atenuados, los filtros de sesión/día como diagnóstico.</div>
+    <div id="wtable"></div>
+  </section>
+
+  <p class="foot" id="foot"></p>
+</div>
+
+<script>
+const ALL = {"order": ["ES", "NQ", "RTY", "6E", "6J", "GC"], "instruments": {"ES": {"inst": "ES", "name": "ES ConfNormal", "pv": 50.0, "n": 121, "recon_ok": 119, "fragile": false, "notes": [], "regime": {"change": 12.8, "pct_up": 65, "label": "alcista"}, "timestop": {"buckets": [{"range": "0\u201330", "n": 49, "net": 38325}, {"range": "30\u201380", "n": 33, "net": 16438}, {"range": "80\u2013160", "n": 17, "net": -4888}, {"range": "160+", "n": 22, "net": -23588}], "verdict": "descartado", "why": "Tentador: las operaciones largas pierden (neto negativo m\u00e1s all\u00e1 de ~80 barras), as\u00ed que cortarlas por tiempo <i>parece</i> ayudar. Pero el estudio valid\u00f3 intrabar que muchas de esas operaciones se hunden y luego se recuperan \u2014 cortarlas por tiempo quita esas recuperaciones. Es <b>sesgo de supervivencia</b>, por eso el time-stop se <b>descarta</b>. Aplicarlo requerir\u00eda re-validar intrabar en cada estrategia."}, "mfe_max": 3312.5, "mae_min": -11125.0, "trades": [{"i": 1, "mfe": 1075.0, "mae": -812.5, "pnl": 937.5, "long": false, "hr": 12, "dow": 1}, {"i": 2, "mfe": 2012.5, "mae": -1400.0, "pnl": 1025.0, "long": false, "hr": 4, "dow": 2}, {"i": 3, "mfe": 725.0, "mae": -200.0, "pnl": 675.0, "long": false, "hr": 1, "dow": 3}, {"i": 4, "mfe": 1450.0, "mae": -262.5, "pnl": 1175.0, "long": false, "hr": 10, "dow": 3}, {"i": 5, "mfe": 700.0, "mae": -475.0, "pnl": 650.0, "long": true, "hr": 21, "dow": 3}, {"i": 6, "mfe": 1837.5, "mae": -8675.0, "pnl": 400.0, "long": true, "hr": 5, "dow": 4}, {"i": 7, "mfe": 475.0, "mae": -75.0, "pnl": 437.5, "long": true, "hr": 0, "dow": 2}, {"i": 8, "mfe": 787.5, "mae": -687.5, "pnl": 675.0, "long": false, "hr": 12, "dow": 2}, {"i": 9, "mfe": 775.0, "mae": -600.0, "pnl": 562.5, "long": true, "hr": 15, "dow": 2}, {"i": 10, "mfe": 625.0, "mae": -337.5, "pnl": 537.5, "long": false, "hr": 5, "dow": 3}, {"i": 11, "mfe": 1375.0, "mae": -1587.5, "pnl": 1237.5, "long": true, "hr": 6, "dow": 3}, {"i": 12, "mfe": 1400.0, "mae": -62.5, "pnl": 1200.0, "long": false, "hr": 22, "dow": 6}, {"i": 13, "mfe": 1487.5, "mae": -675.0, "pnl": 675.0, "long": true, "hr": 8, "dow": 0}, {"i": 14, "mfe": 700.0, "mae": -37.5, "pnl": 675.0, "long": true, "hr": 14, "dow": 0}, {"i": 15, "mfe": 1062.5, "mae": -475.0, "pnl": 1050.0, "long": false, "hr": 18, "dow": 0}, {"i": 16, "mfe": 1162.5, "mae": -2525.0, "pnl": -37.5, "long": true, "hr": 8, "dow": 1}, {"i": 17, "mfe": 1275.0, "mae": -37.5, "pnl": 962.5, "long": false, "hr": 14, "dow": 1}, {"i": 18, "mfe": 975.0, "mae": -200.0, "pnl": 812.5, "long": false, "hr": 8, "dow": 2}, {"i": 19, "mfe": 1262.5, "mae": -675.0, "pnl": 1075.0, "long": false, "hr": 13, "dow": 2}, {"i": 20, "mfe": 1050.0, "mae": -412.5, "pnl": 925.0, "long": true, "hr": 4, "dow": 3}, {"i": 21, "mfe": 400.0, "mae": -275.0, "pnl": 262.5, "long": true, "hr": 19, "dow": 3}, {"i": 22, "mfe": 300.0, "mae": -300.0, "pnl": 262.5, "long": false, "hr": 22, "dow": 3}, {"i": 23, "mfe": 1237.5, "mae": -4500.0, "pnl": 912.5, "long": true, "hr": 13, "dow": 4}, {"i": 24, "mfe": 675.0, "mae": -25.0, "pnl": 625.0, "long": true, "hr": 2, "dow": 1}, {"i": 25, "mfe": 825.0, "mae": -100.0, "pnl": 437.5, "long": true, "hr": 6, "dow": 2}, {"i": 26, "mfe": 312.5, "mae": -12.5, "pnl": 262.5, "long": true, "hr": 1, "dow": 3}, {"i": 27, "mfe": 400.0, "mae": -150.0, "pnl": 300.0, "long": false, "hr": 3, "dow": 3}, {"i": 28, "mfe": 225.0, "mae": -50.0, "pnl": 187.5, "long": true, "hr": 4, "dow": 3}, {"i": 29, "mfe": 1050.0, "mae": -175.0, "pnl": 862.5, "long": false, "hr": 9, "dow": 3}, {"i": 30, "mfe": 1000.0, "mae": -112.5, "pnl": 900.0, "long": true, "hr": 11, "dow": 3}, {"i": 31, "mfe": 462.5, "mae": -200.0, "pnl": 362.5, "long": true, "hr": 15, "dow": 3}, {"i": 32, "mfe": 362.5, "mae": -275.0, "pnl": 337.5, "long": true, "hr": 0, "dow": 4}, {"i": 33, "mfe": 225.0, "mae": -3837.5, "pnl": -1112.5, "long": true, "hr": 15, "dow": 4}, {"i": 34, "mfe": 1012.5, "mae": -2175.0, "pnl": 650.0, "long": false, "hr": 14, "dow": 0}, {"i": 35, "mfe": 275.0, "mae": -400.0, "pnl": 237.5, "long": false, "hr": 20, "dow": 1}, {"i": 36, "mfe": 1687.5, "mae": -1687.5, "pnl": -700.0, "long": false, "hr": 4, "dow": 2}, {"i": 37, "mfe": 812.5, "mae": -1725.0, "pnl": 562.5, "long": true, "hr": 20, "dow": 2}, {"i": 38, "mfe": 112.5, "mae": -3837.5, "pnl": -2987.5, "long": false, "hr": 16, "dow": 3}, {"i": 39, "mfe": 375.0, "mae": -725.0, "pnl": 275.0, "long": true, "hr": 9, "dow": 0}, {"i": 40, "mfe": 125.0, "mae": -3212.5, "pnl": -2187.5, "long": true, "hr": 23, "dow": 0}, {"i": 41, "mfe": 25.0, "mae": -1087.5, "pnl": -437.5, "long": false, "hr": 15, "dow": 1}, {"i": 42, "mfe": 275.0, "mae": -450.0, "pnl": -37.5, "long": true, "hr": 4, "dow": 2}, {"i": 43, "mfe": 675.0, "mae": -262.5, "pnl": 587.5, "long": false, "hr": 7, "dow": 2}, {"i": 44, "mfe": 687.5, "mae": -50.0, "pnl": 525.0, "long": true, "hr": 10, "dow": 2}, {"i": 45, "mfe": 62.5, "mae": -2125.0, "pnl": -1037.5, "long": false, "hr": 8, "dow": 4}, {"i": 46, "mfe": 237.5, "mae": -3262.5, "pnl": -1000.0, "long": true, "hr": 13, "dow": 4}, {"i": 47, "mfe": 1762.5, "mae": -262.5, "pnl": 1625.0, "long": false, "hr": 11, "dow": 0}, {"i": 48, "mfe": 425.0, "mae": -750.0, "pnl": 375.0, "long": true, "hr": 13, "dow": 0}, {"i": 49, "mfe": 1087.5, "mae": -475.0, "pnl": 1062.5, "long": true, "hr": 9, "dow": 2}, {"i": 50, "mfe": 1400.0, "mae": -2312.5, "pnl": 62.5, "long": false, "hr": 11, "dow": 2}, {"i": 51, "mfe": 762.5, "mae": 0.0, "pnl": 712.5, "long": true, "hr": 20, "dow": 3}, {"i": 52, "mfe": 25.0, "mae": -4200.0, "pnl": -2725.0, "long": false, "hr": 22, "dow": 3}, {"i": 53, "mfe": 425.0, "mae": -3100.0, "pnl": 137.5, "long": true, "hr": 22, "dow": 0}, {"i": 54, "mfe": 1550.0, "mae": -1687.5, "pnl": 1437.5, "long": true, "hr": 9, "dow": 2}, {"i": 55, "mfe": 812.5, "mae": -3025.0, "pnl": 725.0, "long": false, "hr": 4, "dow": 3}, {"i": 56, "mfe": 1287.5, "mae": -2625.0, "pnl": 1062.5, "long": true, "hr": 18, "dow": 6}, {"i": 57, "mfe": 2187.5, "mae": -1437.5, "pnl": 1487.5, "long": false, "hr": 9, "dow": 0}, {"i": 58, "mfe": 437.5, "mae": -1637.5, "pnl": -300.0, "long": true, "hr": 21, "dow": 0}, {"i": 59, "mfe": 975.0, "mae": -112.5, "pnl": 850.0, "long": false, "hr": 4, "dow": 1}, {"i": 60, "mfe": 862.5, "mae": -2187.5, "pnl": 812.5, "long": true, "hr": 6, "dow": 1}, {"i": 61, "mfe": 625.0, "mae": -262.5, "pnl": 475.0, "long": false, "hr": 13, "dow": 1}, {"i": 62, "mfe": 387.5, "mae": -1287.5, "pnl": 312.5, "long": true, "hr": 21, "dow": 1}, {"i": 63, "mfe": 1162.5, "mae": -25.0, "pnl": 1150.0, "long": true, "hr": 3, "dow": 3}, {"i": 64, "mfe": 1687.5, "mae": -250.0, "pnl": 1675.0, "long": false, "hr": 5, "dow": 3}, {"i": 65, "mfe": 2150.0, "mae": -1237.5, "pnl": 2125.0, "long": true, "hr": 7, "dow": 3}, {"i": 66, "mfe": 875.0, "mae": -1387.5, "pnl": 412.5, "long": false, "hr": 10, "dow": 4}, {"i": 67, "mfe": 762.5, "mae": -300.0, "pnl": 712.5, "long": false, "hr": 7, "dow": 1}, {"i": 68, "mfe": 762.5, "mae": -525.0, "pnl": 712.5, "long": true, "hr": 9, "dow": 1}, {"i": 69, "mfe": 925.0, "mae": -100.0, "pnl": 862.5, "long": false, "hr": 11, "dow": 1}, {"i": 70, "mfe": 575.0, "mae": -637.5, "pnl": 412.5, "long": true, "hr": 12, "dow": 1}, {"i": 71, "mfe": 175.0, "mae": -1537.5, "pnl": 162.5, "long": true, "hr": 10, "dow": 2}, {"i": 72, "mfe": 575.0, "mae": -200.0, "pnl": 550.0, "long": true, "hr": 7, "dow": 3}, {"i": 73, "mfe": 237.5, "mae": -3125.0, "pnl": -2525.0, "long": false, "hr": 9, "dow": 3}, {"i": 74, "mfe": 200.0, "mae": -312.5, "pnl": 175.0, "long": true, "hr": 22, "dow": 3}, {"i": 75, "mfe": 350.0, "mae": -1800.0, "pnl": -1387.5, "long": false, "hr": 1, "dow": 4}, {"i": 76, "mfe": 275.0, "mae": -162.5, "pnl": 225.0, "long": true, "hr": 4, "dow": 0}, {"i": 77, "mfe": 500.0, "mae": -37.5, "pnl": 425.0, "long": false, "hr": 7, "dow": 0}, {"i": 78, "mfe": 175.0, "mae": -950.0, "pnl": 112.5, "long": true, "hr": 19, "dow": 0}, {"i": 79, "mfe": 837.5, "mae": -650.0, "pnl": 812.5, "long": true, "hr": 7, "dow": 1}, {"i": 80, "mfe": 362.5, "mae": -187.5, "pnl": 350.0, "long": false, "hr": 18, "dow": 1}, {"i": 81, "mfe": 537.5, "mae": -37.5, "pnl": 462.5, "long": true, "hr": 19, "dow": 1}, {"i": 82, "mfe": 250.0, "mae": -100.0, "pnl": 187.5, "long": false, "hr": 0, "dow": 2}, {"i": 83, "mfe": 587.5, "mae": -250.0, "pnl": 525.0, "long": false, "hr": 15, "dow": 2}, {"i": 84, "mfe": 1275.0, "mae": -975.0, "pnl": 1275.0, "long": true, "hr": 5, "dow": 3}, {"i": 85, "mfe": 37.5, "mae": -1962.5, "pnl": -837.5, "long": true, "hr": 19, "dow": 3}, {"i": 86, "mfe": 487.5, "mae": -87.5, "pnl": 412.5, "long": false, "hr": 6, "dow": 4}, {"i": 87, "mfe": 12.5, "mae": -10312.5, "pnl": -8437.5, "long": true, "hr": 8, "dow": 4}, {"i": 88, "mfe": 437.5, "mae": -4187.5, "pnl": -2475.0, "long": false, "hr": 21, "dow": 6}, {"i": 89, "mfe": 412.5, "mae": -2612.5, "pnl": 350.0, "long": true, "hr": 13, "dow": 0}, {"i": 90, "mfe": 2987.5, "mae": -350.0, "pnl": 2875.0, "long": false, "hr": 10, "dow": 1}, {"i": 91, "mfe": 1187.5, "mae": -3062.5, "pnl": 1000.0, "long": true, "hr": 1, "dow": 2}, {"i": 92, "mfe": 1062.5, "mae": -150.0, "pnl": 887.5, "long": false, "hr": 21, "dow": 2}, {"i": 93, "mfe": 3312.5, "mae": -3262.5, "pnl": 3275.0, "long": true, "hr": 7, "dow": 3}, {"i": 94, "mfe": 2275.0, "mae": -1962.5, "pnl": -312.5, "long": false, "hr": 4, "dow": 4}, {"i": 95, "mfe": 2162.5, "mae": -1487.5, "pnl": 2075.0, "long": true, "hr": 10, "dow": 4}, {"i": 96, "mfe": 1400.0, "mae": -11125.0, "pnl": -10162.5, "long": false, "hr": 11, "dow": 4}, {"i": 97, "mfe": 112.5, "mae": -875.0, "pnl": -400.0, "long": true, "hr": 15, "dow": 0}, {"i": 98, "mfe": 1125.0, "mae": -762.5, "pnl": 862.5, "long": false, "hr": 0, "dow": 1}, {"i": 99, "mfe": 300.0, "mae": -525.0, "pnl": 212.5, "long": false, "hr": 21, "dow": 2}, {"i": 100, "mfe": 1287.5, "mae": -1325.0, "pnl": 162.5, "long": false, "hr": 4, "dow": 3}, {"i": 101, "mfe": 1125.0, "mae": -562.5, "pnl": 1062.5, "long": true, "hr": 7, "dow": 4}, {"i": 102, "mfe": 2037.5, "mae": -1562.5, "pnl": 1512.5, "long": false, "hr": 9, "dow": 0}, {"i": 103, "mfe": 750.0, "mae": -350.0, "pnl": 662.5, "long": false, "hr": 21, "dow": 1}, {"i": 104, "mfe": 387.5, "mae": -500.0, "pnl": 337.5, "long": true, "hr": 23, "dow": 1}, {"i": 105, "mfe": 550.0, "mae": -850.0, "pnl": 362.5, "long": false, "hr": 1, "dow": 2}, {"i": 106, "mfe": 2312.5, "mae": -362.5, "pnl": 1687.5, "long": false, "hr": 12, "dow": 2}, {"i": 107, "mfe": 2362.5, "mae": -1762.5, "pnl": 1750.0, "long": true, "hr": 14, "dow": 2}, {"i": 108, "mfe": 1537.5, "mae": -1837.5, "pnl": 225.0, "long": true, "hr": 10, "dow": 3}, {"i": 109, "mfe": 1750.0, "mae": -3225.0, "pnl": -1275.0, "long": false, "hr": 3, "dow": 4}, {"i": 110, "mfe": 1612.5, "mae": -2600.0, "pnl": 1525.0, "long": true, "hr": 15, "dow": 4}, {"i": 111, "mfe": 2112.5, "mae": -3187.5, "pnl": -2825.0, "long": false, "hr": 5, "dow": 0}, {"i": 112, "mfe": 462.5, "mae": -187.5, "pnl": 450.0, "long": true, "hr": 5, "dow": 1}, {"i": 113, "mfe": 750.0, "mae": -12.5, "pnl": 737.5, "long": false, "hr": 8, "dow": 1}, {"i": 114, "mfe": 1325.0, "mae": -112.5, "pnl": 1262.5, "long": true, "hr": 9, "dow": 1}, {"i": 115, "mfe": 212.5, "mae": -2337.5, "pnl": -1300.0, "long": false, "hr": 10, "dow": 1}, {"i": 116, "mfe": 1175.0, "mae": -2062.5, "pnl": 1087.5, "long": true, "hr": 18, "dow": 1}, {"i": 117, "mfe": 325.0, "mae": -1412.5, "pnl": -800.0, "long": true, "hr": 1, "dow": 3}, {"i": 118, "mfe": 775.0, "mae": -3062.5, "pnl": 450.0, "long": false, "hr": 6, "dow": 3}, {"i": 119, "mfe": 362.5, "mae": -275.0, "pnl": -100.0, "long": true, "hr": 5, "dow": 4}, {"i": 120, "mfe": 475.0, "mae": -1212.5, "pnl": 412.5, "long": false, "hr": 9, "dow": 4}, {"i": 121, "mfe": 262.5, "mae": -3012.5, "pnl": -2650.0, "long": true, "hr": 20, "dow": 0}], "base": {"net": 26287.5, "pf": 1.5470863683662852, "dd": -11750.0, "worst": -10162.5, "wr": 79.33884297520662, "n": 121, "part": 100.0}, "config": {"net": 28031.0, "pf": 1.6873544052377332, "dd": -7513.25, "worst": -3574.0, "wr": 79.33884297520662, "n": 121, "part": 100.0}, "reco": {"sl_usd": 3840, "tp_usd": 3640, "be_usd": null, "l2_usd": 380, "l3_usd": 760, "alloc": [5, 3, 2], "fill2": 62, "fill3": 47, "sl_pts": 76.8, "tp_pts": 72.8, "be_pts": null, "l2_pts": 7.6, "l3_pts": 15.2, "scalein": true, "dir": "both", "news_hours": [8, 11], "zones": [{"name": "Asia", "hours": [19, 20, 21, 22, 23, 0, 1], "n": 32, "net": -2050, "wr": 75.0, "pf": 0.85, "losing": true, "blocked": false}, {"name": "Europa/Londres", "hours": [2, 3, 4, 5, 6, 7], "n": 34, "net": 18162, "wr": 82.4, "pf": 4.46, "losing": false, "blocked": false}, {"name": "Apertura US", "hours": [8, 9], "n": 16, "net": -788, "wr": 75.0, "pf": 0.93, "losing": true, "blocked": false}, {"name": "NY media", "hours": [10, 11], "n": 13, "net": -562, "wr": 84.6, "pf": 0.95, "losing": true, "blocked": false}, {"name": "NY tarde", "hours": [12, 13, 14, 15], "n": 21, "net": 10962, "wr": 81.0, "pf": 4.72, "losing": false, "blocked": false}, {"name": "Cierre US", "hours": [16, 17, 18], "n": 5, "net": 562, "wr": 80.0, "pf": 1.19, "losing": false, "blocked": false}], "blocked_hours": [], "days": [{"dow": 0, "name": "Lunes", "n": 19, "net": 1212, "wr": 73.7, "pf": 1.14, "losing": false, "blocked": false}, {"dow": 1, "name": "Martes", "n": 26, "net": 16038, "wr": 88.5, "pf": 10.04, "losing": false, "blocked": false}, {"dow": 2, "name": "Mi\u00e9rcoles", "n": 24, "net": 15300, "wr": 91.7, "pf": 21.75, "losing": false, "blocked": false}, {"dow": 3, "name": "Jueves", "n": 31, "net": 11225, "wr": 83.9, "pf": 2.14, "losing": false, "blocked": false}, {"dow": 4, "name": "Viernes", "n": 18, "net": -17275, "wr": 50.0, "pf": 0.3, "losing": true, "blocked": false}, {"dow": 6, "name": "Domingo", "n": 3, "net": -212, "wr": 66.7, "pf": 0.91, "losing": false, "blocked": false}], "why_alloc": "El precio baja hasta C2 en el 62% de las operaciones y hasta C3 en el 47%. Como esta estrategia hace pullbacks frecuentes y profundos, el estudio reparte 5/3/2: conviene dejar bastante tama\u00f1o para C2 y C3, donde el precio s\u00ed suele darte fill."}}, "NQ": {"inst": "NQ", "name": "NQ ConfAny", "pv": 20.0, "n": 67, "recon_ok": 65, "fragile": true, "notes": ["mejora >3\u00d7 (depende del escalonado en pullbacks)"], "regime": {"change": 20.9, "pct_up": 66, "label": "alcista"}, "timestop": {"buckets": [{"range": "0\u201330", "n": 23, "net": 28925}, {"range": "30\u201380", "n": 22, "net": 25355}, {"range": "80\u2013160", "n": 13, "net": 16700}, {"range": "160+", "n": 9, "net": -57455}], "verdict": "descartado", "why": "Tentador: las operaciones largas pierden (neto negativo m\u00e1s all\u00e1 de ~80 barras), as\u00ed que cortarlas por tiempo <i>parece</i> ayudar. Pero el estudio valid\u00f3 intrabar que muchas de esas operaciones se hunden y luego se recuperan \u2014 cortarlas por tiempo quita esas recuperaciones. Es <b>sesgo de supervivencia</b>, por eso el time-stop se <b>descarta</b>. Aplicarlo requerir\u00eda re-validar intrabar en cada estrategia."}, "mfe_max": 14135.0, "mae_min": -37895.0, "trades": [{"i": 1, "mfe": 14135.0, "mae": -5675.0, "pnl": 6265.0, "long": true, "hr": 20, "dow": 6}, {"i": 2, "mfe": 2250.0, "mae": -630.0, "pnl": 1875.0, "long": false, "hr": 20, "dow": 0}, {"i": 3, "mfe": 2090.0, "mae": -5375.0, "pnl": 1480.0, "long": false, "hr": 23, "dow": 0}, {"i": 4, "mfe": 3050.0, "mae": -1740.0, "pnl": 2485.0, "long": false, "hr": 8, "dow": 2}, {"i": 5, "mfe": 1235.0, "mae": -760.0, "pnl": 1140.0, "long": false, "hr": 3, "dow": 3}, {"i": 6, "mfe": 1490.0, "mae": -180.0, "pnl": 850.0, "long": false, "hr": 7, "dow": 3}, {"i": 7, "mfe": 1790.0, "mae": -3460.0, "pnl": 1430.0, "long": false, "hr": 9, "dow": 3}, {"i": 8, "mfe": 650.0, "mae": -1870.0, "pnl": 115.0, "long": true, "hr": 16, "dow": 3}, {"i": 9, "mfe": 280.0, "mae": -10070.0, "pnl": -5465.0, "long": true, "hr": 11, "dow": 4}, {"i": 10, "mfe": 2295.0, "mae": -475.0, "pnl": 2150.0, "long": false, "hr": 12, "dow": 0}, {"i": 11, "mfe": 5325.0, "mae": -1290.0, "pnl": 4805.0, "long": false, "hr": 16, "dow": 2}, {"i": 12, "mfe": 4675.0, "mae": -190.0, "pnl": 4160.0, "long": true, "hr": 9, "dow": 3}, {"i": 13, "mfe": 785.0, "mae": -685.0, "pnl": 340.0, "long": false, "hr": 0, "dow": 4}, {"i": 14, "mfe": 3030.0, "mae": -2245.0, "pnl": 2175.0, "long": false, "hr": 7, "dow": 4}, {"i": 15, "mfe": 1100.0, "mae": -195.0, "pnl": 900.0, "long": false, "hr": 3, "dow": 3}, {"i": 16, "mfe": 4820.0, "mae": -1285.0, "pnl": 4240.0, "long": true, "hr": 7, "dow": 3}, {"i": 17, "mfe": 2550.0, "mae": -875.0, "pnl": 2460.0, "long": true, "hr": 5, "dow": 4}, {"i": 18, "mfe": 760.0, "mae": -435.0, "pnl": 550.0, "long": true, "hr": 1, "dow": 0}, {"i": 19, "mfe": 2080.0, "mae": -3270.0, "pnl": 1895.0, "long": true, "hr": 9, "dow": 3}, {"i": 20, "mfe": 455.0, "mae": -510.0, "pnl": 55.0, "long": false, "hr": 19, "dow": 3}, {"i": 21, "mfe": 905.0, "mae": -590.0, "pnl": 860.0, "long": true, "hr": 0, "dow": 4}, {"i": 22, "mfe": 665.0, "mae": -70.0, "pnl": 630.0, "long": true, "hr": 7, "dow": 4}, {"i": 23, "mfe": 1175.0, "mae": -335.0, "pnl": 895.0, "long": true, "hr": 7, "dow": 0}, {"i": 24, "mfe": 730.0, "mae": -615.0, "pnl": 615.0, "long": true, "hr": 20, "dow": 0}, {"i": 25, "mfe": 490.0, "mae": -1600.0, "pnl": 235.0, "long": false, "hr": 3, "dow": 1}, {"i": 26, "mfe": 880.0, "mae": -15.0, "pnl": 875.0, "long": true, "hr": 1, "dow": 3}, {"i": 27, "mfe": 1855.0, "mae": -605.0, "pnl": 1395.0, "long": true, "hr": 7, "dow": 3}, {"i": 28, "mfe": 1650.0, "mae": -245.0, "pnl": 1090.0, "long": true, "hr": 20, "dow": 6}, {"i": 29, "mfe": 385.0, "mae": -2380.0, "pnl": 315.0, "long": false, "hr": 14, "dow": 0}, {"i": 30, "mfe": 3240.0, "mae": -1935.0, "pnl": 2980.0, "long": true, "hr": 20, "dow": 3}, {"i": 31, "mfe": 1460.0, "mae": -1945.0, "pnl": 1195.0, "long": true, "hr": 15, "dow": 4}, {"i": 32, "mfe": 695.0, "mae": -6070.0, "pnl": 310.0, "long": true, "hr": 3, "dow": 0}, {"i": 33, "mfe": 3830.0, "mae": -4245.0, "pnl": 230.0, "long": false, "hr": 9, "dow": 3}, {"i": 34, "mfe": 1225.0, "mae": -560.0, "pnl": 1060.0, "long": true, "hr": 20, "dow": 3}, {"i": 35, "mfe": 1445.0, "mae": -2065.0, "pnl": -1525.0, "long": true, "hr": 7, "dow": 0}, {"i": 36, "mfe": 1185.0, "mae": -3875.0, "pnl": 940.0, "long": false, "hr": 10, "dow": 0}, {"i": 37, "mfe": 1040.0, "mae": -6440.0, "pnl": 640.0, "long": true, "hr": 8, "dow": 2}, {"i": 38, "mfe": 1725.0, "mae": -3045.0, "pnl": 1720.0, "long": true, "hr": 4, "dow": 3}, {"i": 39, "mfe": 1775.0, "mae": -1145.0, "pnl": 1775.0, "long": false, "hr": 20, "dow": 3}, {"i": 40, "mfe": 2270.0, "mae": -2090.0, "pnl": 2165.0, "long": true, "hr": 1, "dow": 0}, {"i": 41, "mfe": 1535.0, "mae": -3315.0, "pnl": 1530.0, "long": true, "hr": 19, "dow": 1}, {"i": 42, "mfe": 3680.0, "mae": -3345.0, "pnl": 2365.0, "long": true, "hr": 9, "dow": 3}, {"i": 43, "mfe": 2245.0, "mae": -4555.0, "pnl": 1915.0, "long": true, "hr": 6, "dow": 0}, {"i": 44, "mfe": 2730.0, "mae": -7300.0, "pnl": 1470.0, "long": false, "hr": 15, "dow": 1}, {"i": 45, "mfe": 375.0, "mae": -37895.0, "pnl": -31725.0, "long": true, "hr": 15, "dow": 2}, {"i": 46, "mfe": 2340.0, "mae": -1085.0, "pnl": -800.0, "long": false, "hr": 1, "dow": 0}, {"i": 47, "mfe": 2235.0, "mae": -1595.0, "pnl": 1800.0, "long": true, "hr": 2, "dow": 0}, {"i": 48, "mfe": 540.0, "mae": -5970.0, "pnl": 455.0, "long": true, "hr": 13, "dow": 0}, {"i": 49, "mfe": 1735.0, "mae": -1555.0, "pnl": 1405.0, "long": true, "hr": 23, "dow": 2}, {"i": 50, "mfe": 9485.0, "mae": -6450.0, "pnl": 9210.0, "long": true, "hr": 7, "dow": 3}, {"i": 51, "mfe": 325.0, "mae": -7205.0, "pnl": -6495.0, "long": false, "hr": 8, "dow": 0}, {"i": 52, "mfe": 290.0, "mae": -2490.0, "pnl": -1660.0, "long": true, "hr": 14, "dow": 0}, {"i": 53, "mfe": 5920.0, "mae": -3580.0, "pnl": 5155.0, "long": false, "hr": 1, "dow": 1}, {"i": 54, "mfe": 6590.0, "mae": -2405.0, "pnl": -2110.0, "long": false, "hr": 12, "dow": 2}, {"i": 55, "mfe": 55.0, "mae": -11645.0, "pnl": -3235.0, "long": true, "hr": 14, "dow": 2}, {"i": 56, "mfe": 1190.0, "mae": -8795.0, "pnl": -7885.0, "long": false, "hr": 0, "dow": 3}, {"i": 57, "mfe": 1805.0, "mae": -700.0, "pnl": 865.0, "long": true, "hr": 6, "dow": 0}, {"i": 58, "mfe": 3590.0, "mae": -515.0, "pnl": 3035.0, "long": false, "hr": 13, "dow": 1}, {"i": 59, "mfe": 2510.0, "mae": -3615.0, "pnl": 685.0, "long": false, "hr": 18, "dow": 1}, {"i": 60, "mfe": 90.0, "mae": -5385.0, "pnl": -2750.0, "long": false, "hr": 2, "dow": 4}, {"i": 61, "mfe": 5700.0, "mae": -4990.0, "pnl": 5315.0, "long": true, "hr": 5, "dow": 4}, {"i": 62, "mfe": 3325.0, "mae": -4930.0, "pnl": 2930.0, "long": true, "hr": 15, "dow": 4}, {"i": 63, "mfe": 3845.0, "mae": -1100.0, "pnl": 3755.0, "long": true, "hr": 11, "dow": 0}, {"i": 64, "mfe": 640.0, "mae": -610.0, "pnl": 600.0, "long": true, "hr": 18, "dow": 0}, {"i": 65, "mfe": 1250.0, "mae": -4395.0, "pnl": -2360.0, "long": false, "hr": 20, "dow": 0}, {"i": 66, "mfe": 1095.0, "mae": -575.0, "pnl": 1030.0, "long": true, "hr": 6, "dow": 1}, {"i": 67, "mfe": 380.0, "mae": -26495.0, "pnl": -23280.0, "long": true, "hr": 19, "dow": 1}], "base": {"net": 13525.0, "pf": 1.1514727293089932, "dd": -46060.0, "worst": -31725.0, "wr": 82.08955223880598, "n": 67, "part": 100.0}, "config": {"net": 48226.5, "pf": 1.8372220196864746, "dd": -19229.0, "worst": -9114.0, "wr": 82.08955223880598, "n": 67, "part": 100.0}, "reco": {"sl_usd": 9690, "tp_usd": 15550, "be_usd": null, "l2_usd": 820, "l3_usd": 1650, "alloc": [5, 3, 2], "fill2": 69, "fill3": 55, "sl_pts": 484.5, "tp_pts": 777.5, "be_pts": null, "l2_pts": 41.0, "l3_pts": 82.5, "scalein": true, "dir": "both", "news_hours": [8, 11], "zones": [{"name": "Asia", "hours": [19, 20, 21, 22, 23, 0, 1], "n": 21, "net": -4250, "wr": 81.0, "pf": 0.88, "losing": true, "blocked": false}, {"name": "Europa/Londres", "hours": [2, 3, 4, 5, 6, 7], "n": 20, "net": 32810, "wr": 90.0, "pf": 8.67, "losing": false, "blocked": false}, {"name": "Apertura US", "hours": [8, 9], "n": 8, "net": 6710, "wr": 87.5, "pf": 2.03, "losing": false, "blocked": false}, {"name": "NY media", "hours": [10, 11], "n": 3, "net": -770, "wr": 66.7, "pf": 0.86, "losing": false, "blocked": false}, {"name": "NY tarde", "hours": [12, 13, 14, 15], "n": 11, "net": -27180, "wr": 63.6, "pf": 0.3, "losing": true, "blocked": false}, {"name": "Cierre US", "hours": [16, 17, 18], "n": 4, "net": 6205, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}], "blocked_hours": [], "days": [{"dow": 0, "name": "Lunes", "n": 21, "net": 7845, "wr": 76.2, "pf": 1.61, "losing": false, "blocked": false}, {"dow": 1, "name": "Martes", "n": 8, "net": -10140, "wr": 87.5, "pf": 0.56, "losing": true, "blocked": false}, {"dow": 2, "name": "Mi\u00e9rcoles", "n": 7, "net": -27735, "wr": 57.1, "pf": 0.25, "losing": false, "blocked": false}, {"dow": 3, "name": "Jueves", "n": 19, "net": 28510, "wr": 94.7, "pf": 4.62, "losing": false, "blocked": false}, {"dow": 4, "name": "Viernes", "n": 10, "net": 7690, "wr": 80.0, "pf": 1.94, "losing": false, "blocked": false}, {"dow": 6, "name": "Domingo", "n": 2, "net": 7355, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}], "why_alloc": "El precio baja hasta C2 en el 69% de las operaciones y hasta C3 en el 55%. Como esta estrategia hace pullbacks frecuentes y profundos, el estudio reparte 5/3/2: conviene dejar bastante tama\u00f1o para C2 y C3, donde el precio s\u00ed suele darte fill."}}, "RTY": {"inst": "RTY", "name": "RTY ConfNormal", "pv": 50.0, "n": 107, "recon_ok": 106, "fragile": false, "notes": [], "regime": {"change": 23.0, "pct_up": 56, "label": "alcista"}, "timestop": {"buckets": [{"range": "0\u201330", "n": 43, "net": 37390}, {"range": "30\u201380", "n": 31, "net": 28470}, {"range": "80\u2013160", "n": 16, "net": 12800}, {"range": "160+", "n": 17, "net": -29835}], "verdict": "descartado", "why": "Tentador: las operaciones largas pierden (neto negativo m\u00e1s all\u00e1 de ~80 barras), as\u00ed que cortarlas por tiempo <i>parece</i> ayudar. Pero el estudio valid\u00f3 intrabar que muchas de esas operaciones se hunden y luego se recuperan \u2014 cortarlas por tiempo quita esas recuperaciones. Es <b>sesgo de supervivencia</b>, por eso el time-stop se <b>descarta</b>. Aplicarlo requerir\u00eda re-validar intrabar en cada estrategia."}, "mfe_max": 5675.0, "mae_min": -8525.0, "trades": [{"i": 1, "mfe": 920.0, "mae": -2035.0, "pnl": -785.0, "long": false, "hr": 3, "dow": 4}, {"i": 2, "mfe": 225.0, "mae": -40.0, "pnl": 210.0, "long": true, "hr": 22, "dow": 6}, {"i": 3, "mfe": 590.0, "mae": -3945.0, "pnl": -2445.0, "long": false, "hr": 6, "dow": 2}, {"i": 4, "mfe": 750.0, "mae": -1015.0, "pnl": 690.0, "long": true, "hr": 23, "dow": 6}, {"i": 5, "mfe": 300.0, "mae": -1520.0, "pnl": 70.0, "long": false, "hr": 23, "dow": 0}, {"i": 6, "mfe": 155.0, "mae": -50.0, "pnl": 145.0, "long": true, "hr": 20, "dow": 2}, {"i": 7, "mfe": 1130.0, "mae": -775.0, "pnl": 900.0, "long": true, "hr": 10, "dow": 3}, {"i": 8, "mfe": 515.0, "mae": -540.0, "pnl": 275.0, "long": false, "hr": 2, "dow": 0}, {"i": 9, "mfe": 530.0, "mae": -1085.0, "pnl": 510.0, "long": true, "hr": 8, "dow": 1}, {"i": 10, "mfe": 715.0, "mae": -520.0, "pnl": 360.0, "long": false, "hr": 22, "dow": 2}, {"i": 11, "mfe": 195.0, "mae": -1810.0, "pnl": 75.0, "long": false, "hr": 2, "dow": 4}, {"i": 12, "mfe": 265.0, "mae": -210.0, "pnl": 225.0, "long": true, "hr": 22, "dow": 1}, {"i": 13, "mfe": 775.0, "mae": -320.0, "pnl": 650.0, "long": false, "hr": 21, "dow": 2}, {"i": 14, "mfe": 435.0, "mae": -5490.0, "pnl": -575.0, "long": true, "hr": 12, "dow": 3}, {"i": 15, "mfe": 870.0, "mae": -5.0, "pnl": 780.0, "long": false, "hr": 23, "dow": 0}, {"i": 16, "mfe": 2490.0, "mae": -630.0, "pnl": 2460.0, "long": true, "hr": 7, "dow": 1}, {"i": 17, "mfe": 1055.0, "mae": -120.0, "pnl": 985.0, "long": false, "hr": 11, "dow": 2}, {"i": 18, "mfe": 1235.0, "mae": -290.0, "pnl": 1135.0, "long": false, "hr": 8, "dow": 3}, {"i": 19, "mfe": 1350.0, "mae": -305.0, "pnl": 995.0, "long": true, "hr": 5, "dow": 4}, {"i": 20, "mfe": 1990.0, "mae": -2075.0, "pnl": 1145.0, "long": false, "hr": 7, "dow": 0}, {"i": 21, "mfe": 880.0, "mae": -225.0, "pnl": 700.0, "long": true, "hr": 14, "dow": 2}, {"i": 22, "mfe": 350.0, "mae": -4795.0, "pnl": -2650.0, "long": false, "hr": 7, "dow": 3}, {"i": 23, "mfe": 785.0, "mae": -5200.0, "pnl": -2520.0, "long": true, "hr": 7, "dow": 1}, {"i": 24, "mfe": 430.0, "mae": -195.0, "pnl": 310.0, "long": false, "hr": 16, "dow": 2}, {"i": 25, "mfe": 1310.0, "mae": -2460.0, "pnl": 925.0, "long": true, "hr": 0, "dow": 4}, {"i": 26, "mfe": 760.0, "mae": -745.0, "pnl": 185.0, "long": false, "hr": 10, "dow": 0}, {"i": 27, "mfe": 995.0, "mae": -120.0, "pnl": 880.0, "long": false, "hr": 10, "dow": 2}, {"i": 28, "mfe": 380.0, "mae": -2190.0, "pnl": 345.0, "long": true, "hr": 16, "dow": 3}, {"i": 29, "mfe": 995.0, "mae": -1400.0, "pnl": 895.0, "long": true, "hr": 20, "dow": 0}, {"i": 30, "mfe": 1065.0, "mae": -2990.0, "pnl": 1060.0, "long": false, "hr": 16, "dow": 1}, {"i": 31, "mfe": 1970.0, "mae": -1045.0, "pnl": 1915.0, "long": true, "hr": 20, "dow": 3}, {"i": 32, "mfe": 250.0, "mae": -8525.0, "pnl": -7415.0, "long": false, "hr": 16, "dow": 4}, {"i": 33, "mfe": 290.0, "mae": -295.0, "pnl": 285.0, "long": true, "hr": 1, "dow": 1}, {"i": 34, "mfe": 315.0, "mae": -30.0, "pnl": 200.0, "long": false, "hr": 16, "dow": 1}, {"i": 35, "mfe": 2290.0, "mae": -315.0, "pnl": 2245.0, "long": true, "hr": 6, "dow": 2}, {"i": 36, "mfe": 845.0, "mae": -2235.0, "pnl": 115.0, "long": false, "hr": 21, "dow": 2}, {"i": 37, "mfe": 410.0, "mae": -90.0, "pnl": 380.0, "long": true, "hr": 3, "dow": 1}, {"i": 38, "mfe": 1720.0, "mae": -715.0, "pnl": 1640.0, "long": false, "hr": 9, "dow": 2}, {"i": 39, "mfe": 305.0, "mae": -170.0, "pnl": 285.0, "long": true, "hr": 23, "dow": 2}, {"i": 40, "mfe": 270.0, "mae": -3185.0, "pnl": -1440.0, "long": false, "hr": 12, "dow": 3}, {"i": 41, "mfe": 165.0, "mae": -60.0, "pnl": 105.0, "long": true, "hr": 3, "dow": 2}, {"i": 42, "mfe": 295.0, "mae": -905.0, "pnl": 135.0, "long": true, "hr": 21, "dow": 1}, {"i": 43, "mfe": 995.0, "mae": -4495.0, "pnl": -4000.0, "long": false, "hr": 8, "dow": 4}, {"i": 44, "mfe": 665.0, "mae": -980.0, "pnl": 435.0, "long": true, "hr": 15, "dow": 2}, {"i": 45, "mfe": 285.0, "mae": -155.0, "pnl": 265.0, "long": false, "hr": 20, "dow": 3}, {"i": 46, "mfe": 1035.0, "mae": -575.0, "pnl": 1020.0, "long": true, "hr": 6, "dow": 0}, {"i": 47, "mfe": 155.0, "mae": -1795.0, "pnl": 145.0, "long": false, "hr": 19, "dow": 0}, {"i": 48, "mfe": 765.0, "mae": -1770.0, "pnl": 685.0, "long": false, "hr": 6, "dow": 3}, {"i": 49, "mfe": 1220.0, "mae": -1410.0, "pnl": 630.0, "long": true, "hr": 7, "dow": 0}, {"i": 50, "mfe": 115.0, "mae": -1375.0, "pnl": 80.0, "long": false, "hr": 6, "dow": 3}, {"i": 51, "mfe": 215.0, "mae": -320.0, "pnl": 195.0, "long": true, "hr": 21, "dow": 6}, {"i": 52, "mfe": 1385.0, "mae": -705.0, "pnl": 1110.0, "long": false, "hr": 3, "dow": 2}, {"i": 53, "mfe": 450.0, "mae": -70.0, "pnl": 415.0, "long": true, "hr": 0, "dow": 3}, {"i": 54, "mfe": 710.0, "mae": -55.0, "pnl": 660.0, "long": true, "hr": 2, "dow": 0}, {"i": 55, "mfe": 1255.0, "mae": -1590.0, "pnl": 1205.0, "long": false, "hr": 15, "dow": 0}, {"i": 56, "mfe": 730.0, "mae": 0.0, "pnl": 590.0, "long": true, "hr": 20, "dow": 3}, {"i": 57, "mfe": 355.0, "mae": -70.0, "pnl": 230.0, "long": false, "hr": 0, "dow": 0}, {"i": 58, "mfe": 1650.0, "mae": -100.0, "pnl": 1640.0, "long": false, "hr": 9, "dow": 3}, {"i": 59, "mfe": 1830.0, "mae": -420.0, "pnl": 1740.0, "long": true, "hr": 2, "dow": 4}, {"i": 60, "mfe": 870.0, "mae": -245.0, "pnl": 705.0, "long": true, "hr": 1, "dow": 1}, {"i": 61, "mfe": 1110.0, "mae": -1350.0, "pnl": 745.0, "long": false, "hr": 22, "dow": 1}, {"i": 62, "mfe": 675.0, "mae": -2720.0, "pnl": 620.0, "long": true, "hr": 15, "dow": 4}, {"i": 63, "mfe": 695.0, "mae": -45.0, "pnl": 630.0, "long": false, "hr": 20, "dow": 0}, {"i": 64, "mfe": 1695.0, "mae": -2135.0, "pnl": 1560.0, "long": true, "hr": 6, "dow": 1}, {"i": 65, "mfe": 835.0, "mae": -275.0, "pnl": 690.0, "long": true, "hr": 15, "dow": 3}, {"i": 66, "mfe": 1305.0, "mae": -335.0, "pnl": 1195.0, "long": true, "hr": 1, "dow": 0}, {"i": 67, "mfe": 490.0, "mae": -3035.0, "pnl": 0.0, "long": false, "hr": 19, "dow": 0}, {"i": 68, "mfe": 680.0, "mae": -330.0, "pnl": 625.0, "long": true, "hr": 1, "dow": 3}, {"i": 69, "mfe": 605.0, "mae": -710.0, "pnl": 475.0, "long": false, "hr": 10, "dow": 0}, {"i": 70, "mfe": 1390.0, "mae": -800.0, "pnl": 1380.0, "long": true, "hr": 1, "dow": 1}, {"i": 71, "mfe": 685.0, "mae": -135.0, "pnl": 665.0, "long": false, "hr": 4, "dow": 2}, {"i": 72, "mfe": 1635.0, "mae": -2440.0, "pnl": 685.0, "long": true, "hr": 22, "dow": 2}, {"i": 73, "mfe": 1965.0, "mae": -220.0, "pnl": 1775.0, "long": false, "hr": 1, "dow": 4}, {"i": 74, "mfe": 5675.0, "mae": -2285.0, "pnl": 2805.0, "long": true, "hr": 16, "dow": 4}, {"i": 75, "mfe": 1070.0, "mae": -1000.0, "pnl": 1045.0, "long": false, "hr": 23, "dow": 1}, {"i": 76, "mfe": 810.0, "mae": -520.0, "pnl": 750.0, "long": true, "hr": 20, "dow": 6}, {"i": 77, "mfe": 1725.0, "mae": -185.0, "pnl": 1655.0, "long": false, "hr": 9, "dow": 0}, {"i": 78, "mfe": 1815.0, "mae": -25.0, "pnl": 1650.0, "long": true, "hr": 20, "dow": 0}, {"i": 79, "mfe": 1440.0, "mae": -2085.0, "pnl": 1285.0, "long": false, "hr": 21, "dow": 1}, {"i": 80, "mfe": 620.0, "mae": -10.0, "pnl": 410.0, "long": true, "hr": 3, "dow": 3}, {"i": 81, "mfe": 3490.0, "mae": -60.0, "pnl": 2895.0, "long": true, "hr": 9, "dow": 3}, {"i": 82, "mfe": 280.0, "mae": -180.0, "pnl": 280.0, "long": false, "hr": 22, "dow": 3}, {"i": 83, "mfe": 990.0, "mae": -830.0, "pnl": 930.0, "long": false, "hr": 3, "dow": 2}, {"i": 84, "mfe": 170.0, "mae": -7060.0, "pnl": -4685.0, "long": false, "hr": 20, "dow": 0}, {"i": 85, "mfe": 1385.0, "mae": -1615.0, "pnl": 230.0, "long": true, "hr": 1, "dow": 3}, {"i": 86, "mfe": 340.0, "mae": -80.0, "pnl": 275.0, "long": false, "hr": 22, "dow": 0}, {"i": 87, "mfe": 330.0, "mae": -695.0, "pnl": 290.0, "long": true, "hr": 15, "dow": 2}, {"i": 88, "mfe": 295.0, "mae": -250.0, "pnl": 265.0, "long": false, "hr": 20, "dow": 3}, {"i": 89, "mfe": 1715.0, "mae": -270.0, "pnl": 1155.0, "long": false, "hr": 22, "dow": 6}, {"i": 90, "mfe": 960.0, "mae": -3075.0, "pnl": 680.0, "long": false, "hr": 22, "dow": 1}, {"i": 91, "mfe": 415.0, "mae": -860.0, "pnl": 370.0, "long": true, "hr": 16, "dow": 3}, {"i": 92, "mfe": 535.0, "mae": -140.0, "pnl": 460.0, "long": false, "hr": 15, "dow": 0}, {"i": 93, "mfe": 1290.0, "mae": 0.0, "pnl": 1245.0, "long": true, "hr": 13, "dow": 1}, {"i": 94, "mfe": 1595.0, "mae": -2850.0, "pnl": 1060.0, "long": true, "hr": 1, "dow": 0}, {"i": 95, "mfe": 930.0, "mae": -7025.0, "pnl": -5070.0, "long": false, "hr": 18, "dow": 2}, {"i": 96, "mfe": 1695.0, "mae": -635.0, "pnl": 1620.0, "long": true, "hr": 1, "dow": 3}, {"i": 97, "mfe": 1600.0, "mae": -400.0, "pnl": 1375.0, "long": false, "hr": 20, "dow": 3}, {"i": 98, "mfe": 2105.0, "mae": -275.0, "pnl": 1780.0, "long": false, "hr": 19, "dow": 1}, {"i": 99, "mfe": 1870.0, "mae": -740.0, "pnl": 1815.0, "long": true, "hr": 20, "dow": 2}, {"i": 100, "mfe": 450.0, "mae": -80.0, "pnl": 380.0, "long": false, "hr": 16, "dow": 3}, {"i": 101, "mfe": 2055.0, "mae": -420.0, "pnl": 2000.0, "long": true, "hr": 20, "dow": 6}, {"i": 102, "mfe": 1020.0, "mae": -1085.0, "pnl": 800.0, "long": false, "hr": 9, "dow": 0}, {"i": 103, "mfe": 3420.0, "mae": -200.0, "pnl": 3385.0, "long": false, "hr": 10, "dow": 1}, {"i": 104, "mfe": 385.0, "mae": -6050.0, "pnl": -3020.0, "long": false, "hr": 21, "dow": 3}, {"i": 105, "mfe": 2860.0, "mae": -660.0, "pnl": 2850.0, "long": true, "hr": 5, "dow": 1}, {"i": 106, "mfe": 605.0, "mae": -5.0, "pnl": 425.0, "long": false, "hr": 21, "dow": 1}, {"i": 107, "mfe": 370.0, "mae": -250.0, "pnl": 255.0, "long": false, "hr": 14, "dow": 0}], "base": {"net": 48825.0, "pf": 2.410923276983095, "dd": -7465.0, "worst": -7415.0, "wr": 88.78504672897196, "n": 107, "part": 100.0}, "config": {"net": 40138.0, "pf": 2.095529231944975, "dd": -7166.0, "worst": -4798.0, "wr": 89.7196261682243, "n": 107, "part": 100.0}, "reco": {"sl_usd": 5080, "tp_usd": 6240, "be_usd": null, "l2_usd": 400, "l3_usd": 810, "alloc": [5, 3, 2], "fill2": 57, "fill3": 40, "sl_pts": 101.6, "tp_pts": 124.8, "be_pts": null, "l2_pts": 8.0, "l3_pts": 16.2, "scalein": true, "dir": "both", "news_hours": [8, 11], "zones": [{"name": "Asia", "hours": [19, 20, 21, 22, 23, 0, 1], "n": 49, "net": 27250, "wr": 93.9, "pf": 4.54, "losing": false, "blocked": false}, {"name": "Europa/Londres", "hours": [2, 3, 4, 5, 6, 7], "n": 24, "net": 11620, "wr": 83.3, "pf": 2.38, "losing": false, "blocked": false}, {"name": "Apertura US", "hours": [8, 9], "n": 8, "net": 6275, "wr": 87.5, "pf": 2.57, "losing": false, "blocked": false}, {"name": "NY media", "hours": [10, 11], "n": 6, "net": 6810, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"name": "NY tarde", "hours": [12, 13, 14, 15], "n": 11, "net": 3885, "wr": 81.8, "pf": 2.93, "losing": false, "blocked": false}, {"name": "Cierre US", "hours": [16, 17, 18], "n": 9, "net": -7015, "wr": 77.8, "pf": 0.44, "losing": true, "blocked": false}], "blocked_hours": [], "days": [{"dow": 0, "name": "Lunes", "n": 24, "net": 11010, "wr": 91.7, "pf": 3.35, "losing": false, "blocked": false}, {"dow": 1, "name": "Martes", "n": 21, "net": 19820, "wr": 95.2, "pf": 8.87, "losing": false, "blocked": false}, {"dow": 2, "name": "Mi\u00e9rcoles", "n": 21, "net": 6835, "wr": 90.5, "pf": 1.91, "losing": false, "blocked": false}, {"dow": 3, "name": "Jueves", "n": 25, "net": 9425, "wr": 84.0, "pf": 2.23, "losing": false, "blocked": false}, {"dow": 4, "name": "Viernes", "n": 10, "net": -3265, "wr": 70.0, "pf": 0.73, "losing": true, "blocked": false}, {"dow": 6, "name": "Domingo", "n": 6, "net": 5000, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}], "why_alloc": "El precio baja hasta C2 en el 57% de las operaciones y hasta C3 en el 40%. Como esta estrategia hace pullbacks frecuentes y profundos, el estudio reparte 5/3/2: conviene dejar bastante tama\u00f1o para C2 y C3, donde el precio s\u00ed suele darte fill."}}, "6E": {"inst": "6E", "name": "6E ConfStrong", "pv": 125000.0, "n": 96, "recon_ok": 96, "fragile": true, "notes": ["mejora >3\u00d7 (depende del escalonado en pullbacks)"], "regime": {"change": -1.8, "pct_up": 45, "label": "bajista"}, "timestop": {"buckets": [{"range": "0\u201330", "n": 41, "net": 5425}, {"range": "30\u201380", "n": 26, "net": 2706}, {"range": "80\u2013160", "n": 15, "net": -356}, {"range": "160+", "n": 14, "net": -6581}], "verdict": "descartado", "why": "Tentador: las operaciones largas pierden (neto negativo m\u00e1s all\u00e1 de ~80 barras), as\u00ed que cortarlas por tiempo <i>parece</i> ayudar. Pero el estudio valid\u00f3 intrabar que muchas de esas operaciones se hunden y luego se recuperan \u2014 cortarlas por tiempo quita esas recuperaciones. Es <b>sesgo de supervivencia</b>, por eso el time-stop se <b>descarta</b>. Aplicarlo requerir\u00eda re-validar intrabar en cada estrategia."}, "mfe_max": 725.0, "mae_min": -1962.5, "trades": [{"i": 1, "mfe": 181.25, "mae": -450.0, "pnl": 150.0, "long": false, "hr": 2, "dow": 1}, {"i": 2, "mfe": 193.75, "mae": -600.0, "pnl": -568.75, "long": true, "hr": 4, "dow": 2}, {"i": 3, "mfe": 62.5, "mae": -175.0, "pnl": 31.25, "long": false, "hr": 20, "dow": 2}, {"i": 4, "mfe": 125.0, "mae": -12.5, "pnl": 118.75, "long": false, "hr": 2, "dow": 4}, {"i": 5, "mfe": 93.75, "mae": -131.25, "pnl": 75.0, "long": false, "hr": 3, "dow": 1}, {"i": 6, "mfe": 143.75, "mae": 0.0, "pnl": 118.75, "long": true, "hr": 19, "dow": 1}, {"i": 7, "mfe": 118.75, "mae": 0.0, "pnl": 118.75, "long": true, "hr": 0, "dow": 2}, {"i": 8, "mfe": 268.75, "mae": -18.75, "pnl": 268.75, "long": true, "hr": 2, "dow": 2}, {"i": 9, "mfe": 131.25, "mae": -31.25, "pnl": 125.0, "long": true, "hr": 6, "dow": 2}, {"i": 10, "mfe": 168.75, "mae": -193.75, "pnl": 100.0, "long": true, "hr": 8, "dow": 2}, {"i": 11, "mfe": 56.25, "mae": -1312.5, "pnl": -1200.0, "long": true, "hr": 13, "dow": 2}, {"i": 12, "mfe": 137.5, "mae": -100.0, "pnl": 100.0, "long": false, "hr": 5, "dow": 3}, {"i": 13, "mfe": 62.5, "mae": -12.5, "pnl": 43.75, "long": true, "hr": 18, "dow": 3}, {"i": 14, "mfe": 106.25, "mae": -500.0, "pnl": 87.5, "long": true, "hr": 4, "dow": 4}, {"i": 15, "mfe": 75.0, "mae": -131.25, "pnl": 62.5, "long": true, "hr": 12, "dow": 1}, {"i": 16, "mfe": 218.75, "mae": -62.5, "pnl": 200.0, "long": true, "hr": 15, "dow": 1}, {"i": 17, "mfe": 318.75, "mae": -206.25, "pnl": 243.75, "long": true, "hr": 1, "dow": 2}, {"i": 18, "mfe": 268.75, "mae": 0.0, "pnl": 250.0, "long": true, "hr": 11, "dow": 3}, {"i": 19, "mfe": 187.5, "mae": -106.25, "pnl": 137.5, "long": true, "hr": 8, "dow": 4}, {"i": 20, "mfe": 200.0, "mae": -200.0, "pnl": 137.5, "long": true, "hr": 3, "dow": 0}, {"i": 21, "mfe": 287.5, "mae": -6.25, "pnl": 237.5, "long": true, "hr": 12, "dow": 0}, {"i": 22, "mfe": 62.5, "mae": -87.5, "pnl": 56.25, "long": true, "hr": 18, "dow": 0}, {"i": 23, "mfe": 131.25, "mae": -87.5, "pnl": 93.75, "long": true, "hr": 5, "dow": 1}, {"i": 24, "mfe": 93.75, "mae": -112.5, "pnl": 93.75, "long": true, "hr": 8, "dow": 1}, {"i": 25, "mfe": 312.5, "mae": -406.25, "pnl": 112.5, "long": true, "hr": 19, "dow": 1}, {"i": 26, "mfe": 168.75, "mae": -175.0, "pnl": 137.5, "long": true, "hr": 23, "dow": 6}, {"i": 27, "mfe": 293.75, "mae": -618.75, "pnl": -418.75, "long": true, "hr": 9, "dow": 0}, {"i": 28, "mfe": 218.75, "mae": -337.5, "pnl": -250.0, "long": false, "hr": 15, "dow": 1}, {"i": 29, "mfe": 43.75, "mae": -981.25, "pnl": -906.25, "long": true, "hr": 4, "dow": 2}, {"i": 30, "mfe": 193.75, "mae": -400.0, "pnl": 106.25, "long": false, "hr": 9, "dow": 3}, {"i": 31, "mfe": 131.25, "mae": -106.25, "pnl": 106.25, "long": true, "hr": 10, "dow": 4}, {"i": 32, "mfe": 93.75, "mae": -218.75, "pnl": 87.5, "long": true, "hr": 15, "dow": 4}, {"i": 33, "mfe": 106.25, "mae": -362.5, "pnl": -343.75, "long": true, "hr": 6, "dow": 0}, {"i": 34, "mfe": 87.5, "mae": -31.25, "pnl": 81.25, "long": false, "hr": 20, "dow": 0}, {"i": 35, "mfe": 0.0, "mae": -293.75, "pnl": -268.75, "long": true, "hr": 20, "dow": 1}, {"i": 36, "mfe": 200.0, "mae": -143.75, "pnl": 137.5, "long": false, "hr": 4, "dow": 2}, {"i": 37, "mfe": 112.5, "mae": -118.75, "pnl": 100.0, "long": false, "hr": 11, "dow": 2}, {"i": 38, "mfe": 243.75, "mae": -50.0, "pnl": 112.5, "long": false, "hr": 14, "dow": 2}, {"i": 39, "mfe": 225.0, "mae": -68.75, "pnl": 212.5, "long": true, "hr": 5, "dow": 3}, {"i": 40, "mfe": 387.5, "mae": -43.75, "pnl": 375.0, "long": true, "hr": 2, "dow": 4}, {"i": 41, "mfe": 56.25, "mae": -12.5, "pnl": 50.0, "long": false, "hr": 23, "dow": 0}, {"i": 42, "mfe": 6.25, "mae": -418.75, "pnl": -268.75, "long": false, "hr": 2, "dow": 1}, {"i": 43, "mfe": 275.0, "mae": 0.0, "pnl": 262.5, "long": true, "hr": 18, "dow": 1}, {"i": 44, "mfe": 562.5, "mae": -43.75, "pnl": 518.75, "long": true, "hr": 0, "dow": 2}, {"i": 45, "mfe": 31.25, "mae": -37.5, "pnl": 25.0, "long": false, "hr": 16, "dow": 2}, {"i": 46, "mfe": 137.5, "mae": -400.0, "pnl": 18.75, "long": false, "hr": 2, "dow": 3}, {"i": 47, "mfe": 137.5, "mae": -100.0, "pnl": 131.25, "long": false, "hr": 15, "dow": 3}, {"i": 48, "mfe": 125.0, "mae": -137.5, "pnl": 37.5, "long": true, "hr": 8, "dow": 4}, {"i": 49, "mfe": 50.0, "mae": -137.5, "pnl": 37.5, "long": false, "hr": 18, "dow": 6}, {"i": 50, "mfe": 162.5, "mae": 0.0, "pnl": 143.75, "long": true, "hr": 9, "dow": 0}, {"i": 51, "mfe": 87.5, "mae": -6.25, "pnl": 81.25, "long": true, "hr": 16, "dow": 0}, {"i": 52, "mfe": 68.75, "mae": 0.0, "pnl": 56.25, "long": false, "hr": 23, "dow": 0}, {"i": 53, "mfe": 156.25, "mae": -156.25, "pnl": 150.0, "long": false, "hr": 1, "dow": 1}, {"i": 54, "mfe": 56.25, "mae": -231.25, "pnl": -206.25, "long": true, "hr": 21, "dow": 2}, {"i": 55, "mfe": 168.75, "mae": -12.5, "pnl": 162.5, "long": false, "hr": 8, "dow": 3}, {"i": 56, "mfe": 193.75, "mae": -31.25, "pnl": 150.0, "long": false, "hr": 10, "dow": 3}, {"i": 57, "mfe": 193.75, "mae": -225.0, "pnl": 168.75, "long": true, "hr": 7, "dow": 0}, {"i": 58, "mfe": 137.5, "mae": -25.0, "pnl": 112.5, "long": false, "hr": 2, "dow": 1}, {"i": 59, "mfe": 137.5, "mae": -137.5, "pnl": 112.5, "long": false, "hr": 6, "dow": 1}, {"i": 60, "mfe": 156.25, "mae": -18.75, "pnl": 131.25, "long": false, "hr": 10, "dow": 1}, {"i": 61, "mfe": 150.0, "mae": -137.5, "pnl": 56.25, "long": false, "hr": 22, "dow": 1}, {"i": 62, "mfe": 387.5, "mae": -87.5, "pnl": 137.5, "long": true, "hr": 10, "dow": 2}, {"i": 63, "mfe": 81.25, "mae": -250.0, "pnl": -231.25, "long": true, "hr": 20, "dow": 6}, {"i": 64, "mfe": 143.75, "mae": -206.25, "pnl": 106.25, "long": false, "hr": 3, "dow": 1}, {"i": 65, "mfe": 62.5, "mae": -75.0, "pnl": 56.25, "long": true, "hr": 20, "dow": 1}, {"i": 66, "mfe": 187.5, "mae": -162.5, "pnl": 131.25, "long": true, "hr": 2, "dow": 2}, {"i": 67, "mfe": 206.25, "mae": -25.0, "pnl": 187.5, "long": true, "hr": 7, "dow": 3}, {"i": 68, "mfe": 193.75, "mae": -50.0, "pnl": 156.25, "long": true, "hr": 10, "dow": 3}, {"i": 69, "mfe": 306.25, "mae": 0.0, "pnl": 281.25, "long": true, "hr": 10, "dow": 4}, {"i": 70, "mfe": 37.5, "mae": -6.25, "pnl": 31.25, "long": true, "hr": 18, "dow": 0}, {"i": 71, "mfe": 50.0, "mae": -87.5, "pnl": 43.75, "long": true, "hr": 21, "dow": 0}, {"i": 72, "mfe": 112.5, "mae": -6.25, "pnl": 106.25, "long": true, "hr": 2, "dow": 1}, {"i": 73, "mfe": 81.25, "mae": -406.25, "pnl": 62.5, "long": false, "hr": 20, "dow": 3}, {"i": 74, "mfe": 143.75, "mae": -243.75, "pnl": 6.25, "long": false, "hr": 16, "dow": 4}, {"i": 75, "mfe": 112.5, "mae": -6.25, "pnl": 112.5, "long": true, "hr": 0, "dow": 1}, {"i": 76, "mfe": 137.5, "mae": -18.75, "pnl": 131.25, "long": true, "hr": 4, "dow": 1}, {"i": 77, "mfe": 18.75, "mae": -293.75, "pnl": -287.5, "long": false, "hr": 20, "dow": 1}, {"i": 78, "mfe": 193.75, "mae": -281.25, "pnl": 181.25, "long": true, "hr": 3, "dow": 2}, {"i": 79, "mfe": 256.25, "mae": -112.5, "pnl": 243.75, "long": false, "hr": 8, "dow": 3}, {"i": 80, "mfe": 475.0, "mae": -300.0, "pnl": 443.75, "long": true, "hr": 4, "dow": 4}, {"i": 81, "mfe": 131.25, "mae": -350.0, "pnl": -331.25, "long": true, "hr": 5, "dow": 0}, {"i": 82, "mfe": 100.0, "mae": 0.0, "pnl": 81.25, "long": false, "hr": 0, "dow": 1}, {"i": 83, "mfe": 156.25, "mae": -1962.5, "pnl": -1875.0, "long": true, "hr": 6, "dow": 1}, {"i": 84, "mfe": 87.5, "mae": -6.25, "pnl": 68.75, "long": false, "hr": 21, "dow": 3}, {"i": 85, "mfe": 150.0, "mae": -1031.25, "pnl": -937.5, "long": true, "hr": 7, "dow": 4}, {"i": 86, "mfe": 212.5, "mae": -18.75, "pnl": 137.5, "long": false, "hr": 10, "dow": 1}, {"i": 87, "mfe": 93.75, "mae": -43.75, "pnl": 68.75, "long": false, "hr": 20, "dow": 1}, {"i": 88, "mfe": 87.5, "mae": -150.0, "pnl": 81.25, "long": true, "hr": 15, "dow": 2}, {"i": 89, "mfe": 81.25, "mae": -268.75, "pnl": -243.75, "long": false, "hr": 21, "dow": 3}, {"i": 90, "mfe": 250.0, "mae": 0.0, "pnl": 212.5, "long": true, "hr": 3, "dow": 4}, {"i": 91, "mfe": 137.5, "mae": -112.5, "pnl": 112.5, "long": true, "hr": 8, "dow": 0}, {"i": 92, "mfe": 118.75, "mae": -556.25, "pnl": -300.0, "long": true, "hr": 15, "dow": 0}, {"i": 93, "mfe": 118.75, "mae": -100.0, "pnl": 112.5, "long": false, "hr": 22, "dow": 1}, {"i": 94, "mfe": 43.75, "mae": -543.75, "pnl": -456.25, "long": false, "hr": 20, "dow": 2}, {"i": 95, "mfe": 725.0, "mae": -237.5, "pnl": 356.25, "long": true, "hr": 7, "dow": 3}, {"i": 96, "mfe": 62.5, "mae": -425.0, "pnl": -187.5, "long": false, "hr": 8, "dow": 0}], "base": {"net": 1193.75, "pf": 1.1286195286195286, "dd": -3268.75, "worst": -1875.0, "wr": 81.25, "n": 96, "part": 100.0}, "config": {"net": 4517.5, "pf": 2.43196766780252, "dd": -733.375, "worst": -550.9999999999999, "wr": 84.375, "n": 96, "part": 100.0}, "reco": {"sl_usd": 600, "tp_usd": 800, "be_usd": 110, "l2_usd": 70, "l3_usd": 140, "alloc": [5, 3, 2], "fill2": 62, "fill3": 42, "sl_pts": 0.0, "tp_pts": 0.0, "be_pts": 0.0, "l2_pts": 0.0, "l3_pts": 0.0, "scalein": true, "dir": "both", "news_hours": [8, 11], "zones": [{"name": "Asia", "hours": [19, 20, 21, 22, 23, 0, 1], "n": 26, "net": 588, "wr": 76.9, "pf": 1.35, "losing": false, "blocked": false}, {"name": "Europa/Londres", "hours": [2, 3, 4, 5, 6, 7], "n": 32, "net": -1081, "wr": 78.1, "pf": 0.79, "losing": true, "blocked": false}, {"name": "Apertura US", "hours": [8, 9], "n": 11, "net": 531, "wr": 81.8, "pf": 1.88, "losing": false, "blocked": false}, {"name": "NY media", "hours": [10, 11], "n": 9, "net": 1450, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"name": "NY tarde", "hours": [12, 13, 14, 15], "n": 10, "net": -838, "wr": 70.0, "pf": 0.52, "losing": true, "blocked": false}, {"name": "Cierre US", "hours": [16, 17, 18], "n": 8, "net": 544, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}], "blocked_hours": [], "days": [{"dow": 0, "name": "Lunes", "n": 17, "net": -381, "wr": 70.6, "pf": 0.76, "losing": true, "blocked": false}, {"dow": 1, "name": "Martes", "n": 28, "net": -306, "wr": 82.1, "pf": 0.9, "losing": true, "blocked": false}, {"dow": 2, "name": "Mi\u00e9rcoles", "n": 20, "net": -1025, "wr": 75.0, "pf": 0.69, "losing": true, "blocked": false}, {"dow": 3, "name": "Jueves", "n": 16, "net": 2006, "wr": 93.8, "pf": 9.23, "losing": false, "blocked": false}, {"dow": 4, "name": "Viernes", "n": 12, "net": 956, "wr": 91.7, "pf": 2.02, "losing": false, "blocked": false}, {"dow": 6, "name": "Domingo", "n": 3, "net": -56, "wr": 66.7, "pf": 0.76, "losing": false, "blocked": false}], "why_alloc": "El precio baja hasta C2 en el 62% de las operaciones y hasta C3 en el 42%. Como esta estrategia hace pullbacks frecuentes y profundos, el estudio reparte 5/3/2: conviene dejar bastante tama\u00f1o para C2 y C3, donde el precio s\u00ed suele darte fill."}}, "6J": {"inst": "6J", "name": "6J ConfNormal", "pv": 12500000.0, "n": 64, "recon_ok": 64, "fragile": false, "notes": [], "regime": {"change": -2.3, "pct_up": 29, "label": "bajista"}, "timestop": {"buckets": [{"range": "0\u201330", "n": 23, "net": 1288}, {"range": "30\u201380", "n": 20, "net": 1044}, {"range": "80\u2013160", "n": 13, "net": 581}, {"range": "160+", "n": 8, "net": -38}], "verdict": "descartado", "why": "Tentador: las operaciones largas pierden (neto negativo m\u00e1s all\u00e1 de ~80 barras), as\u00ed que cortarlas por tiempo <i>parece</i> ayudar. Pero el estudio valid\u00f3 intrabar que muchas de esas operaciones se hunden y luego se recuperan \u2014 cortarlas por tiempo quita esas recuperaciones. Es <b>sesgo de supervivencia</b>, por eso el time-stop se <b>descarta</b>. Aplicarlo requerir\u00eda re-validar intrabar en cada estrategia."}, "mfe_max": 231.25, "mae_min": -987.5, "trades": [{"i": 1, "mfe": 87.5, "mae": -737.5, "pnl": -406.25, "long": false, "hr": 1, "dow": 0}, {"i": 2, "mfe": 43.75, "mae": -275.0, "pnl": -187.5, "long": true, "hr": 6, "dow": 1}, {"i": 3, "mfe": 25.0, "mae": -325.0, "pnl": 12.5, "long": false, "hr": 16, "dow": 1}, {"i": 4, "mfe": 100.0, "mae": -75.0, "pnl": 93.75, "long": false, "hr": 1, "dow": 3}, {"i": 5, "mfe": 175.0, "mae": -137.5, "pnl": 156.25, "long": true, "hr": 23, "dow": 1}, {"i": 6, "mfe": 137.5, "mae": -168.75, "pnl": 37.5, "long": false, "hr": 2, "dow": 4}, {"i": 7, "mfe": 62.5, "mae": -156.25, "pnl": 25.0, "long": false, "hr": 1, "dow": 1}, {"i": 8, "mfe": 62.5, "mae": -937.5, "pnl": 31.25, "long": false, "hr": 14, "dow": 1}, {"i": 9, "mfe": 56.25, "mae": -81.25, "pnl": 56.25, "long": false, "hr": 0, "dow": 0}, {"i": 10, "mfe": 68.75, "mae": -987.5, "pnl": 12.5, "long": false, "hr": 11, "dow": 0}, {"i": 11, "mfe": 43.75, "mae": -143.75, "pnl": 43.75, "long": false, "hr": 9, "dow": 3}, {"i": 12, "mfe": 81.25, "mae": 0.0, "pnl": 62.5, "long": false, "hr": 8, "dow": 4}, {"i": 13, "mfe": 125.0, "mae": -106.25, "pnl": 37.5, "long": false, "hr": 13, "dow": 4}, {"i": 14, "mfe": 93.75, "mae": -31.25, "pnl": 81.25, "long": false, "hr": 5, "dow": 0}, {"i": 15, "mfe": 87.5, "mae": -12.5, "pnl": 68.75, "long": false, "hr": 10, "dow": 1}, {"i": 16, "mfe": 68.75, "mae": -12.5, "pnl": 62.5, "long": false, "hr": 20, "dow": 2}, {"i": 17, "mfe": 162.5, "mae": -68.75, "pnl": 162.5, "long": false, "hr": 3, "dow": 4}, {"i": 18, "mfe": 31.25, "mae": -81.25, "pnl": 31.25, "long": false, "hr": 3, "dow": 1}, {"i": 19, "mfe": 231.25, "mae": -12.5, "pnl": 231.25, "long": false, "hr": 1, "dow": 2}, {"i": 20, "mfe": 37.5, "mae": -75.0, "pnl": 18.75, "long": false, "hr": 16, "dow": 2}, {"i": 21, "mfe": 75.0, "mae": -37.5, "pnl": 68.75, "long": false, "hr": 22, "dow": 2}, {"i": 22, "mfe": 87.5, "mae": -31.25, "pnl": 68.75, "long": false, "hr": 3, "dow": 3}, {"i": 23, "mfe": 112.5, "mae": -100.0, "pnl": 100.0, "long": false, "hr": 9, "dow": 3}, {"i": 24, "mfe": 118.75, "mae": -206.25, "pnl": 87.5, "long": false, "hr": 23, "dow": 3}, {"i": 25, "mfe": 56.25, "mae": -37.5, "pnl": 50.0, "long": false, "hr": 10, "dow": 0}, {"i": 26, "mfe": 87.5, "mae": -25.0, "pnl": 75.0, "long": false, "hr": 16, "dow": 1}, {"i": 27, "mfe": 112.5, "mae": -6.25, "pnl": 37.5, "long": false, "hr": 8, "dow": 2}, {"i": 28, "mfe": 56.25, "mae": -18.75, "pnl": 56.25, "long": false, "hr": 19, "dow": 2}, {"i": 29, "mfe": 156.25, "mae": -293.75, "pnl": 150.0, "long": false, "hr": 1, "dow": 3}, {"i": 30, "mfe": 93.75, "mae": -131.25, "pnl": 81.25, "long": false, "hr": 4, "dow": 4}, {"i": 31, "mfe": 43.75, "mae": -175.0, "pnl": 37.5, "long": false, "hr": 3, "dow": 0}, {"i": 32, "mfe": 87.5, "mae": -43.75, "pnl": 87.5, "long": false, "hr": 13, "dow": 1}, {"i": 33, "mfe": 68.75, "mae": -31.25, "pnl": 62.5, "long": false, "hr": 7, "dow": 2}, {"i": 34, "mfe": 68.75, "mae": 0.0, "pnl": 50.0, "long": false, "hr": 6, "dow": 3}, {"i": 35, "mfe": 93.75, "mae": -43.75, "pnl": 81.25, "long": false, "hr": 14, "dow": 3}, {"i": 36, "mfe": 18.75, "mae": -31.25, "pnl": 18.75, "long": false, "hr": 14, "dow": 4}, {"i": 37, "mfe": 25.0, "mae": -31.25, "pnl": 18.75, "long": false, "hr": 6, "dow": 0}, {"i": 38, "mfe": 50.0, "mae": 0.0, "pnl": 37.5, "long": false, "hr": 0, "dow": 1}, {"i": 39, "mfe": 37.5, "mae": 0.0, "pnl": 25.0, "long": false, "hr": 7, "dow": 1}, {"i": 40, "mfe": 112.5, "mae": -193.75, "pnl": 106.25, "long": false, "hr": 3, "dow": 3}, {"i": 41, "mfe": 25.0, "mae": 0.0, "pnl": 18.75, "long": false, "hr": 19, "dow": 0}, {"i": 42, "mfe": 25.0, "mae": -6.25, "pnl": 12.5, "long": false, "hr": 4, "dow": 1}, {"i": 43, "mfe": 25.0, "mae": 0.0, "pnl": 25.0, "long": false, "hr": 23, "dow": 1}, {"i": 44, "mfe": 37.5, "mae": -68.75, "pnl": 18.75, "long": false, "hr": 4, "dow": 2}, {"i": 45, "mfe": 43.75, "mae": -18.75, "pnl": 43.75, "long": false, "hr": 8, "dow": 3}, {"i": 46, "mfe": 37.5, "mae": -68.75, "pnl": 37.5, "long": false, "hr": 2, "dow": 4}, {"i": 47, "mfe": 68.75, "mae": -12.5, "pnl": 43.75, "long": false, "hr": 15, "dow": 4}, {"i": 48, "mfe": 68.75, "mae": -237.5, "pnl": 50.0, "long": false, "hr": 2, "dow": 0}, {"i": 49, "mfe": 68.75, "mae": -43.75, "pnl": 62.5, "long": false, "hr": 9, "dow": 2}, {"i": 50, "mfe": 25.0, "mae": -6.25, "pnl": 25.0, "long": false, "hr": 22, "dow": 2}, {"i": 51, "mfe": 37.5, "mae": -12.5, "pnl": 31.25, "long": false, "hr": 2, "dow": 0}, {"i": 52, "mfe": 50.0, "mae": -6.25, "pnl": 50.0, "long": false, "hr": 11, "dow": 0}, {"i": 53, "mfe": 62.5, "mae": -93.75, "pnl": 50.0, "long": false, "hr": 20, "dow": 0}, {"i": 54, "mfe": 100.0, "mae": -87.5, "pnl": 87.5, "long": false, "hr": 20, "dow": 2}, {"i": 55, "mfe": 106.25, "mae": -50.0, "pnl": 93.75, "long": false, "hr": 9, "dow": 4}, {"i": 56, "mfe": 131.25, "mae": -25.0, "pnl": 106.25, "long": false, "hr": 11, "dow": 0}, {"i": 57, "mfe": 18.75, "mae": -18.75, "pnl": 12.5, "long": false, "hr": 16, "dow": 1}, {"i": 58, "mfe": 12.5, "mae": -25.0, "pnl": 6.25, "long": false, "hr": 23, "dow": 1}, {"i": 59, "mfe": 31.25, "mae": 0.0, "pnl": 25.0, "long": false, "hr": 8, "dow": 2}, {"i": 60, "mfe": 12.5, "mae": -25.0, "pnl": 6.25, "long": false, "hr": 21, "dow": 2}, {"i": 61, "mfe": 131.25, "mae": -106.25, "pnl": 43.75, "long": false, "hr": 10, "dow": 3}, {"i": 62, "mfe": 50.0, "mae": -62.5, "pnl": 37.5, "long": false, "hr": 10, "dow": 2}, {"i": 63, "mfe": 43.75, "mae": -337.5, "pnl": 37.5, "long": false, "hr": 21, "dow": 3}, {"i": 64, "mfe": 75.0, "mae": -37.5, "pnl": 18.75, "long": false, "hr": 9, "dow": 1}], "base": {"net": 2875.0, "pf": 5.842105263157895, "dd": -187.5, "worst": -406.25, "wr": 96.875, "n": 64, "part": 100.0}, "config": {"net": 2490.125, "pf": 3.2322949350067236, "dd": -554.75, "worst": -317.0, "wr": 93.75, "n": 64, "part": 100.0}, "reco": {"sl_usd": 340, "tp_usd": 250, "be_usd": null, "l2_usd": 30, "l3_usd": 70, "alloc": [5, 3, 2], "fill2": 64, "fill3": 39, "sl_pts": 0.0, "tp_pts": 0.0, "be_pts": null, "l2_pts": 0.0, "l3_pts": 0.0, "scalein": true, "dir": "both", "news_hours": [8, 11], "zones": [{"name": "Asia", "hours": [19, 20, 21, 22, 23, 0, 1], "n": 20, "net": 875, "wr": 95.0, "pf": 3.15, "losing": false, "blocked": false}, {"name": "Europa/Londres", "hours": [2, 3, 4, 5, 6, 7], "n": 18, "net": 725, "wr": 94.4, "pf": 4.87, "losing": false, "blocked": false}, {"name": "Apertura US", "hours": [8, 9], "n": 9, "net": 488, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"name": "NY media", "hours": [10, 11], "n": 7, "net": 369, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"name": "NY tarde", "hours": [12, 13, 14, 15], "n": 6, "net": 300, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"name": "Cierre US", "hours": [16, 17, 18], "n": 4, "net": 119, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}], "blocked_hours": [], "days": [{"dow": 0, "name": "Lunes", "n": 13, "net": 156, "wr": 92.3, "pf": 1.38, "losing": false, "blocked": false}, {"dow": 1, "name": "Martes", "n": 16, "net": 438, "wr": 93.8, "pf": 3.33, "losing": false, "blocked": false}, {"dow": 2, "name": "Mi\u00e9rcoles", "n": 14, "net": 800, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"dow": 3, "name": "Jueves", "n": 12, "net": 906, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"dow": 4, "name": "Viernes", "n": 9, "net": 575, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}], "why_alloc": "El precio baja hasta C2 en el 64% de las operaciones y hasta C3 en el 39%. Como esta estrategia hace pullbacks frecuentes y profundos, el estudio reparte 5/3/2: conviene dejar bastante tama\u00f1o para C2 y C3, donde el precio s\u00ed suele darte fill."}}, "GC": {"inst": "GC", "name": "GC ContraNormal", "pv": 100.0, "n": 42, "recon_ok": 36, "fragile": true, "notes": ["reconstrucci\u00f3n 36/42 (86%)", "la config voltea un sistema perdedor"], "regime": {"change": -20.3, "pct_up": 41, "label": "bajista"}, "timestop": {"buckets": [{"range": "0\u201330", "n": 6, "net": -11420}, {"range": "30\u201380", "n": 9, "net": 4630}, {"range": "80\u2013160", "n": 10, "net": 39770}, {"range": "160+", "n": 17, "net": -35770}], "verdict": "descartado", "why": "Tentador: las operaciones largas pierden (neto negativo m\u00e1s all\u00e1 de ~80 barras), as\u00ed que cortarlas por tiempo <i>parece</i> ayudar. Pero el estudio valid\u00f3 intrabar que muchas de esas operaciones se hunden y luego se recuperan \u2014 cortarlas por tiempo quita esas recuperaciones. Es <b>sesgo de supervivencia</b>, por eso el time-stop se <b>descarta</b>. Aplicarlo requerir\u00eda re-validar intrabar en cada estrategia."}, "mfe_max": 56830.0, "mae_min": -32700.0, "trades": [{"i": 1, "mfe": 9900.0, "mae": -3460.0, "pnl": 2790.0, "long": false, "hr": 1, "dow": 3}, {"i": 2, "mfe": 11870.0, "mae": -10880.0, "pnl": 7190.0, "long": true, "hr": 8, "dow": 4}, {"i": 3, "mfe": 10710.0, "mae": -490.0, "pnl": 5230.0, "long": false, "hr": 9, "dow": 3}, {"i": 4, "mfe": 1550.0, "mae": -14290.0, "pnl": -11350.0, "long": true, "hr": 8, "dow": 4}, {"i": 5, "mfe": 2250.0, "mae": -2250.0, "pnl": 240.0, "long": false, "hr": 11, "dow": 1}, {"i": 6, "mfe": 56830.0, "mae": -2860.0, "pnl": 28830.0, "long": false, "hr": 6, "dow": 4}, {"i": 7, "mfe": 9590.0, "mae": -1150.0, "pnl": 4480.0, "long": true, "hr": 10, "dow": 4}, {"i": 8, "mfe": 8810.0, "mae": -1520.0, "pnl": 4180.0, "long": true, "hr": 22, "dow": 6}, {"i": 9, "mfe": 24940.0, "mae": -1760.0, "pnl": 9150.0, "long": true, "hr": 21, "dow": 0}, {"i": 10, "mfe": 2870.0, "mae": -22740.0, "pnl": -10260.0, "long": false, "hr": 7, "dow": 1}, {"i": 11, "mfe": 6280.0, "mae": -360.0, "pnl": 1440.0, "long": true, "hr": 6, "dow": 3}, {"i": 12, "mfe": 15160.0, "mae": -4240.0, "pnl": 1110.0, "long": false, "hr": 20, "dow": 3}, {"i": 13, "mfe": 12890.0, "mae": -2040.0, "pnl": 6760.0, "long": true, "hr": 13, "dow": 0}, {"i": 14, "mfe": 2500.0, "mae": -3100.0, "pnl": -2050.0, "long": true, "hr": 19, "dow": 2}, {"i": 15, "mfe": 2990.0, "mae": -1890.0, "pnl": 1100.0, "long": false, "hr": 10, "dow": 3}, {"i": 16, "mfe": 14430.0, "mae": -10.0, "pnl": 10710.0, "long": false, "hr": 22, "dow": 0}, {"i": 17, "mfe": 4500.0, "mae": -4450.0, "pnl": -1130.0, "long": false, "hr": 22, "dow": 2}, {"i": 18, "mfe": 1730.0, "mae": -20630.0, "pnl": -17980.0, "long": true, "hr": 22, "dow": 6}, {"i": 19, "mfe": 3860.0, "mae": -770.0, "pnl": 990.0, "long": false, "hr": 11, "dow": 0}, {"i": 20, "mfe": 21160.0, "mae": -1360.0, "pnl": 17000.0, "long": true, "hr": 3, "dow": 1}, {"i": 21, "mfe": 7730.0, "mae": -1230.0, "pnl": 1290.0, "long": false, "hr": 1, "dow": 1}, {"i": 22, "mfe": 1620.0, "mae": -25460.0, "pnl": -23020.0, "long": true, "hr": 12, "dow": 2}, {"i": 23, "mfe": 50.0, "mae": -3470.0, "pnl": -3050.0, "long": false, "hr": 10, "dow": 2}, {"i": 24, "mfe": 6250.0, "mae": -2160.0, "pnl": 200.0, "long": true, "hr": 10, "dow": 2}, {"i": 25, "mfe": 80.0, "mae": -2480.0, "pnl": -2100.0, "long": false, "hr": 2, "dow": 4}, {"i": 26, "mfe": 470.0, "mae": -2290.0, "pnl": -1840.0, "long": true, "hr": 6, "dow": 4}, {"i": 27, "mfe": 3450.0, "mae": -6880.0, "pnl": -1230.0, "long": false, "hr": 10, "dow": 4}, {"i": 28, "mfe": 130.0, "mae": -3100.0, "pnl": -3080.0, "long": true, "hr": 19, "dow": 1}, {"i": 29, "mfe": 9750.0, "mae": -2020.0, "pnl": 4650.0, "long": false, "hr": 0, "dow": 2}, {"i": 30, "mfe": 4600.0, "mae": -14240.0, "pnl": -13350.0, "long": false, "hr": 22, "dow": 2}, {"i": 31, "mfe": 5200.0, "mae": -12500.0, "pnl": -10300.0, "long": true, "hr": 10, "dow": 4}, {"i": 32, "mfe": 17910.0, "mae": -360.0, "pnl": 9890.0, "long": false, "hr": 8, "dow": 4}, {"i": 33, "mfe": 1830.0, "mae": -32700.0, "pnl": -2960.0, "long": true, "hr": 1, "dow": 1}, {"i": 34, "mfe": 1690.0, "mae": -1050.0, "pnl": 480.0, "long": false, "hr": 13, "dow": 0}, {"i": 35, "mfe": 2010.0, "mae": -1820.0, "pnl": -1570.0, "long": true, "hr": 4, "dow": 1}, {"i": 36, "mfe": 700.0, "mae": -2910.0, "pnl": -2720.0, "long": false, "hr": 10, "dow": 1}, {"i": 37, "mfe": 3570.0, "mae": -25970.0, "pnl": -24460.0, "long": true, "hr": 21, "dow": 1}, {"i": 38, "mfe": 16790.0, "mae": -640.0, "pnl": 9800.0, "long": false, "hr": 18, "dow": 1}, {"i": 39, "mfe": 10570.0, "mae": -5230.0, "pnl": 5200.0, "long": true, "hr": 2, "dow": 1}, {"i": 40, "mfe": 1530.0, "mae": -5960.0, "pnl": -3940.0, "long": true, "hr": 18, "dow": 6}, {"i": 41, "mfe": 3310.0, "mae": -470.0, "pnl": 670.0, "long": false, "hr": 20, "dow": 0}, {"i": 42, "mfe": 3830.0, "mae": -330.0, "pnl": 220.0, "long": true, "hr": 7, "dow": 1}], "base": {"net": -2790.0, "pf": 0.9795439548353985, "dd": -74460.0, "worst": -24460.0, "wr": 57.14285714285714, "n": 42, "part": 100.0}, "config": {"net": 31342.0, "pf": 3.012585885828036, "dd": -5472.0, "worst": -1853.0, "wr": 57.14285714285714, "n": 21, "part": 50.0}, "reco": {"sl_usd": 3100, "tp_usd": 62510, "be_usd": null, "l2_usd": 2090, "l3_usd": 4180, "alloc": [5, 3, 2], "fill2": 57, "fill3": 33, "sl_pts": 31.0, "tp_pts": 625.1, "be_pts": null, "l2_pts": 20.9, "l3_pts": 41.8, "scalein": true, "dir": "short", "news_hours": [8, 11], "zones": [{"name": "Asia", "hours": [19, 20, 21, 22, 23, 0, 1], "n": 15, "net": -30460, "wr": 53.3, "pf": 0.53, "losing": true, "blocked": false}, {"name": "Europa/Londres", "hours": [2, 3, 4, 5, 6, 7], "n": 9, "net": 36920, "wr": 55.6, "pf": 3.34, "losing": false, "blocked": false}, {"name": "Apertura US", "hours": [8, 9], "n": 4, "net": 10960, "wr": 75.0, "pf": 1.97, "losing": false, "blocked": false}, {"name": "NY media", "hours": [10, 11], "n": 9, "net": -10290, "wr": 55.6, "pf": 0.41, "losing": true, "blocked": false}, {"name": "NY tarde", "hours": [12, 13, 14, 15], "n": 3, "net": -15780, "wr": 66.7, "pf": 0.31, "losing": false, "blocked": false}, {"name": "Cierre US", "hours": [16, 17, 18], "n": 2, "net": 5860, "wr": 50.0, "pf": 2.49, "losing": false, "blocked": false}], "blocked_hours": [], "days": [{"dow": 0, "name": "Lunes", "n": 6, "net": 28760, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"dow": 1, "name": "Martes", "n": 12, "net": -11300, "wr": 50.0, "pf": 0.75, "losing": true, "blocked": false}, {"dow": 2, "name": "Mi\u00e9rcoles", "n": 7, "net": -37750, "wr": 28.6, "pf": 0.11, "losing": false, "blocked": false}, {"dow": 3, "name": "Jueves", "n": 5, "net": 11670, "wr": 100.0, "pf": 999.0, "losing": false, "blocked": false}, {"dow": 4, "name": "Viernes", "n": 9, "net": 23570, "wr": 44.4, "pf": 1.88, "losing": false, "blocked": false}, {"dow": 6, "name": "Domingo", "n": 3, "net": -17740, "wr": 33.3, "pf": 0.19, "losing": false, "blocked": false}], "why_alloc": "El precio baja hasta C2 en el 57% de las operaciones y hasta C3 en el 33%. Como esta estrategia hace pullbacks frecuentes y profundos, el estudio reparte 5/3/2: conviene dejar bastante tama\u00f1o para C2 y C3, donde el precio s\u00ed suele darte fill."}}}};
+(function(){
+  const MONO="ui-monospace,'SF Mono','JetBrains Mono',Menlo,Consolas,monospace";
+  const C={greenL:'rgba(27,175,122,.22)',redL:'rgba(227,73,72,.20)',green:'#1BAF7A',red:'#E34948',
+           tp:'#0F6E56',be:'#6A5ACD',scin:'#2A78D6',sl:'#8A6D1E',faint:'#9AA0A6',line2:'#EEF1F3',zero:'#C9D0D5',pts:'#B9BFC4'};
+  const cv=document.getElementById('chart'), ctx=cv.getContext('2d'), tip=document.getElementById('tip');
+  const money=v=>(v<0?'−$':'$')+Math.abs(Math.round(v)).toLocaleString('en-US');
+  const moneyS=v=>(v<0?'−$':'+$')+Math.abs(Math.round(v)).toLocaleString('en-US');
+  const rnd=x=>{if(x<=0)return 0;const p=Math.pow(10,Math.floor(Math.log10(x)));const f=x/p;return (f<1.5?1:f<3.5?2:f<7.5?5:10)*p;};
+
+  let D, PV, T, N, RECO, RNG, showPts;
+  let BLK=new Set(), ZBLK=[], BLKD=new Set(), ZBLKD=[];
+  const S={mfe:1,mae:1,cls:1,tp:1,be:1,sc:1,sl:1,slV:0,tpV:0,beV:0,l2:0,l3:0,dir:'both'};
+  const el=id=>document.getElementById(id);
+  function rebuildBlk(){ BLK=new Set(); D.reco.zones.forEach((z,i)=>{ if(ZBLK[i]) z.hours.forEach(h=>BLK.add(h)); }); }
+  function rebuildBlkD(){ BLKD=new Set(); D.reco.days.forEach((z,i)=>{ if(ZBLKD[i]) BLKD.add(z.dow); }); }
+  function zoneRows(list,attr,state){
+    return list.map((z,i)=>{
+      const net=(z.net<0?'−$':'$')+Math.abs(z.net).toLocaleString('en-US');
+      return `<div class="zrow${z.losing?' warn':''}">
+        <label class="sw"><input type="checkbox" data-${attr}="${i}" ${state[i]?'checked':''}><span class="track"></span><span class="knob"></span></label>
+        <span class="zn">${z.name}${z.losing?'<span class="zbadge">pierde</span>':''}</span>
+        <span class="num">n ${z.n}</span>
+        <span class="num" style="color:${z.net<0?'var(--red)':'var(--green)'}">${net}</span>
+        <span class="num">WR ${z.wr}%</span></div>`;
+    }).join('');
+  }
+  function renderZones(){
+    el('ztable').innerHTML=zoneRows(D.reco.zones,'z',ZBLK);
+    el('ztable').querySelectorAll('input[data-z]').forEach(inp=>inp.addEventListener('change',()=>{
+      ZBLK[+inp.dataset.z]=inp.checked; rebuildBlk(); setDirty(); }));
+  }
+  function renderDays(){
+    el('dtable').innerHTML=zoneRows(D.reco.days,'d',ZBLKD);
+    el('dtable').querySelectorAll('input[data-d]').forEach(inp=>inp.addEventListener('change',()=>{
+      ZBLKD[+inp.dataset.d]=inp.checked; rebuildBlkD(); setDirty(); }));
+  }
+  function renderTimestop(){
+    const ts=D.timestop; if(!ts){el('tstable').innerHTML='';el('ts-why').innerHTML='';return;}
+    const mx=Math.max(1,...ts.buckets.map(b=>Math.abs(b.net)));
+    el('tstable').innerHTML=ts.buckets.map(b=>{
+      const net=(b.net<0?'−$':'$')+Math.abs(b.net).toLocaleString('en-US');
+      const col=b.net<0?'var(--red)':'var(--green)', w=Math.round(Math.abs(b.net)/mx*100);
+      return `<div class="tsrow"><span class="tsr">${b.range} barras</span><span class="num">n ${b.n}</span>
+        <span class="tsbar"><span style="width:${w}%;background:${col}"></span></span>
+        <span class="num" style="color:${col};min-width:70px">${net}</span></div>`;
+    }).join('');
+    el('ts-why').innerHTML='<b>Veredicto: descartado (sesgo de supervivencia).</b> '+ts.why;
+  }
+  const tag=el('mode-tag'), hint=el('hint'), btnRe=el('btn-recalc'), btnRs=el('btn-reset');
+
+  // ---------- tabs ----------
+  el('tabs').innerHTML=ALL.order.map(k=>{
+    const d=ALL.instruments[k];
+    return `<button class="tab" data-k="${k}">${k}${d.fragile?'<span class="warn">⚠</span>':''}</button>`;
+  }).join('');
+  el('tabs').querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>load(b.dataset.k)));
+
+  // ---------- comparison ----------
+  const TILES=[
+    {k:'net', lab:'Neto total', f:money, d:'up'},
+    {k:'pf',  lab:'Profit factor', f:v=>v.toFixed(2), d:'up', star:true},
+    {k:'dd',  lab:'Max drawdown', f:v=>money(Math.abs(v)), d:'downAbs'},
+    {k:'worst', lab:'Peor trade', f:money, d:'up'},
+    {k:'part', lab:'Participación', f:v=>v.toFixed(1)+'%', d:'neu'},
+    {k:'wr',  lab:'Win rate', f:v=>v.toFixed(1)+'%', d:'up'},
+  ];
+  function deltaInfo(t,base,cfg){
+    let raw,good;
+    if(t.d==='downAbs'){raw=Math.abs(cfg)-Math.abs(base);good=raw<0;}
+    else{raw=cfg-base;good=t.d==='up'?raw>0:null;}
+    const cls=t.d==='neu'?'neu':(good?'pos':'neg');
+    let ds; if(t.k==='pf')ds=(raw>=0?'+':'−')+Math.abs(raw).toFixed(2);
+    else if(t.k==='part'||t.k==='wr')ds=(raw>=0?'+':'−')+Math.abs(raw).toFixed(1);
+    else ds=moneyS(raw);
+    return {ds,cls};
+  }
+  function renderTiles(base,cfg){
+    el('tiles').innerHTML=TILES.map(t=>{
+      const b=base[t.k],c=cfg[t.k],di=deltaInfo(t,b,c);
+      return `<div class="tile"><div class="tl">${t.lab}${t.star?'<span class="star">★</span>':''}</div>
+        <div class="tv"><span class="to">${t.f(b)}</span><span class="arw">→</span><span>${t.f(c)}</span></div>
+        <div class="td ${di.cls}">Δ ${di.ds}</div></div>`;
+    }).join('');
+  }
+
+  // ---------- estimate (USD) ----------
+  function estimate(){
+    const A=RECO.alloc, MES=PV/10, lv=[[0,A[0]],[S.l2,A[1]],[S.l3,A[2]]];
+    const lever=d=>{
+      let e=d.pnl;
+      if(S.sl && d.mae<=-S.slV) e=-S.slV;
+      else if(S.tp && d.mfe>=S.tpV) e=S.tpV;
+      else if(S.be && d.mfe>=S.beV && d.pnl<0) e=0;   // breakeven salvó una perdedora (aprox)
+      if(!S.sc) return e;
+      const ep=e/PV; let tot=0; for(const[L,q]of lv){const f=(L===0)||(d.mae<=-L); if(f)tot+=q*(ep+L/PV)*MES;} return tot;
+    };
+    const dirok=d=> S.dir==='both'?true : S.dir==='long'?d.long : !d.long;
+    const kept=[]; for(const d of T){ if(!BLK.has(d.hr) && !BLKD.has(d.dow) && dirok(d)) kept.push(lever(d)); }
+    if(!kept.length) return {net:0,pf:0,dd:0,worst:0,wr:0,part:0};
+    const gp=kept.filter(x=>x>0).reduce((a,b)=>a+b,0), gl=kept.filter(x=>x<0).reduce((a,b)=>a+b,0);
+    let eq=0,pk=0,dd=0; for(const p of kept){eq+=p;pk=Math.max(pk,eq);dd=Math.min(dd,eq-pk);}
+    return {net:kept.reduce((a,b)=>a+b,0), pf:gl!==0?gp/Math.abs(gl):Infinity, dd,
+            worst:Math.min(...kept), wr:kept.filter(x=>x>0).length/kept.length*100, part:kept.length/N*100};
+  }
+
+  // ---------- state helpers ----------
+  function statsOf(arr){
+    if(!arr.length) return {net:0,pf:0,dd:0,part:0};
+    const gp=arr.filter(x=>x>0).reduce((a,b)=>a+b,0),gl=arr.filter(x=>x<0).reduce((a,b)=>a+b,0);
+    let eq=0,pk=0,dd=0; for(const p of arr){eq+=p;pk=Math.max(pk,eq);dd=Math.min(dd,eq-pk);}
+    return {net:arr.reduce((a,b)=>a+b,0), pf: gl!==0?gp/Math.abs(gl):Infinity, dd, part:arr.length/N*100};
+  }
+  function metricsFor(o){
+    const A=RECO.alloc, MES=PV/10, lv=[[0,A[0]],[o.l2,A[1]],[o.l3,A[2]]];
+    const lever=d=>{ let e=d.pnl;
+      if(o.sl && d.mae<=-o.slV) e=-o.slV;
+      else if(o.tp && d.mfe>=o.tpV) e=o.tpV;
+      else if(o.be && d.mfe>=o.beV && d.pnl<0) e=0;
+      if(!o.sc) return e;
+      const ep=e/PV; let t=0; for(const[L,q]of lv){ if(L===0||d.mae<=-L) t+=q*(ep+L/PV)*MES; } return t; };
+    const dok=d=> o.dir==='both'?true:o.dir==='long'?d.long:!d.long;
+    const kept=[]; for(const d of T){ if(!o.blk.has(d.hr)&&!o.blkd.has(d.dow)&&dok(d)) kept.push(lever(d)); }
+    return statsOf(kept);
+  }
+  const dLbl={both:'ambos',long:'largos',short:'cortos'};
+  function buildWaterfall(){
+    const NO=new Set();
+    const mk=o=>metricsFor(Object.assign({sl:0,tp:0,be:0,sc:0,dir:'both',blk:NO,blkd:NO,l2:S.l2,l3:S.l3,slV:S.slV,tpV:S.tpV,beV:S.beV},o));
+    const st=[Object.assign({label:'Crudo',crudo:true}, statsOf(T.map(d=>d.pnl)))];
+    st.push(Object.assign({label:'+ SL backstop'}, mk({sl:S.sl})));
+    st.push(Object.assign({label:'+ escalonado'}, mk({sl:S.sl,sc:S.sc})));
+    st.push(Object.assign({label:'+ TP techo'}, mk({sl:S.sl,sc:S.sc,tp:S.tp})));
+    if(RECO.be_usd) st.push(Object.assign({label:'+ breakeven'}, mk({sl:S.sl,sc:S.sc,tp:S.tp,be:S.be})));
+    st.push(Object.assign({label:'+ dirección ('+dLbl[S.dir]+')', isConfig:true}, mk({sl:S.sl,sc:S.sc,tp:S.tp,be:S.be,dir:S.dir})));
+    // opcionales (diagnóstico): sesiones / días que pierden
+    const lh=new Set(); RECO.zones.forEach(z=>{if(z.losing)z.hours.forEach(h=>lh.add(h));});
+    const ld=new Set(); RECO.days.forEach(z=>{if(z.losing)ld.add(z.dow);});
+    if(lh.size) st.push(Object.assign({label:'+ bloquear sesiones que pierden',diag:true}, mk({sl:S.sl,sc:S.sc,tp:S.tp,be:S.be,dir:S.dir,blk:lh})));
+    if(ld.size) st.push(Object.assign({label:'+ bloquear días que pierden',diag:true}, mk({sl:S.sl,sc:S.sc,tp:S.tp,be:S.be,dir:S.dir,blk:lh,blkd:ld})));
+    for(let i=1;i<st.length;i++){ st[i].dnet=st[i].net-st[i-1].net; st[i].ddd=Math.abs(st[i].dd)-Math.abs(st[i-1].dd); }
+    return st;
+  }
+  function renderWaterfall(){
+    if(!el('wtable')) return;
+    const st=buildWaterfall(), mx=Math.max(1,...st.map(s=>Math.abs(s.net)));
+    let html='', inDiag=false;
+    st.forEach((s,i)=>{
+      if(s.diag && !inDiag){ inDiag=true; html+='<div class="wdiv">Opcional · diagnóstico (posible sobreajuste — bloquear solo con razón real)</div>'; }
+      const w=Math.round(Math.abs(s.net)/mx*100), col=s.net<0?'var(--red)':(s.isConfig?'var(--green)':'var(--scin)');
+      const cls=(s.crudo?'crudo':'')+(s.isConfig?' config':'')+(s.diag?' diag':'');
+      const pf=isFinite(s.pf)?s.pf.toFixed(2):'∞';
+      let dh='';
+      if(i>0){ dh=`<span class="wdelta ${s.dnet>=0?'pos':'neg'}">${moneyS(s.dnet)}</span><br>`+
+        `<span class="wsub ${s.ddd<=0?'pos':'neg'}">DD ${s.ddd<=0?'−':'+'}$${Math.abs(Math.round(s.ddd)).toLocaleString('en-US')}</span>`; }
+      html+=`<div class="wrow ${cls}"><span class="wlabel">${s.label}</span>`+
+        `<span class="wbar"><span style="width:${w}%;background:${col}"></span></span>`+
+        `<span><span class="wnet">${money(s.net)}</span><br><span class="wsub">PF ${pf} · DD ${money(s.dd)}</span></span>`+
+        `<span style="text-align:right">${dh}</span></div>`;
+    });
+    el('wtable').innerHTML=html;
+  }
+  function isReco(){return S.tp&&S.sc&&S.sl&&(S.be?RECO.be_usd:!RECO.be_usd)&&S.slV===RECO.sl_usd&&S.tpV===RECO.tp_usd&&
+    (RECO.be_usd?S.beV===RECO.be_usd:true)&&S.l2===RECO.l2_usd&&S.l3===RECO.l3_usd&&S.dir===RECO.dir&&ZBLK.every(b=>!b)&&ZBLKD.every(b=>!b);}
+  function setDirty(){const dirty=!isReco();btnRe.disabled=!dirty;hint.classList.toggle('on',dirty);}
+  function showValidated(){renderTiles(D.base,D.config);tag.textContent='validado · motor';tag.className='tag val';}
+  function showEstimate(){renderTiles(D.base,estimate());tag.textContent='estimación · aprox';tag.className='tag est';hint.classList.remove('on');btnRe.disabled=true;}
+  btnRe.addEventListener('click',showEstimate);
+  btnRs.addEventListener('click',()=>applyReco());
+
+  // ---------- controls ----------
+  function setRange(id,r,v){const e=el(id);e.min=r.min;e.max=r.max;e.step=Math.max(r.step,1);e.value=v;}
+  function updVals(){
+    el('v-tp').textContent=money(S.tpV); el('v-sl').textContent=money(-S.slV);
+    el('v-be').textContent=S.be?money(S.beV):'—'; el('v-sc').textContent=S.sc?'0/−'+Math.round(S.l2)+'/−'+Math.round(S.l3):'—';
+    el('v-l2').textContent=money(-S.l2); el('v-l3').textContent=money(-S.l3);
+  }
+  const bind=(id,key,isRange)=>{const e=el(id);e.addEventListener(isRange?'input':'change',()=>{
+    S[key]=isRange?+e.value:(e.checked?1:0); if(key==='slV'||key==='tpV'||key==='beV'||key==='l2'||key==='l3'){/*val*/}
+    if(key==='beV')S.beV=+e.value; updVals();setDirty();draw();});};
+  bind('t-mfe','mfe');bind('t-mae','mae');bind('t-cls','cls');
+  bind('t-tp','tp');bind('t-be','be');bind('t-sc','sc');bind('t-sl','sl');
+  bind('r-tp','tpV',true);bind('r-sl','slV',true);bind('r-l2','l2',true);bind('r-l3','l3',true);
+  el('r-be').addEventListener('input',()=>{S.beV=+el('r-be').value;updVals();setDirty();draw();});
+
+  function renderDir(){
+    el('dirwrap').innerHTML=[['both','Ambos'],['long','Largos'],['short','Cortos']].map(([k,l])=>
+      `<button data-d="${k}" class="${S.dir===k?'on':''}">${l}</button>`).join('');
+    el('dirwrap').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{S.dir=b.dataset.d;renderDir();setDirty();draw();}));
+  }
+
+  // ---------- chart ----------
+  const M={l:66,r:54,t:22,b:38};
+  let W=0,H=0,plotW=0,plotH=0,geom=[],yMax=0,yMin=0;
+  const yScale=v=>M.t+(yMax-v)/(yMax-yMin)*plotH;
+  function domain(){let hi=D.mfe_max,lo=D.mae_min;if(S.tp)hi=Math.max(hi,S.tpV);if(S.sl)lo=Math.min(lo,-S.slV);const pad=(hi-lo)*0.06;yMax=hi+pad;yMin=lo-pad;}
+  function resize(){M.r=showPts?116:64;const r=cv.getBoundingClientRect(),dpr=window.devicePixelRatio||1;W=r.width;H=r.height;cv.width=W*dpr;cv.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);plotW=W-M.l-M.r;plotH=H-M.t-M.b;draw();}
+  const xOf=i=>M.l+(i-0.5)/N*plotW;
+  const niceStep=x=>{const p=Math.pow(10,Math.floor(Math.log10(x)));const f=x/p;return (f<1.5?1:f<3?2:f<7?5:10)*p;};
+  function line(yv,color,dash,dot){const y=yScale(yv);ctx.save();ctx.strokeStyle=color;ctx.lineWidth=1.4;ctx.setLineDash(dot?[1,4]:(dash||[7,5]));ctx.beginPath();ctx.moveTo(M.l,y);ctx.lineTo(M.l+plotW,y);ctx.stroke();ctx.restore();}
+  function draw(){
+    if(!D)return; domain(); ctx.clearRect(0,0,W,H);
+    ctx.font='10.5px '+MONO; const step=niceStep((yMax-yMin)/6); ctx.textBaseline='middle';
+    for(let v=Math.ceil(yMin/step)*step; v<=yMax; v+=step){const y=yScale(v);
+      ctx.strokeStyle=Math.abs(v)<1e-6?C.zero:C.line2; ctx.lineWidth=Math.abs(v)<1e-6?1.2:1;
+      ctx.beginPath();ctx.moveTo(M.l,y);ctx.lineTo(M.l+plotW,y);ctx.stroke();
+      ctx.fillStyle=C.faint;ctx.textAlign='right';ctx.fillText(money(v),M.l-8,y);
+      if(showPts){ctx.fillStyle=C.pts;ctx.textAlign='left';ctx.fillText((v/PV).toFixed(0),M.l+plotW+8,y);}}
+    ctx.fillStyle=C.faint;ctx.textAlign='right';ctx.textBaseline='alphabetic';ctx.fillText('USD',M.l-8,M.t-8);
+    if(showPts){ctx.textAlign='left';ctx.fillText('pts',M.l+plotW+8,M.t-8);}
+    ctx.textAlign='center';ctx.textBaseline='top';ctx.fillStyle=C.faint;
+    const stepx=N>60?20:10; for(let i=0;i<=N;i+=stepx){const x=M.l+i/N*plotW;ctx.fillText(i,x,M.t+plotH+8);}
+    ctx.fillText('Trade #  (entrada = punto cero)',M.l+plotW/2,M.t+plotH+22);
+    const yz=yScale(0),bw=Math.max(2,plotW/N*0.62),bwc=Math.max(1.4,bw*0.5);geom=[];
+    for(let k=0;k<N;k++){const d=T[k],x=xOf(d.i);geom.push({x,i:d.i,mfe:d.mfe,mae:d.mae,pnl:d.pnl});
+      if(S.mfe&&d.mfe>0){ctx.fillStyle=C.greenL;const y=yScale(d.mfe);ctx.fillRect(x-bw/2,y,bw,yz-y);}
+      if(S.mae&&d.mae<0){ctx.fillStyle=C.redL;const y=yScale(d.mae);ctx.fillRect(x-bw/2,yz,bw,y-yz);}
+      if(S.cls){const y=yScale(d.pnl);ctx.fillStyle=d.pnl>=0?C.green:C.red;if(d.pnl>=0)ctx.fillRect(x-bwc/2,y,bwc,yz-y);else ctx.fillRect(x-bwc/2,yz,bwc,y-yz);}}
+    const LG=[];
+    if(S.sc){LG.push(['C1',C.scin,'entrada','$0',0,[7,5],false]);
+             LG.push(['C2',C.scin,'compra 2',money(-S.l2),-S.l2,[7,5],false]);
+             LG.push(['C3',C.scin,'compra 3',money(-S.l3),-S.l3,[7,5],false]);}
+    if(S.be)LG.push(['BE',C.be,'breakeven',money(S.beV),S.beV,null,true]);
+    if(S.tp)LG.push(['TP',C.tp,'techo',money(S.tpV),S.tpV,[9,5],false]);
+    if(S.sl)LG.push(['SL',C.sl,'backstop',money(-S.slV),-S.slV,[9,5],false]);
+    for(const [,col,,,yv,dash,dot] of LG) line(yv,col,dash,dot);
+    // columna de códigos + puntos a la derecha, FUERA del plot (barras limpias)
+    const gx=M.l+plotW+(showPts?40:12);
+    const labs=LG.map(([code,col,,,yv])=>({code,col,y:yScale(yv),pts:Math.round(yv/PV)})).sort((a,b)=>a.y-b.y);
+    for(let i=1;i<labs.length;i++){ if(labs[i].y-labs[i-1].y<13) labs[i].y=labs[i-1].y+13; }
+    ctx.font='700 10.5px '+MONO; ctx.textAlign='left'; ctx.textBaseline='middle';
+    for(const l of labs){ ctx.fillStyle=l.col;
+      const txt = showPts ? (l.code+'  '+(l.pts>0?'+':l.pts<0?'−':'')+Math.abs(l.pts)) : l.code;
+      ctx.fillText(txt,gx,l.y); }
+    el('chartlegend').innerHTML=LG.map(([code,col,name,val])=>
+      `<span class="lg"><i style="background:${col}"></i><b>${code}</b> ${name} · ${val}</span>`).join('');
+    readout(); renderWaterfall();
+  }
+  function readout(){
+    let tpN=0,tpE=0,slN=0,slE=0,l2N=0,l3N=0,beN=0;
+    for(const d of T){if(d.mfe>=S.tpV){tpN++;tpE+=(S.tpV-d.pnl);}if(d.mae<=-S.slV){slN++;slE+=(-S.slV-d.pnl);}if(d.mae<=-S.l2)l2N++;if(d.mae<=-S.l3)l3N++;if(d.mfe>=S.beV)beN++;}
+    const row=(l,n,c)=>`<div class="ro"><span class="lab">${l}</span><span class="num ${c||''}">${n}</span></div>`;
+    let h='';
+    if(S.tp)h+=row('TP techo dispara',tpN+'/'+N+'  ('+moneyS(tpE)+')',tpE>=0?'pos':'neg');
+    if(S.sl)h+=row('SL toca',slN+'/'+N+'  ('+moneyS(slE)+')',slE>=0?'pos':'neg');
+    if(S.sc)h+=row('Escalonado llena','n2: '+l2N+' · n3: '+l3N);
+    if(S.be)h+=row('Breakeven armado',beN+'/'+N);
+    el('readout').innerHTML=h;
+  }
+  cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;let best=null,bd=1e9;for(const g of geom){const dx=Math.abs(g.x-mx);if(dx<bd){bd=dx;best=g;}}
+    if(best&&bd<plotW/N){tip.style.opacity=1;tip.innerHTML=`<b>Trade ${best.i}</b><br>MFE ${money(best.mfe)}<br>MAE ${money(best.mae)}<br>Cierre ${money(best.pnl)}`;let tx=best.x+10;if(tx>r.width-120)tx=best.x-120;tip.style.left=tx+'px';tip.style.top=(my-10)+'px';}else tip.style.opacity=0;});
+  cv.addEventListener('mouseleave',()=>tip.style.opacity=0);
+
+  // ---------- load instrument ----------
+  function applyReco(){
+    S.tp=1;S.sc=RECO.scalein?1:0;S.sl=1;S.be=RECO.be_usd?1:0;
+    S.slV=RECO.sl_usd;S.tpV=RECO.tp_usd;S.beV=RECO.be_usd||RNG.be.min;S.l2=RECO.l2_usd;S.l3=RECO.l3_usd;S.dir=RECO.dir;
+    ZBLK=RECO.zones.map(z=>!!z.blocked); rebuildBlk();
+    ZBLKD=RECO.days.map(z=>!!z.blocked); rebuildBlkD();
+    el('t-tp').checked=true;el('t-sl').checked=true;el('t-sc').checked=!!RECO.scalein;el('t-be').checked=!!RECO.be_usd;
+    setRange('r-sl',RNG.sl,S.slV);setRange('r-tp',RNG.tp,S.tpV);setRange('r-be',RNG.be,S.beV);
+    setRange('r-l2',RNG.l2,S.l2);setRange('r-l3',RNG.l3,S.l3);
+    renderDir();renderZones();renderDays();updVals();showValidated();setDirty();draw();
+  }
+  function load(k){
+    D=ALL.instruments[k];PV=D.pv;T=D.trades;N=D.n;RECO=D.reco;showPts=PV<=1000;
+    el('tabs').querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.k===k));
+    const ma=Math.abs(D.mae_min),mf=D.mfe_max;
+    RNG={ sl:{min:rnd(ma*0.12),max:rnd(ma*1.12),step:rnd(ma*1.12/40)},
+          tp:{min:rnd(mf*0.35),max:rnd(mf*1.35),step:rnd(mf*1.35/40)},
+          be:{min:rnd(mf*0.04),max:rnd(mf*0.55),step:rnd(mf*0.55/40)},
+          l2:{min:0,max:rnd(ma*0.8),step:rnd(ma*0.8/40)},
+          l3:{min:0,max:rnd(ma*1.0),step:rnd(ma*1.0/40)} };
+    el('subline').textContent=D.name+' · '+N+' operaciones · $'+PV.toLocaleString('en-US')+'/punto · dir recomendada: '+({both:'ambos',long:'largos',short:'cortos'}[RECO.dir]);
+    el('sc-alloc').textContent=RECO.alloc.join('/');
+    el('sc-why').innerHTML='<b>Por qué '+RECO.alloc.join('/')+':</b> '+RECO.why_alloc+' <span class="na">C1 es la entrada (fija); el reparto no es ajustable — solo los niveles C2/C3.</span>';
+    el('recon-tag').textContent='recon '+D.recon_ok+'/'+N;
+    el('recon-tag').className='tag '+(D.fragile?'frag':'recon');
+    const rg=D.regime, rt=el('regime-tag');
+    if(rg){rt.style.display='';rt.textContent='régimen: '+rg.label+' '+(rg.change>=0?'+':'')+rg.change+'%';}
+    else rt.style.display='none';
+    renderTimestop();
+    const fb=el('fragbar');
+    if(D.fragile){fb.classList.add('on');fb.innerHTML='⚠ <b>'+k+' — lectura con cautela:</b> '+D.notes.join('; ')+'. Las operaciones no reconstruidas usan su PnL crudo.';}
+    else fb.classList.remove('on');
+    applyReco(); resize();
+  }
+
+  el('foot').innerHTML='Todas las métricas se calculan <b>dentro de muestra con el 100% de los trades</b>: <b>crudo = la lista tal cual</b> vs <b>con config = las palancas aplicadas</b> (SL/BE/TP + escalonado + dirección + sesiones bloqueadas). Los niveles se derivan de los propios datos de cada instrumento y se expresan en <b>USD</b>. La columna «con config» por defecto es la <b>validada por el motor</b> (reconstrucción intrabar); «Recalcular» da una <b>estimación</b> client-side al mover palancas (incluye SL/TP/BE/escalonado/dirección/sesiones) y «Restablecer» vuelve a la recomendación. El breakeven en la estimación es aproximado (asume que una operación que armó BE y cerró en pérdida habría salido en 0). Bloquear sesiones es <b>diagnóstico dentro de muestra</b>: hazlo solo con una razón real. Instrumentos con ⚠ dependen de recuperaciones en pullbacks profundos y/o tienen reconstrucción parcial.';
+
+  window.addEventListener('resize',resize);
+  load(ALL.order[0]); resize();
+})();
+</script>
+</body>
+</html>

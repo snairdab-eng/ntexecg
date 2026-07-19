@@ -1,0 +1,45 @@
+Descripción Técnica:
+Es un sistema de reversión de alta frecuencia aplicado a gráficos de 5 minutos, buscando entradas contrarias (Contrarian Normal) en puntos extremos, confirmadas por la dirección tendencial a corto plazo (Smart Trail) y un grado bajo de confluencia institucional (Weak Confluence). Presenta gran rentabilidad histórica y altas tasas de acierto, pero su extrema caída máxima (drawdown del 49.4%) refleja un perfil de muy alto riesgo, requiriendo un estómago fuerte para tolerar volatilidades abruptas.
+
+ID / Nombre para buscarla:
+
+Nombre: Contrarian Normal - Smart Trail - Weak Confluence
+ID: GC|5|LONG=CONTNormBr&PoST&WkBlCONF|SHORT=CONTNormBl&PuST&WkBrCONF|EXIT=CONTBltExt
+Herramientas utilizadas (Toolkits):
+
+Signals & Overlays (Contrarian Signals, Smart Trail)
+Oscillator Matrix (Confluence)
+Gatillo (Trigger):
+
+Largo: Contrarian Normal Bearish
+Corto: Contrarian Normal Bullish
+Filtros:
+
+Largos: Bullish Smart Trail y Weak Bullish Confluence
+Cortos: Bearish Smart Trail y Weak Bearish Confluence
+Condición de salida:
+
+Contrarian Builtin-Exits (salidas integradas en las señales contrarias).
+Capital inicial base de los cálculos:
+
+10.000 (moneda base).
+Métricas Históricas:
+
+Backtest inicio: 4 de marzo de 2026
+Backtest final: 12 de junio de 2026
+Número de operaciones: 107 cerradas
+Winrate %: 63.55%
+Profit factor: 1.994
+Beneficio neto: $124,020
+Max drawdown %: 49.42%
+Caída máxima en dólares: $66,230
+Operaciones rentables: 68 de 107
+Frecuencia de señales: En promedio, cerca de una operación por día.
+Tamaño de orden: 1 unidad.
+Rango de tiempo recomendado:
+
+Esta estrategia fue configurada y evaluada en el marco de tiempo de 5 minutos.
+Evaluación de rachas y tiempos de mantenimiento:
+
+Duración Promedio de Operación: Las operaciones se mantuvieron abiertas durante un promedio de 953.7 minutos (aproximadamente 15.8 horas) por posición, indicando que a pesar de estar en un gráfico de 5 minutos, capta tendencias intradiarias o deja correr la posición.
+Rachas (Streaks): La máxima racha de victorias consecutivas fue de 2, mientras que el sistema evitó largas cadenas de pérdidas (0 de racha en pérdidas reportada al tope histórico). Esto concuerda con un elevado winrate que intercala rápidamente las operaciones negativas.

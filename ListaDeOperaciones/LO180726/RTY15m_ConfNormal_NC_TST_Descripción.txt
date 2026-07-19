@@ -1,0 +1,27 @@
+Descripción Técnica
+Esta estrategia de 15 minutos utiliza el toolkit Signals & Overlays para operar a favor y en contra de tendencias usando una combinación híbrida. Emplea señales de "Confirmation Normal" como gatillo para entrar al mercado. Curiosamente, filtra estas entradas buscando que el "Neo Cloud" muestre la dirección opuesta (actuando de forma contraria), pero exigiendo que la fuerza general de la tendencia ("Trend Strength") confirme un estado de tendencia activa. Las operaciones se gestionan y cierran usando las condiciones de salida incorporadas en las señales de confirmación, buscando capturar movimientos rápidos en tendencias fuertes.
+
+Detalles de la Estrategia
+Nombre de la estrategia: Confirmation Normal - Neo Cloud - Trend Strength Trending
+Herramientas (Toolkits) utilizadas: Signals & Overlays
+Gatillo: Confirmation Normal Bullish (para largos) / Bearish (para cortos)
+Filtros: Neo Cloud Bearish (para largos) / Bullish (para cortos) y Trend Strength Trending.
+Condición de Salida: Confirmation Builtin-Exits
+Capital inicial calculado: 10,000 moneda base (asumido por defecto en nuestras pruebas).
+Tamaño de orden usado: 1 unidad (Unit order size).
+Rendimiento (Backtest)
+Backtest inicio: 12 de Agosto de 2025
+Backtest final: 09 de Junio de 2026
+Número de operaciones: 109
+Winrate %: 88.99%
+Profit factor: 2.145
+Beneficio neto: $42,135
+Max drawdown %: 18.88%
+Caída máxima en dólares (Drawdown): $9,845
+Operaciones rentables: 97 de 109
+Frecuencia de señales: Aproximadamente 10-11 operaciones por mes (109 operaciones en unos 10 meses).
+Rango de tiempo recomendado: Fue evaluada y diseñada específicamente para operar en el marco temporal de 15 minutos.
+Análisis de Operaciones y Rachas
+Racha de ganancias consecutivas: La estrategia logró una racha máxima de 8 operaciones ganadoras seguidas.
+Racha de pérdidas consecutivas: La estrategia no experimentó rachas de pérdidas consecutivas (racha de pérdidas máxima de 0), lo cual resalta su altísimo winrate (88.99%).
+Tiempo promedio de operación: Las posiciones se mantuvieron abiertas durante un promedio de 2,147 minutos (aproximadamente 1 día y 11 horas) antes de cerrarse.

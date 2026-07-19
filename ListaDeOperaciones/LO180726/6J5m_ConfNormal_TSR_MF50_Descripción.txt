@@ -1,0 +1,43 @@
+Descripción técnica
+Esta estrategia de seguimiento de tendencia para la temporalidad de 5 minutos combina señales direccionales con filtros de fuerza de mercado y oscilación. Busca capturar movimientos sostenidos entrando al mercado solo cuando hay una señal de confirmación que esté respaldada por una fuerza de tendencia en rango y un flujo de dinero favorable. Esto permite evitar falsos rompimientos y operar a favor del momentum principal del mercado.
+
+ID / Nombre de la estrategia
+
+Nombre: Confirmation Normal - Trend Strength Ranging - Money Flow Above 50
+ID: 6J|5|LONG=CONFNormBl&TSR&MFa50|SHORT=CONFNormBr&TSR&MFb50|EXIT=CONFBltExt
+Herramientas utilizadas
+
+Confirmation Signals (Signals & Overlays)
+Trend Strength (Signals & Overlays)
+Money Flow (Oscillator Matrix)
+Gatillo (Trigger)
+
+Largos: Confirmation Normal Bullish
+Cortos: Confirmation Normal Bearish
+Filtros
+
+Largos: Trend Strength Ranging y Money Flow Above 50
+Cortos: Trend Strength Ranging y Money Flow Below 50
+Salida (Exit)
+
+Confirmation Builtin-Exits
+Rendimiento del Backtest
+
+Capital de inicio calculado: 10,000 USD
+Backtest inicio: 5 de Marzo, 2026
+Backtest final: 12 de Junio, 2026
+Número de operaciones: 57
+Winrate %: 96.49%
+Profit factor: 5.232
+Beneficio neto: $2,512.50 USD
+Max drawdown %: 9.64%
+Caída máxima en dólares: $1,206.25 USD
+Operaciones rentables: 55 de 57
+Frecuencia de señales: Aproximadamente 19 operaciones por mes
+Tamaño de orden usado: 1 unidad (1 contrato estándar)
+Rango de tiempo recomendado: 5 minutos (5m)
+Análisis de Rachas y Tiempos de Posición
+
+Tiempo promedio de las operaciones: Las posiciones se mantuvieron abiertas durante un promedio de 1,185 minutos (aproximadamente 19.75 horas).
+Operaciones en racha ganadora máxima: 50 operaciones consecutivas en ganancia.
+Operaciones en racha perdedora máxima: 0 operaciones perdidas de forma consecutiva (las 2 pérdidas de la estrategia no sucedieron una detrás de la otra).

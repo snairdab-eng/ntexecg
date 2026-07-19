@@ -1,0 +1,27 @@
+Descripción Técnica:
+La estrategia opera en el marco de tiempo de 5m, utilizando herramientas del toolkit de Signals & Overlays. Emplea señales "Confirmation Any" como gatillo inicial. Sus filtros utilizan una lógica particular, combinando el "Smart Trail" a favor de la dirección de la operación y el "Trend Catcher" en contra (ej. Trend Catcher Bearish para largos). Esto sugiere que la estrategia busca capitalizar movimientos en retrocesos o desviaciones de corto plazo dentro de una tendencia subyacente.
+
+ID / Nombre: El nombre es Confirmation Any - Smart Trail - Trend Catcher. El ID es NQ|5|LONG=CONFAnyBl&PoST&TCBr|SHORT=CONFAnyBr&PuST&TCBl|EXIT=CONFBltExt
+Herramientas utilizadas: Toolkit de Signals & Overlays (Indicadores: Confirmation Signals, Smart Trail, Trend Catcher).
+Gatillo: Confirmation Any (Bullish para largos, Bearish para cortos).
+Filtros: Smart Trail (Bullish para largos, Bearish para cortos) y Trend Catcher (Bearish para largos, Bullish para cortos).
+Salida: Confirmation Builtin-Exits.
+Capital de inicio calculado: 10,000 USD (sin comisiones ni deslizamiento de precios).
+Datos del Backtest:
+
+Backtest inicio: 5 de Marzo, 2026
+Backtest final: 11 de Junio, 2026
+Número de operaciones: 57
+Winrate %: 94.74%
+Profit factor: 2.50
+Beneficio neto: $51,075
+Max drawdown %: 46.94%
+Caída máxima en dólares: $37,895
+Operaciones rentables: 54 de 57
+Frecuencia de señales: Aproximadamente 1 operación cada 1.7 días (57 operaciones en ~98 días).
+Tamaño de orden usado: 1 unidad (Unit position sizing).
+Rango de tiempo recomendado (operado en el backtest): 5 minutos (5m).
+Evaluación de Rachas y Tiempos de Operación:
+
+Rachas (Streaks): La estrategia mostró una racha máxima de 4 operaciones ganadoras consecutivas, sin registrar rachas de múltiples operaciones perdedoras consecutivas (racha de pérdidas de 0, ya que las pérdidas fueron aisladas entre las ganancias).
+Tiempo promedio: Las operaciones se mantuvieron abiertas por un tiempo promedio de 648.16 minutos (aproximadamente 10 horas y 48 minutos) antes de que se cumpliera la condición de salida.

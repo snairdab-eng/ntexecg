@@ -1,0 +1,25 @@
+Descripción Técnica
+Esta estrategia de reversión a la media opera en temporalidades bajas (5m), buscando capturar retrocesos cuando el mercado está en rango. Utiliza señales de confirmación normales en dirección opuesta a la tendencia a corto plazo identificada por el Trend Catcher, asegurando con el Trend Strength que el mercado no tenga una tendencia fuerte definida.
+
+Detalles de la Estrategia
+Nombre: Confirmation Normal - Trend Catcher - Trend Strength Ranging
+ID: ES|5|LONG=CONFNormBl&TCBr&TSR|SHORT=CONFNormBr&TCBl&TSR|EXIT=CONFBltExt
+Herramientas (Toolkit): Signals & Overlays (Confirmation Signals, Trend Catcher, Trend Strength)
+Gatillo: Confirmation Normal Bullish (Long) / Confirmation Normal Bearish (Short)
+Filtros: Trend Catcher Bearish + Trend Strength Ranging (Long) / Trend Catcher Bullish + Trend Strength Ranging (Short)
+Salida: Confirmation Builtin-Exits
+Capital Inicial: 10,000 USD
+Tamaño de orden: 1 unidad (1 contrato)
+Rango de tiempo recomendado: 5 minutos (5m)
+Resultados del Backtest
+Backtest inicio: 5 de marzo de 2026
+Backtest final: 12 de junio de 2026
+Número de operaciones: 114
+Winrate %: 83.33%
+Profit factor: 2.408
+Beneficio neto: $42,687.50
+Max drawdown %: 25.89%
+Caída máxima en dólares: $13,950.00
+Operaciones rentables: 95 de 114
+Frecuencia de señales: Alta (aprox. 1-2 operaciones al día)
+(Nota: Actualmente no es posible analizar rachas específicas o tiempos de retención promedio para esta estrategia en particular debido a limitaciones técnicas en la herramienta de análisis de trades).
