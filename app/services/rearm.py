@@ -263,3 +263,225 @@ def avanzar_ciclo(leg: dict, client_id: str, ts_iso: str) -> dict:
     out["last_client_id"] = str(client_id)
     out["last_sent_at"] = ts_iso
     return out
+
+
+# ---------------------------------------------------------------------------
+# RA-2b sub-paso 3 — INFERENCIA DE PRECIO (P3 del diseño). Funciones PURAS:
+# reciben barras YA obtenidas + estado y JUZGAN; el único no-puro es el
+# wrapper `obtener_inferencia` (get_bars/get_atr y nada más). HUECO/ilegible
+# ⇒ None ⇒ el job (sub-paso 5) no re-arma (REARM_SKIP{feed_hueco}).
+#
+# CONVENCIÓN DE TIEMPO: las barras del bridge son ET-naive wall-clock (LX-6,
+# app/services/bar_store.py — parse_bar_time es la fuente única del parseo);
+# `opened_at`/`now` llegan UTC-aware (risk_plan_json["opened_at"]) y aquí se
+# normalizan a ET-naive (aware → America/New_York → naive; naive = ya ET).
+# ---------------------------------------------------------------------------
+
+# LA TRAMPA DEL CONTEO (decisión, 2026-07-19): "barras esperadas en
+# [opened_at, now]" ingenuo marcaría como HUECO los gaps LEGÍTIMOS del
+# calendario CME Globex — mantenimiento diario 17:00–18:00 ET (lun–jue) y fin
+# de semana (vie 17:00 → dom 18:00) — y una posición que cruza el break
+# quedaría fail-closed PARA SIEMPRE por un falso hueco. DECISIÓN: conteo por
+# CALENDARIO DE SESIÓN (mercado_abierto_et, predicado puro nuevo): solo se
+# esperan barras en slots con mercado abierto. `sesion_et` del proyecto es
+# una PARTICIÓN DE DISPLAY (RTH/tarde/asia/europa), no un calendario de
+# apertura — no sirve de fuente aquí; el predicado queda al lado de los
+# puros del re-armado con esta justificación. FERIADOS CME: no modelados →
+# un feriado produce "hueco" y el job NO re-arma ese día (fail-closed
+# honesto; el costo es no re-armar en feriado — lado seguro de la asimetría,
+# jamás pasa un hueco REAL como legítimo).
+REARM_TOLERANCIA_BARRAS = 1     # bordes de rejilla/barra en formación — nombrada
+
+
+def mercado_abierto_et(ts) -> bool:
+    """¿El slot de barra (ET-naive, inicio de barra) cae con CME Globex
+    ABIERTO? dom 18:00 → vie 17:00, con break diario 17:00–18:00 ET
+    (lun–jue). sáb cerrado. Predicado PURO del calendario base (sin
+    feriados — ver la decisión del conteo arriba)."""
+    wd, h = ts.weekday(), ts.hour
+    if wd == 5:                              # sábado
+        return False
+    if wd == 6:                              # domingo: abre 18:00 ET
+        return h >= 18
+    if wd == 4:                              # viernes: cierra 17:00 ET
+        return h < 17
+    return not (17 <= h < 18)                # lun–jue: break 17:00–18:00
+
+
+def _a_et_naive(dt):
+    """UTC/aware → ET-naive (la convención de las barras); naive = ya ET."""
+    from datetime import datetime
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        return dt
+    from zoneinfo import ZoneInfo
+    return dt.astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None)
+
+
+def _tf_segundos(timeframe) -> int | None:
+    try:
+        s = str(timeframe).strip().lower()
+        if s.endswith("m"):
+            return int(s[:-1]) * 60
+        if s.endswith("h"):
+            return int(s[:-1]) * 3600
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def barras_esperadas(inicio_et, fin_et, tf_s: int) -> int:
+    """Nº de slots de la rejilla `tf_s` en (inicio, fin] con mercado ABIERTO
+    (calendario CME base). Rejilla anclada a la hora en punto."""
+    from datetime import datetime, timedelta
+    paso = timedelta(seconds=tf_s)
+    # primer slot de rejilla ESTRICTAMENTE posterior al inicio
+    base = inicio_et.replace(minute=0, second=0, microsecond=0)
+    t = base
+    while t <= inicio_et:
+        t += paso
+    n = 0
+    while t <= fin_et:
+        if mercado_abierto_et(t):
+            n += 1
+        t += paso
+    return n
+
+
+def tramo_valido(bars, *, opened_at, timeframe, now,
+                 heartbeat_max_age: float) -> list[dict] | None:
+    """Barras del tramo [opened_at, now] VALIDADAS, o None (hueco/ilegible ⇒
+    fail-closed). Los TRES chequeos del diseño P3:
+      (i)  conteo: reales < esperadas (calendario CME) − tolerancia ⇒ hueco.
+      (ii) high/low None/ausente (o time no parseable) en el tramo ⇒ ilegible.
+      (iii) frescura: la barra más nueva más vieja que tf + heartbeat_max_age
+            respecto de `now` ⇒ feed frío. NOTA: con el mercado CERRADO
+            (break/finde) este chequeo falla naturalmente ⇒ no se infiere con
+            el mercado cerrado — correcto (tampoco hay fills posibles); el
+            job vuelve a inferir minutos después de la reapertura, y el
+            CONTEO por calendario garantiza que el cruce del break jamás lo
+            deja fail-closed para siempre."""
+    from app.services.bar_store import parse_bar_time
+    tf_s = _tf_segundos(timeframe)
+    if tf_s is None or bars is None:
+        return None
+    try:
+        t0 = _a_et_naive(opened_at)
+        t1 = _a_et_naive(now)
+    except (TypeError, ValueError):
+        return None
+    tramo = []
+    for b in bars:
+        if not isinstance(b, dict):
+            return None
+        ts = parse_bar_time(b.get("time"))
+        if ts is None:
+            return None                       # (ii) time ilegible
+        if ts < t0 or ts > t1:
+            continue
+        if b.get("high") is None or b.get("low") is None:
+            return None                       # (ii) OHLC mutilado en el tramo
+        tramo.append({**b, "time": ts})
+    if not tramo:
+        return None
+    tramo.sort(key=lambda b: b["time"])
+    # (iii) frescura de la barra más nueva (una barra puede estar formándose:
+    # su sello es el INICIO → tolerancia = un intervalo completo + heartbeat)
+    edad_s = (t1 - tramo[-1]["time"]).total_seconds()
+    if edad_s > tf_s + float(heartbeat_max_age):
+        return None
+    # (i) conteo por calendario de sesión (ver LA TRAMPA DEL CONTEO)
+    esperadas = barras_esperadas(t0, t1, tf_s)
+    if len(tramo) < esperadas - REARM_TOLERANCIA_BARRAS:
+        return None
+    return tramo
+
+
+def extremos(tramo: list[dict]) -> tuple[float, float]:
+    """(max_high, min_low) del tramo YA validado por `tramo_valido`."""
+    return (max(float(b["high"]) for b in tramo),
+            min(float(b["low"]) for b in tramo))
+
+
+# CONVENCIÓN DE TOQUE (documentada): INCLUSIVE — el extremo que ALCANZA
+# exactamente el nivel cuenta como tocado. Un toque exacto del límite puede
+# haber llenado o no en el broker; para el re-armado se asume TOCADO porque
+# R-RA2 dice "nivel tocado ⇒ jamás re-enviar": en el peor caso se deja de
+# re-armar una pierna que no llenó (lado seguro de la asimetría) — lo
+# contrario (re-enviar sobre un posible fill) arriesga posición doble.
+
+def nivel_tocado(side: str, limit_price: float,
+                 ext: tuple[float, float]) -> bool:
+    """R-RA2 — ¿el precio alcanzó el nivel de la pierna? (long: pierna BAJO
+    la entrada → min_low ≤ limit; short: pierna SOBRE la entrada →
+    max_high ≥ limit). Toque exacto = tocado (inclusive)."""
+    max_high, min_low = ext
+    return (min_low <= limit_price) if side == "long" \
+        else (max_high >= limit_price)
+
+
+def backstop_tocado(side: str, sl_price, ext: tuple[float, float]) -> bool:
+    """R-RA6 — ¿el backstop fue alcanzado? (long: stop ABAJO → min_low ≤ sl;
+    short: stop ARRIBA → max_high ≥ sl). sl None ⇒ False (sin dato no se
+    infiere muerte por stop — el job ya exigió estado legible con sl)."""
+    if sl_price is None:
+        return False
+    max_high, min_low = ext
+    return (min_low <= float(sl_price)) if side == "long" \
+        else (max_high >= float(sl_price))
+
+
+def tp_tocado(side: str, tp_price, ext: tuple[float, float]) -> bool:
+    """R-RA6 — ¿el TP fue alcanzado? (long: TP ARRIBA → max_high ≥ tp;
+    short: TP ABAJO → min_low ≤ tp). tp None ⇒ False (sin TP no hay
+    muerte por TP)."""
+    if tp_price is None:
+        return False
+    max_high, min_low = ext
+    return (max_high >= float(tp_price)) if side == "long" \
+        else (min_low <= float(tp_price))
+
+
+def atr_expandido(atr_vivo, signal_atr, umbral) -> bool | None:
+    """R-RA7 — ¿el régimen se expandió? atr_vivo/signal_atr > umbral ⇒ True
+    (no re-armar). Datos ausentes/no positivos ⇒ None (ilegible → el caller
+    trata None como fail-closed, no como 'no expandido')."""
+    if not _num(atr_vivo) or not _num(signal_atr) or not _num(umbral):
+        return None
+    if atr_vivo <= 0 or signal_atr <= 0:
+        return None
+    return (atr_vivo / signal_atr) > umbral
+
+
+async def obtener_inferencia(market_data, symbol: str, *, opened_at,
+                             timeframe: str, now=None) -> dict | None:
+    """Wrapper NO-puro MÍNIMO (P3): obtiene barras y ATR vivo de
+    MarketDataService y DELEGA todo el juicio a los puros. None ⇒ fail-closed
+    (el job registrará REARM_SKIP{feed_hueco}). `heartbeat_max_age` = el
+    MISMO NTBRIDGE_HEARTBEAT_MAX_AGE de L1.6 (P2 — fuente única, jamás un
+    umbral propio). `now` inyectable solo para tests deterministas."""
+    from datetime import datetime, timezone
+
+    from app.core.config import settings
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    tf_s = _tf_segundos(timeframe)
+    if tf_s is None:
+        return None
+    try:
+        t0 = _a_et_naive(opened_at)
+        t1 = _a_et_naive(now)
+    except (TypeError, ValueError):
+        return None
+    limite = barras_esperadas(t0, t1, tf_s) + 100        # margen de borde
+    bars = await market_data.get_bars(symbol, timeframe, limit=limite)
+    tramo = tramo_valido(
+        bars, opened_at=opened_at, timeframe=timeframe, now=now,
+        heartbeat_max_age=getattr(settings, "NTBRIDGE_HEARTBEAT_MAX_AGE", 60))
+    if tramo is None:
+        return None
+    atr_vivo = await market_data.get_atr(symbol, timeframe)
+    return {"tramo": tramo, "extremos": extremos(tramo),
+            "atr_vivo": atr_vivo}
