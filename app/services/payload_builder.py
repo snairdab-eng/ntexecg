@@ -6,6 +6,10 @@ Contract (doc 00 §8, REQ-0602):
   - Exits NEVER include stopLoss, takeProfit, sentiment NOR quantity
     (P0-EXIT-PARCIAL: exit sin quantity ⇒ TradersPost aplana la posición
     COMPLETA real del broker; con quantity sería cierre PARCIAL).
+  - Piernas que SUMAN sobre posición abierta (C2..Cn de la escalera y toda
+    pierna re-armada): action="add" y SIN sentiment (P0-2 ESCALERA, semántica
+    verificada en vivo 2026-07-20: buy/sell con posición abierta se ignora en
+    silencio; "add" con sentiment se rechaza). C1 conserva buy/sell.
   - Entry without sl_price → ValueError (the pipeline must never let this happen).
 """
 from __future__ import annotations
@@ -247,13 +251,26 @@ class PayloadBuilder:
             q = quantities[i]
             if q <= 0:
                 continue
+            # P0-2 ESCALERA (semántica VERIFICADA en vivo 2026-07-20, ver
+            # CONTRATO/TRADERSPOST_Semantica_Verificada): un buy/sell con
+            # posición ya abierta se IGNORA EN SILENCIO (success:true sin
+            # orden) — por eso C2/C3 jamás llegaron al broker. Las piernas
+            # i>0 van como action:"add" (crea la orden de trabajo, llena,
+            # promedia la posición y el bracket se ajusta al total) y SIN
+            # "sentiment" (add lo RECHAZA: invalid-sentiment-action). C1
+            # conserva buy/sell + sentiment: es la que ABRE. "add" no lleva
+            # lado — el broker suma a la posición abierta; verificado sobre
+            # LONG, para SHORT rige la misma regla (verificación en vivo del
+            # operador PENDIENTE, declarada en el reporte del lote).
+            es_add = i > 0
             leg: dict = {
                 "ticker": signal.mapped_symbol,
-                "action": signal.action,
+                "action": "add" if es_add else signal.action,
                 "quantity": q,
-                "sentiment": signal.sentiment,
-                "signalPrice": base_price,
             }
+            if not es_add:
+                leg["sentiment"] = signal.sentiment
+            leg["signalPrice"] = base_price
             level_atr = 0.0
             if i == 0:
                 # LX-15 — C1 puede ser MÓVIL: con c1_depth_atr>0 se despacha como
@@ -351,11 +368,16 @@ class PayloadBuilder:
             return None
         if sl_price is None:
             return None                    # jamás una pierna sin stop
+        # P0-2 ESCALERA — una pierna re-armada SIEMPRE suma sobre una posición
+        # abierta (R-RA5 mata el re-armado si no la hay): action:"add" y SIN
+        # sentiment, como toda pierna i>0 (semántica verificada 2026-07-20;
+        # un buy/sell aquí se ignoraría en silencio y "add" con sentiment se
+        # rechaza). `side` se sigue usando para el reparto MR-5c de cortos;
+        # el precio límite viene del estado congelado.
         leg: dict = {
             "ticker": symbol,
-            "action": "buy" if side == "long" else "sell",
+            "action": "add",
             "quantity": qty,
-            "sentiment": "long" if side == "long" else "short",
             "orderType": "limit",
             "limitPrice": round_to_tick(float(leg_state["limit_price"]),
                                         config.get("tick_size")),

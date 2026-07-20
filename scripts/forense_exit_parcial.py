@@ -96,7 +96,8 @@ async def main() -> None:
         for r in rs:
             p = r.payload_json or {}
             action = p.get("action")
-            if action in ("buy", "sell"):
+            # "add" = pierna que suma (C2/C3/re-armadas post P0-2 ESCALERA)
+            if action in ("buy", "sell", "add"):
                 if ep is None:
                     ep = {"desde": r.created_at, "qty_total": 0,
                           "qty_mercado": 0, "n_legs": 0, "rearm_legs": 0,

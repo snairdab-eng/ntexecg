@@ -63,7 +63,9 @@ def test_execute_short_adds_above():
                                              sl_mult=2.5), _pr(sl=5015.0, tp=4964.0))
     c2, c3 = out
     assert c2["limitPrice"] == 5004.5 and c3["limitPrice"] == 5007.5  # precio + nivel*ATR
-    assert c2["action"] == "sell"
+    # P0-2 ESCALERA: las piernas que SUMAN van como "add" sin sentiment
+    # (un sell con posición abierta se ignoraría en silencio).
+    assert c2["action"] == "add" and "sentiment" not in c2
 
 
 def test_total_exceeds_max_falls_back_to_single():

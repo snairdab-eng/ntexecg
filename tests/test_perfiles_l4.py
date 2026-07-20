@@ -120,9 +120,13 @@ def test_export_r_t8_builder_real():
     assert pls, "el builder real debía producir payloads"
     sl_abs = 5000.0 - 80.0                                 # backstop absoluto
     assert pls[0]["stopLoss"]["stopPrice"] == sl_abs       # precio ABSOLUTO
-    assert pls[0]["action"] == "buy"
+    assert pls[0]["action"] == "buy"                       # C1 abre
+    # P0-2 ESCALERA: las piernas i>0 van como action:"add" REAL (semántica
+    # verificada del broker). Lo que distingue al andamio muerto son los
+    # offsets relativos ("amount"), no el verbo.
+    for pl in pls[1:]:
+        assert pl["action"] == "add" and "sentiment" not in pl
     for pl in pls:
-        assert "add" not in str(pl.get("action"))          # no es el andamio
         assert "amount" not in pl                          # sin offsets
     # sin bracket computable → vacío (fail-closed honesto)
     cfg2 = dict(cfg); cfg2["backstop_points"] = None
