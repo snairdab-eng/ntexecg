@@ -109,11 +109,14 @@ async def _pos_state(db: AsyncSession, symbol="MESU2026") -> str:
 
 
 def _assert_close_only(payload: dict) -> None:
-    """Invariante del lote: el payload SOLO cierra — nunca abre."""
+    """Invariante del lote: el payload SOLO cierra — nunca abre. Y cierra
+    COMPLETO: sin "quantity" (P0-EXIT-PARCIAL — con quantity TradersPost hace
+    cierre PARCIAL de esa cantidad; sin ella aplana la posición del broker)."""
     assert payload["action"] == "exit"
     assert "stopLoss" not in payload
     assert "takeProfit" not in payload
     assert "sentiment" not in payload
+    assert "quantity" not in payload
 
 
 # ---------------------------------------------------------------------------

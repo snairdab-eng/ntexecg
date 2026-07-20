@@ -3,7 +3,9 @@
 Contract (doc 00 §8, REQ-0602):
   - ticker = mapped_symbol ("MESU2025"), NEVER ticker_received ("MES")
   - Entries ALWAYS include stopLoss. No exceptions.
-  - Exits NEVER include stopLoss or takeProfit.
+  - Exits NEVER include stopLoss, takeProfit, sentiment NOR quantity
+    (P0-EXIT-PARCIAL: exit sin quantity ⇒ TradersPost aplana la posición
+    COMPLETA real del broker; con quantity sería cierre PARCIAL).
   - Entry without sl_price → ValueError (the pipeline must never let this happen).
 """
 from __future__ import annotations
@@ -102,8 +104,19 @@ class PayloadBuilder:
             "ticker": signal.mapped_symbol,      # mapped contract, not ticker_received
             "action": signal.action,
             "signalPrice": float(signal.price) if signal.price is not None else None,
-            "quantity": quantity,
         }
+        # P0-EXIT-PARCIAL — los EXITS jamás llevan "quantity": para TradersPost
+        # un exit CON quantity es un cierre PARCIAL de exactamente esa cantidad
+        # (docs: "TradersPost is only able to partially exit open positions by
+        # sending the explicit quantity"); SIN quantity aplana la posición
+        # COMPLETA REAL del broker ("The full quantity of the open position in
+        # the broker will be exited if you do not send a quantity"). Ninguna
+        # cantidad propia sirve: la de la alerta es arbitraria (incidente
+        # 2026-07-20: qty 1 cerró 1 de 5) y el estimado de PositionState es lo
+        # DESPACHADO, no lo llenado — solo el broker conoce sus fills. La
+        # cantidad que habría viajado queda en extras como traza forense.
+        if not is_exit:
+            payload["quantity"] = quantity
         # "sentiment" is only valid for entries (buy/sell). TradersPost rejects it
         # with action == "exit" (invalid-sentiment-action), so omit it on exits.
         if not is_exit:
@@ -163,6 +176,10 @@ class PayloadBuilder:
         }
         if factor is not None and not is_exit and signal.action == "sell":
             payload["extras"]["short_size_factor"] = factor
+        if is_exit:
+            # P0-EXIT-PARCIAL — traza forense, SIN efecto en la orden: la
+            # cantidad que habría viajado (alerta o estimado, según el camino).
+            payload["extras"]["omitted_quantity"] = signal.quantity
 
         return payload
 

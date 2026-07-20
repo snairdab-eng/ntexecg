@@ -1,10 +1,13 @@
-# P0-EXIT-PARCIAL — Reporte de investigación · 2026-07-20
+# P0-EXIT-PARCIAL — Reporte + implementación · 2026-07-20
 
 > URGENTE. Evidencia del operador (prueba en vivo 2026-07-20): entrada
 > escalonada ES [5,3,2] → posición real de 5 micros (C1); el exit viajó con
 > `"quantity": 1` (la de la ALERTA de LuxAlgo) y TradersPost cerró SOLO 1 —
-> 4 micros vivos en el broker con NTEXECG marcando FLAT. Protocolo §0:
-> este documento REPORTA; el fix NO está implementado (espera OK).
+> 4 micros vivos en el broker con NTEXECG marcando FLAT.
+>
+> **ESTADO: fix IMPLEMENTADO con OK del operador (mismo día). Suite completa
+> verde (ver §6). SIN commit — protocolo §0, pendiente revisión.** Las
+> secciones 1-2 y 4-5 son el reporte de investigación original.
 
 ---
 
@@ -58,7 +61,7 @@ exit parcial "confirma" el cierre completo a ojos del estimador).
   empírica — exit con `quantity: 1` cerró exactamente 1 de 5, calcado al
   ejemplo de la documentación.
 
-## 3. FIX PROPUESTO (NO implementado — espera OK)
+## 3. FIX (propuesto y luego IMPLEMENTADO con OK — ver §6)
 
 **Omitir `quantity` en todo exit.** En `PayloadBuilder.build()`: si
 `is_exit`, no incluir la llave `quantity` en el payload (y conservar la
@@ -119,5 +122,50 @@ Todo exit que salga HOY sigue siendo parcial/impredecible. Hasta el OK y el
 deploy: cerrar posiciones desde el broker (o TradersPost manual), no confiar
 el cierre a NTEXECG; el estimador marcará FLAT aunque queden micros vivos.
 
-— Investigación Fable 5, 2026-07-20. Sin cambios de producción; script
-forense nuevo + este reporte.
+## 6. IMPLEMENTACIÓN (tras el OK del operador)
+
+**Producción — un solo punto:** `app/services/payload_builder.py::build()`:
+- `"quantity"` solo se incluye en el payload cuando NO es exit (comentario
+  P0-EXIT-PARCIAL con la semántica documentada y el incidente);
+- en exits, la cantidad que habría viajado queda en
+  `extras.omitted_quantity` (traza forense, sin efecto en la orden);
+- contrato del módulo actualizado: "Exits NEVER include stopLoss,
+  takeProfit, sentiment NOR quantity".
+Cubre los 4 caminos (exit LuxAlgo, forced_exit EOD/max_holding, reversal,
+Flatten UI) porque todos convergen en `build()`. `cancel:true` intacto.
+
+**Consumidores verificados** (nadie depende de `quantity` en exits):
+`rearm.py` siembra solo desde piernas límite de ENTRADA; `results_import`
+lee CSV del broker; `dest_qty`/`primary_qty` del despacho solo se consumen
+para entradas; el log de leg muestra `None` (cosmético y honesto).
+
+**Tests:**
+- `tests/test_p0_exit_parcial.py` (4): el INCIDENTE completo — escalonada
+  [5,3,2] despacha C1=5 mercado + total 10, exit con alerta qty 1 (y 7:
+  parametrizado) ⇒ payload SIN quantity + cancel:true + omitted_quantity,
+  posición FLAT, delivery registrada sin quantity · forced_exit con
+  estimado 10 ⇒ sin quantity, estimado a extras · reversal ⇒ el cierre
+  previo al reverso sin quantity.
+- `tests/test_exits_lote4.py::_assert_close_only` (invariante compartido de
+  TODOS los tests de dispatch de exits, Flatten de UI incluido): ahora exige
+  `"quantity" not in payload`.
+- `tests/test_payload_builder.py::test_exit_has_no_stop_loss`: ídem.
+- `tests/test_escalera_mr5c.py:132-144`: el assert que pineaba el bug
+  (`salida["quantity"] == 2  # cerrar COMPLETO`) ahora pinea el fix.
+
+**Suite completa:** `1 failed, 1458 passed, 7 skipped` en 840 s
+(pytest_p0_exit_parcial.txt) — la única falla fue
+`test_ra0_study.py::test_es_real_seccion_coherente` con **MemoryError**: el
+techo de RAM conocido de la auditoría (E-2/E-4, el split FIX-FLAKE-2 sigue
+pendiente), SIN relación con este fix (ese test carga masters de datos
+reales, no toca payloads). Re-corrido AISLADO: `20 passed` en
+test_ra0_study.py completo. Total efectivo: los 1459 tests del repo pasan;
+el flaky de RAM refuerza la recomendación E-2/E-4 del LOTE HIGIENE.
+
+**Post-fix operativo:** los 4 micros huérfanos del incidente NO se corrigen
+solos — cerrarlos en el broker; correr `scripts/forense_exit_parcial.py` en
+el server para el resto del historial. Tras el deploy, el primer exit real
+aplana lo que el broker tenga (incluidos residuos previos del mismo ticker).
+
+— Investigación + fix Fable 5, 2026-07-20. Script forense + este reporte;
+código de producción: solo `payload_builder.py`.

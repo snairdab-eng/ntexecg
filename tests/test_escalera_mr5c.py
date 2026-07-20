@@ -137,7 +137,10 @@ def test_factor_no_toca_largos_ni_salidas():
     salida = b.build(_make_signal("exit", "flat", quantity=2,
                                   role="exit_short"), None,
                      {"short_size_factor": 0.5}, _result(sl=None))
-    assert salida["quantity"] == 2                       # cerrar COMPLETO
+    # P0-EXIT-PARCIAL: cerrar COMPLETO = SIN quantity (con quantity TradersPost
+    # cierra PARCIAL — este assert pineaba el bug del incidente 2026-07-20).
+    assert "quantity" not in salida
+    assert salida["extras"]["omitted_quantity"] == 2     # traza forense
 
 
 def test_factor_escalonado_mayor_resto():
