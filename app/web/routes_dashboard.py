@@ -321,6 +321,31 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db),
     open_positions = []
     for p in pos_rows.scalars().all():
         opened = ExitManager._opened_at(p)
+        # RA-3 — visibilidad de CICLOS del re-armado: read-only de
+        # risk_plan_json["rearm"] + la última acción REARM_* del AuditLog
+        # (actor rearm_job/operador). Solo para posiciones con rearm sembrado.
+        rearm_view = None
+        plan = p.risk_plan_json or {}
+        if isinstance(plan.get("rearm"), dict):
+            from app.models.audit_log import AuditLog
+            legs = plan["rearm"].get("legs") or []
+            ult = (await db.execute(
+                select(AuditLog)
+                .where(AuditLog.object_id == f"{p.account_id}:{p.symbol}",
+                       AuditLog.action.like("REARM_%"))
+                .order_by(AuditLog.created_at.desc()).limit(1)
+            )).scalars().first()
+            ult_txt = None
+            if ult is not None:
+                nv = ult.new_value_json or {}
+                extra = nv.get("regla") or nv.get("motivo")
+                ult_txt = ult.action + (f" · {extra}" if extra else "")
+            rearm_view = {
+                "legs": [{"i": l.get("leg_index"), "estado": l.get("state"),
+                          "ciclo": l.get("cycle_n")}
+                         for l in legs if isinstance(l, dict)],
+                "ultima": ult_txt,
+            }
         open_positions.append({
             "symbol": p.symbol,
             "side": p.direction or ("long" if "LONG" in p.state
@@ -332,6 +357,7 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db),
             # False → fallback a updated_at (rótulo "actualizado").
             "since_from_open": opened is not None,
             "since_label": "desde" if opened is not None else "actualizado",
+            "rearm": rearm_view,                    # RA-3 (None = sin sembrar)
         })
 
     # ── Últimas entregas con bracket (SENT/FAILED del rango, 5) — del payload

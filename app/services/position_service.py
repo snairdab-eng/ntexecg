@@ -86,10 +86,18 @@ class PositionService:
         del ciclo, diseño §2). INVARIANTE (d): este escritor jamás toca
         state/direction/quantity ni ninguna otra llave del plan — la posición
         es dominio del resto de este servicio; el re-armado solo persiste su
-        propio bloque."""
+        propio bloque.
+
+        Se persiste una FOTO (deepcopy), jamás la referencia del caller: si el
+        atributo ORM aliasara el dict vivo que el RearmJob sigue mutando, el
+        flush de la SIGUIENTE escritura compararía el valor nuevo contra un
+        "commiteado" ya mutado por el alias, los vería iguales y OMITIRÍA el
+        UPDATE — exactamente el modo de fallo que B-1 (intent-first, dos
+        escrituras por re-envío) convierte en pérdida silenciosa del estado."""
+        import copy
         position = await self.get_state(db, strategy_id, account_id, symbol)
         plan = dict(position.risk_plan_json or {})
-        plan["rearm"] = estado
+        plan["rearm"] = copy.deepcopy(estado)
         position.risk_plan_json = plan
         await db.flush()
         return position
@@ -168,6 +176,34 @@ class PositionService:
             object_id=f"{account_id}:{symbol}",
             old_value={"state": old_state},
             new_value={"state": "FLAT", "cause": "entry_delivery_failed"},
+        )
+        return position
+
+    async def on_entry_ambiguous(
+        self, db: AsyncSession, strategy_id: str, account_id: str, symbol: str,
+        actor: str = "system",
+    ) -> PositionState:
+        """A-4: entrada FAILED con ≥1 intento AMBIGUO → UNKNOWN, no FLAT.
+
+        Un timeout sin respuesta significa que la petición PUDO llegar al
+        broker y la orden PUDO quedar viva. FLAT liberaría symbol_busy y la
+        siguiente señal entraría sobre una posible posición real; UNKNOWN
+        bloquea nuevas entradas en L3 hasta revisión manual (misma doctrina
+        que E3 del RearmJob: perder un fill < duplicar tamaño). Solo desde
+        PENDING_* (no toca estados confirmados de otro flujo). Se conservan
+        quantity/direction/entry_price como evidencia de lo que pudo salir.
+        """
+        position = await self.get_state(db, strategy_id, account_id, symbol)
+        if position.state not in ("PENDING_LONG", "PENDING_SHORT"):
+            return position
+        old_state = position.state
+        position.state = "UNKNOWN"
+        await db.flush()
+        await self._audit.log(
+            db, actor=actor, action="DELIVERY_FAILED", object_type="PositionState",
+            object_id=f"{account_id}:{symbol}",
+            old_value={"state": old_state},
+            new_value={"state": "UNKNOWN", "cause": "entry_delivery_ambiguous"},
         )
         return position
 

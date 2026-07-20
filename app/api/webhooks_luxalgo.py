@@ -359,7 +359,7 @@ async def _dispatch_approved(
     from types import SimpleNamespace
 
     from app.services.payload_builder import PayloadBuilder
-    from app.services.traderspost_client import TradersPostClient
+    from app.services.traderspost_client import TradersPostClient, failed_ambiguo
     from app.services.position_service import PositionService
     from app.models.webhook_delivery import WebhookDelivery
     from app.services import dispatch_profiles as dprof
@@ -379,6 +379,7 @@ async def _dispatch_approved(
 
     any_sent = False
     any_failed = False
+    entry_ambigua = False   # A-4 — ¿algún FAILED de entrada con intento ambiguo?
     primary_qty = 0
     primary_all_limit = False
     primary_payloads: list[dict] = []      # RA-2b — piernas del destino primario
@@ -458,6 +459,13 @@ async def _dispatch_approved(
                 any_sent = True
             if result.status == "FAILED":
                 any_failed = True
+                # A-4 — un FAILED de ENTRADA con intento AMBIGUO (timeout: la
+                # petición pudo llegar y la orden pudo quedar viva) contamina
+                # el desenlace: si al final nada quedó SENT, la posición va a
+                # UNKNOWN, no a FLAT. (A-1 garantiza que el cliente cortó los
+                # reintentos en ese mismo intento.)
+                if not is_exit and failed_ambiguo(result):
+                    entry_ambigua = True
             try:
                 dest_qty += int(payload.get("quantity") or 0)
             except (TypeError, ValueError):
@@ -517,11 +525,18 @@ async def _dispatch_approved(
         )
     elif any_failed:
         # NX-08 — envío real fallido en todos los destinos (nada SENT):
-        # estado honesto en vez de PENDING/EXITING eternos. La entrada nunca
-        # llegó al broker → FLAT; la salida es incierta → UNKNOWN (L3 bloquea
-        # entradas hasta revisión). DRY_RUN puro no entra aquí.
+        # estado honesto en vez de PENDING/EXITING eternos. La salida es
+        # incierta → UNKNOWN (L3 bloquea entradas hasta revisión). La entrada
+        # va a FLAT SOLO si todo rechazo fue INEQUÍVOCO (respuesta HTTP /
+        # ConnectError: la orden seguro no existe); con CUALQUIER intento
+        # ambiguo (A-4) la orden pudo quedar viva → UNKNOWN, no FLAT.
+        # DRY_RUN puro no entra aquí.
         if is_exit:
             await position_service.on_exit_failed(
+                db, norm.strategy_id, account_id, norm.mapped_symbol
+            )
+        elif entry_ambigua:
+            await position_service.on_entry_ambiguous(
                 db, norm.strategy_id, account_id, norm.mapped_symbol
             )
         else:

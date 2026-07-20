@@ -146,13 +146,29 @@ async def test_exit_retries_up_to_10(_patch_httpx) -> None:
 
 
 @pytest.mark.asyncio
-async def test_network_exception_is_retried_not_raised(_patch_httpx) -> None:
-    _patch_httpx([RuntimeError("conn refused"), _FakeResponse(200)])
+async def test_entry_ambiguous_exception_cuts_retries_not_raised(_patch_httpx) -> None:
+    """A-1 — una excepción genérica (sin respuesta: AMBIGUA, la orden pudo
+    llegar) CORTA los reintentos de la entrada. Nunca revienta; antes este
+    test pineaba el reintento a ciegas (el bug del hallazgo A-1)."""
+    _patch_httpx([RuntimeError("boom"), _FakeResponse(200)])
     client = TradersPostClient(_settings())
     result = await client.send(_URL, _PAYLOAD, "entry_long", dry_run=False)
-    # Never raises; recovers on attempt 2
+    assert result.status == "FAILED"
+    assert result.attempts == 1
+    assert result.any_ambiguous_attempt is True
+
+
+@pytest.mark.asyncio
+async def test_entry_connecterror_is_retried_not_raised(_patch_httpx) -> None:
+    """ConnectError es INEQUÍVOCO (el canal jamás se estableció) — la entrada
+    SÍ puede reintentar y recuperarse en el intento 2."""
+    import httpx as _httpx
+    _patch_httpx([_httpx.ConnectError("conn refused"), _FakeResponse(200)])
+    client = TradersPostClient(_settings())
+    result = await client.send(_URL, _PAYLOAD, "entry_long", dry_run=False)
     assert result.status == "SENT"
     assert result.attempts == 2
+    assert result.any_ambiguous_attempt is False
 
 
 # ---------------------------------------------------------------------------

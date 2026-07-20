@@ -3,8 +3,15 @@
 Contract (REQ-0601):
   - httpx async, timeout 10s
   - Entries: max 3 attempts, backoff 1s/2s/4s; do NOT retry if signal older
-    than entry_signal_timeout_secs (default 30s).
-  - Exits: up to 10 attempts (exits are critical); always retry regardless of age.
+    than entry_signal_timeout_secs (default 30s). A-1: un intento AMBIGUO
+    (timeout/error sin respuesta — la orden PUDO llegar al broker) CORTA los
+    reintentos de la entrada: jamás se re-POSTea a ciegas sobre una orden que
+    pudo existir (asimetría de la misión: perder un fill < duplicar tamaño).
+    Solo ConnectError (canal jamás establecido) y las respuestas HTTP no-2xx
+    son inequívocos y permiten reintentar.
+  - Exits: up to 10 attempts (exits are critical); always retry regardless of
+    age OR ambiguity — no cerrar es peor que cerrar dos veces (el flatten es
+    idempotente; una entrada duplicada no lo es).
   - dry_run=True → DRY_RUN result, no HTTP call.
   - URL token always masked in logs/storage.
   - Never raises — always returns a WebhookDeliveryResult.
@@ -46,9 +53,28 @@ class WebhookDeliveryResult:
     # se estableció, la petición jamás se escribió) y las respuestas HTTP son
     # inequívocos. Se acumula POR INTENTO porque el resultado solo conserva
     # el ÚLTIMO error: un timeout en el intento 1 seguido de un 500 en el 3
-    # deja una posible orden viva que el último intento no delata. Campo
-    # ADITIVO (default False): entradas/exits no lo consumen (sin cambio).
+    # deja una posible orden viva que el último intento no delata. Consumido
+    # por el RearmJob (E3/E3b) y, desde A-1/A-4, por el propio send (corta
+    # reintentos de ENTRADAS) y el despacho principal (FAILED ambiguo ⇒
+    # posición UNKNOWN). Default False: fakes/versiones viejas ⇒ inequívoco.
     any_ambiguous_attempt: bool = False
+
+
+def failed_ambiguo(result: "WebhookDeliveryResult") -> bool:
+    """E3/A-4 — ¿este FAILED es AMBIGUO (la orden PUDO quedar viva en el
+    broker)? Inequívoco = hubo respuesta HTTP (status code presente), rechazo
+    de conexión claro (ConnectError: el canal nunca se estableció) o URL
+    ausente (nada se intentó). El flag por-intento del cliente manda (un
+    timeout en CUALQUIER intento contamina aunque el último recibiera
+    respuesta); el resto es defensa ante resultados sin el campo
+    (fakes/versiones viejas). Fuente ÚNICA de la clasificación: la consumen
+    el RearmJob (E3/E3b) y el despacho principal (A-4)."""
+    if getattr(result, "any_ambiguous_attempt", False):
+        return True
+    if result.response_status_code is not None:
+        return False
+    return result.error_message not in ("no_webhook_url_configured",
+                                        "ConnectError")
 
 
 def mask_token(url: str) -> str:
@@ -185,16 +211,30 @@ class TradersPostClient:
                         "traderspost_attempt_failed role={} attempt={} error={}",
                         signal_role, attempt, exc,
                     )
+                    # A-1 — ENTRADAS: el intento ambiguo CORTA los reintentos.
+                    # La petición pudo llegar y la orden pudo quedar viva; un
+                    # re-POST arriesga tamaño doble a mercado. EXITS siguen
+                    # reintentando (no cerrar es peor que cerrar dos veces —
+                    # el flatten es idempotente).
+                    if ambiguous_any and not is_exit:
+                        logger.warning(
+                            "traderspost_entry_ambiguous_cut role={} attempt={} "
+                            "— no se reintenta sobre una orden que pudo existir",
+                            signal_role, attempt,
+                        )
+                        break
 
                 # Backoff before next attempt (capped at 4×base; exits keep
                 # retrying at the cap)
                 if attempt < max_attempts:
                     await asyncio.sleep(self._backoff(attempt, backoff_base))
 
+        # A-1 — `attempt` conserva el último intento ejecutado: max_attempts si
+        # el bucle se agotó, o menos si el corte por ambigüedad lo interrumpió.
         latency_ms = int((time.monotonic() - start) * 1000)
         logger.error(
             "traderspost_failed role={} attempts={} last_error={} url={}",
-            signal_role, max_attempts, last_error, url_masked,
+            signal_role, attempt, last_error, url_masked,
         )
         return WebhookDeliveryResult(
             status="FAILED",
@@ -202,7 +242,7 @@ class TradersPostClient:
             url_masked=url_masked,
             response_status_code=last_status,
             response_body=last_body,
-            attempts=max_attempts,
+            attempts=attempt,
             latency_ms=latency_ms,
             error_message=last_error,
             any_ambiguous_attempt=ambiguous_any,

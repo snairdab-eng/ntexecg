@@ -265,9 +265,12 @@ async def test_reversal_paused_still_closes_only(db: AsyncSession):
 async def _patch_send_failed(monkeypatch):
     async def _fail(self, webhook_url, payload, signal_role, dry_run,
                     signal_ts=None, **kw):
+        # Rechazo INEQUÍVOCO: un http_500 real SIEMPRE trae el status code
+        # (sin él, failed_ambiguo lo trata fail-closed como ambiguo y A-4
+        # mandaría la entrada a UNKNOWN, no a FLAT).
         return WebhookDeliveryResult(
             status="FAILED", payload_json=payload, url_masked=webhook_url,
-            attempts=10, error_message="http_500")
+            attempts=10, response_status_code=500, error_message="http_500")
     monkeypatch.setattr(TradersPostClient, "send", _fail)
 
 

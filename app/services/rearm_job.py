@@ -10,7 +10,11 @@ INVARIANTES:
   · Por posición, SU PROPIA transacción (sesión propia, commit/rollback
     aislado): una excepción hace rollback de ESA posición, se registra
     REARM_SKIP{error} en una sesión FRESCA y el barrido CONTINÚA — el job
-    jamás muere ni deja estado a medias.
+    jamás muere ni deja estado a medias. EXCEPCIÓN deliberada (B-1,
+    intent-first del diseño §2): antes de cada re-envío se persiste y COMITEA
+    la intención (marcador "enviando" en la pierna) — la única frontera que
+    DEBE ser durable pre-HTTP. Un intent sin desenlace al releer ⇒ la pierna
+    muere (intent_sin_desenlace), jamás se re-envía.
   · El job SOLO escribe risk_plan_json["rearm"] (PositionService.
     set_rearm_state) — jamás state/direction/quantity (dominio de
     position_service; invariante (d) del sub-paso 2).
@@ -56,6 +60,9 @@ from app.services.rearm import (
     rearm_enabled,
     ttl_coherente,
 )
+# E3 — clasificación del FAILED ambiguo: fuente ÚNICA en el cliente (A-1 la
+# retro-aplicó también al despacho principal). Alias con el nombre histórico.
+from app.services.traderspost_client import failed_ambiguo as _failed_ambiguo
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -101,19 +108,6 @@ async def _decision_sintetica(db, pos, side: str, now: datetime):
     return decision
 
 
-def _failed_ambiguo(result) -> bool:
-    """E3 — ¿este FAILED es AMBIGUO (la orden PUDO quedar viva en el broker)?
-    Inequívoco = hubo respuesta HTTP (status code presente), rechazo de
-    conexión claro (ConnectError: el canal nunca se estableció) o URL ausente
-    (nada se intentó). El flag por-intento del cliente manda (un timeout en
-    CUALQUIER intento contamina aunque el último recibiera respuesta); el
-    resto es defensa ante resultados sin el campo (fakes/versiones viejas)."""
-    if getattr(result, "any_ambiguous_attempt", False):
-        return True
-    if result.response_status_code is not None:
-        return False
-    return result.error_message not in ("no_webhook_url_configured",
-                                        "ConnectError")
 
 
 async def _reenviar_pierna(db, pos, config, estado, leg, settings,
@@ -254,6 +248,25 @@ async def procesar_posicion(db, pos_id, settings, market_data,
     resultado = "espera"
     for i in working_idx:
         leg = estado["legs"][i]
+        # B-1 — intent "enviando" SIN desenlace: un barrido anterior persistió
+        # la intención de re-enviar y murió (crash/error de DB) entre el envío
+        # y su resolución. La orden PUDO salir y quedar viva 3600 s →
+        # fail-closed: JAMÁS re-enviar; la pierna muere con el intent dentro
+        # como evidencia forense (asimetría de la misión: perder un fill <
+        # duplicar tamaño). Patrón intent-first del diseño §2.
+        if leg.get("enviando"):
+            estado["legs"][i] = marcar_muerta(leg, "intent_sin_desenlace")
+            await _audit(db, pos, "REARM_KILL",
+                         {"leg_index": leg["leg_index"],
+                          "regla": "intent_sin_desenlace",
+                          "intent": leg.get("enviando"),
+                          "detalle": "intención de re-envío persistida sin "
+                                     "desenlace (crash/error entre el envío y "
+                                     "su resolución) — la orden pudo salir y "
+                                     "seguir viva; fail-closed: jamás "
+                                     "re-enviar sobre ambigüedad (B-1)"})
+            cambio, resultado = True, "kill"
+            continue
         acc = decidir_pierna(leg, estado=estado, posicion=posicion,
                              inferencia=inferencia, cfg_rearm=cfg_rearm,
                              now_et=now_et)
@@ -283,13 +296,35 @@ async def procesar_posicion(db, pos_id, settings, market_data,
                           "regla": acc["regla"], "detalle": acc["detalle"]})
             cambio, resultado = True, "assumed"
             continue
-        # REENVIAR
+        # REENVIAR — B-1 intent-first (diseño §2): la INTENCIÓN se persiste y
+        # COMITEA ANTES del HTTP. Si el proceso muere después del envío (crash,
+        # error de DB en delivery/estado/commit), el siguiente barrido
+        # encuentra el intent sin desenlace y MATA la pierna (arriba) en vez
+        # de re-enviar con la orden anterior viva. El commit intermedio es
+        # deliberado: rompe la transacción única de la posición exactamente en
+        # la frontera que debe ser durable. (Sesiones con expire_on_commit=
+        # False: `pos` sigue usable tras el commit.)
+        ciclo = int(leg["cycle_n"]) + 1
+        base_id = str(pos.entry_signal_id
+                      or f"{pos.account_id}:{pos.symbol}")
+        leg["enviando"] = {"cycle_n": ciclo,
+                           "client_id": f"{base_id}-r{ciclo}",
+                           "sent_at": now.isoformat()}
+        estado["updated_at"] = now.isoformat()
+        await PositionService().set_rearm_state(
+            db, pos.strategy_id, pos.account_id, pos.symbol, estado)
+        await db.commit()                  # el intent DEBE ser durable pre-HTTP
         envio = await _reenviar_pierna(db, pos, config, estado, leg,
                                        settings, now, decision_box)
+        # Desenlace conocido → el intent se resuelve: se retira el marcador y
+        # la transición de la pierna se persiste al final (cambio=True SIEMPRE,
+        # incluso en "fallido": el marcador limpio debe llegar a la DB o el
+        # siguiente barrido lo leería como huérfano y mataría un reintento
+        # legítimo). Un crash ANTES de ese commit deja el intent huérfano ⇒
+        # fail-closed arriba.
+        leg.pop("enviando", None)
+        cambio = True
         if envio == "ok":
-            ciclo = int(leg["cycle_n"]) + 1
-            base_id = str(pos.entry_signal_id
-                          or f"{pos.account_id}:{pos.symbol}")
             estado["legs"][i] = avanzar_ciclo(
                 leg, f"{base_id}-r{ciclo}", now.isoformat())
             await _audit(db, pos, "REARM_LEG",
