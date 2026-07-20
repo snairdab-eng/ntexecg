@@ -180,9 +180,14 @@ def test_luxy_fmt_pts_node():
 
 
 def test_jinja_rincones_migrados_a_fmt_pts():
-    # puente P1 (backstop_points) y perfiles (sl_pts) usan fmt_pts
+    # puente P1 (backstop_points) usa fmt_pts en el detalle; el rincón de
+    # perfiles (sl_pts) vive ahora en el PARTIAL de Destinos
+    # (UI-DESPACHO-UNIFICADO 2026-07-19) — mismo fmt_pts, otra casa.
     assert "fmt_pts(l1_instrument, mrcfg.get('backstop_points'))" in _SRC
-    assert "fmt_pts(l1_instrument, P.sl_pts)" in _SRC
+    _partial = Path("app/templates/_perfiles_panel_ro.html").read_text(
+        encoding="utf-8")
+    assert "fmt_pts(l1_instrument, P.sl_pts)" in _partial
+    assert "_perfiles_panel_ro.html" in _SRC       # y el detalle lo incluye
     # el global existe en el env compartido
     from app.web.common import templates
     assert templates.env.globals["fmt_pts"] is fmt_pts

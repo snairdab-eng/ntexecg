@@ -525,10 +525,14 @@ async def test_aceptacion_es_end_to_end(client: AsyncClient,
     assert j["nueva"] is True and j["n_trades"] == 120
 
     # 2) Calcular REAL en segundo plano + polling
+    # FIX-FLAKE-2 (2026-07-19, presupuesto de RELOJ, no de lógica): 240→480 s.
+    # Bajo la carga del run completo (~1450 tests, host 11.7 GB) el `calcular`
+    # real a veces excede los 240 s y este assert caía intermitente (4× hoy),
+    # siempre verde aislado. Diagnóstico en LOTE_RA3/LOTE_UI_Despacho .md.
     r = await client.post("/ui/riesgo/calcular",
                           json={"strategy": "ES5m_UiTest"})
     assert r.status_code == 202
-    for _ in range(240):
+    for _ in range(480):
         s = await client.get(
             "/ui/riesgo/calcular/status?strategy=ES5m_UiTest")
         if s.json()["status"] != "running":

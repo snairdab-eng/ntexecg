@@ -7,7 +7,8 @@ Cubre:
 - Provisión de HOLC: activo sin HOLC → 409 holc_missing (degradado/aviso/botón);
   subir HOLC válido → queda en NINJATRADER/HOLC y el reintegro sale completo;
   HOLC inválido → rechazo sin tocar disco; anti-traversal del nombre destino.
-- Detalle con sub-pestañas Config·Luxy·Lab·Perfiles + selector desplegable.
+- Detalle con sub-pestañas Config·Luxy·Lab + selector desplegable (la
+  ex-pestaña Perfiles vive en Config → Despacho → Destinos, 2026-07-19).
 - Riesgo v1 intacta (regresión).
 """
 import asyncio
@@ -252,10 +253,14 @@ async def test_detalle_subpestanas_y_selector(
     r = await client.get("/ui/strategies/ES5m_A")
     assert r.status_code == 200
     html = r.text
-    # las 4 sub-pestañas + el estado Alpine
+    # las 3 sub-pestañas + el estado Alpine (UI-DESPACHO-UNIFICADO 2026-07-19:
+    # la pestaña Perfiles se RETIRÓ — su contenido vive en Config → Despacho →
+    # Destinos; compat #perfiles → scroll a #despacho)
     assert "stab: 'config'" in html
-    for label in ("Config", "Luxy", "Lab", "Perfiles"):
+    for label in ("Config", "Luxy", "Lab"):
         assert f">{label}<" in html
+    assert ">Perfiles</button>" not in html         # pestaña retirada
+    assert 'id="despacho"' in html or "Sin perfil de configuración" in html
     # Luxy funcional (botón) + Lab placeholder honesto (migra en L6)
     assert "Calcular estudio" in html and "L6" in html
     # selector con ambas estrategias, navega al cambiar
