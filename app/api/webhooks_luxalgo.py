@@ -490,7 +490,12 @@ async def _dispatch_approved(
         )
     else:
         direction = "long" if norm.action == "buy" else "short"
-        qty = primary_qty or (norm.quantity or 1)
+        # SIZING-GATEWAY — el estimado de la posición refleja lo DESPACHADO por
+        # NTEXECG (suma del destino primario), jamás la cantidad de la alerta.
+        # Fallback = 1 (el mínimo del MODO TESTIGO), no norm.quantity: si el
+        # primario no despachó nada medible, el estimado honesto es el piso,
+        # no el número arbitrario del backtest.
+        qty = primary_qty or 1
         await position_service.on_entry_approved(
             db, norm.strategy_id, account_id, norm.mapped_symbol,
             direction, qty,

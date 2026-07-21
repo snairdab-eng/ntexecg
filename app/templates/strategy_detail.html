@@ -540,7 +540,11 @@
                 {% if se and se.mode in ('execute', 'live') %}
                 <span class="text-red-400 font-bold">EJECUTA ⚠ (mode={{ se.mode }})</span>
                 {% else %}
-                <span class="text-amber-400">DISEÑO (no ejecuta)</span>
+                {# SIZING-GATEWAY — en modo diseño NTEXECG NO manda el reparto ni la
+                   cantidad de la alerta: despacha el MODO TESTIGO (1 micro a mercado).
+                   La llave en DB sigue siendo design_only (sin migración); cambia el
+                   display para no mentir sobre lo que se envía. #}
+                <span class="text-amber-400" title="scale_entry.mode=design_only en DB — NTEXECG despacha 1 micro a mercado por destino, sin escalera">TESTIGO — 1 micro, sin escalera</span>
                 {% endif %}
             </div>
             <p class="text-xs text-gray-500 mb-2">Guardar aquí edita niveles/cantidades y <b>preserva el modo actual</b>. La ejecución escalonada (C1 mercado + C2/C3 límite, stop común) se activa/desactiva con <code>scripts/set_scale_execution.py</code>, no desde este formulario.</p>
@@ -749,7 +753,7 @@
                 <div><label class="block text-xs text-gray-500 mb-1">Riesgo $/op</label><input name="risk_usd_max_operation" type="number" step="0.01" value="{{ rr.get('risk_usd_max_operation','') }}" class="{{ ip }}"></div>
                 <div><label class="block text-xs text-gray-500 mb-1">Máx contratos</label><input name="max_contracts" type="number" value="{{ rr.get('max_contracts','') }}" class="{{ ip }}"></div>
                 <div><label class="block text-xs text-gray-500 mb-1">Dedup (seg)</label><input name="dedup_seconds" type="number" value="{{ pc.get('dedup_seconds','') }}" class="{{ ip }}"></div>
-                <div><label class="block text-xs text-gray-500 mb-1">Cancel after / reserva (s)</label><input name="entry_reserve_timeout_seconds" type="number" min="1" value="{{ pc.get('entry_reserve_timeout_seconds','') }}" placeholder="3600" class="{{ ip }}" title="Una sola caducidad: pierna límite, reserva de símbolo (NX-28) y el 'Cancel entry after' de TradersPost. Sugerencia: scripts/pullback_timing.py (p90 + colchón). ⚠ Fija el MISMO valor a mano en TradersPost."></div>
+                <div><label class="block text-xs text-gray-500 mb-1">Cancel after / reserva (s)</label><input name="entry_reserve_timeout_seconds" type="number" min="1" value="{{ pc.get('entry_reserve_timeout_seconds','') }}" placeholder="3600" class="{{ ip }}" title="Una sola caducidad: pierna límite (NTEXECG la transmite como cancelAfter en cada orden LÍMITE — RA-2a, verificado en el cable 2026-07-21; ya NO hay que fijarlo a mano en TradersPost) y reserva de símbolo (NX-28). Sugerencia: scripts/pullback_timing.py (p90 + colchón)."></div>
                 <div class="col-span-2"><label class="block text-xs text-gray-500 mb-1">Confirmaciones</label><input name="confirmaciones" value="{{ pc.get('confirmaciones','') }}" class="{{ ip }}"></div>
             </div>
         </div>

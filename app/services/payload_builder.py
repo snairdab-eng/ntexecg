@@ -10,6 +10,11 @@ Contract (doc 00 §8, REQ-0602):
     pierna re-armada): action="add" y SIN sentiment (P0-2 ESCALERA, semántica
     verificada en vivo 2026-07-20: buy/sell con posición abierta se ignora en
     silencio; "add" con sentiment se rechaza). C1 conserva buy/sell.
+  - SIZING-GATEWAY (doctrina 2026-07-21): la CANTIDAD de una entrada la decide
+    NTEXECG, JAMÁS la alerta. En execute/live sale del reparto del estudio
+    (build_scaled); en cualquier otro modo, build() despacha el MODO TESTIGO
+    (1 micro a mercado). La quantity de la alerta queda SOLO como traza
+    forense en extras.signal_quantity.
   - Entry without sl_price → ValueError (the pipeline must never let this happen).
 """
 from __future__ import annotations
@@ -34,6 +39,12 @@ _EXIT_ROLES = {"exit_long", "exit_short"}
 # after" por cuenta. Cap duro 3600 = máximo que TradersPost acepta (verificado RA-1).
 _CANCEL_AFTER_MAX_S = 3600
 _CANCEL_AFTER_MIN_S = 1
+
+# SIZING-GATEWAY — MODO TESTIGO: cuando una estrategia NO está en execute/live
+# (design_only, off o sin scale_entry), la entrada se despacha con el mínimo de
+# riesgo que NTEXECG decide: 1 micro, una sola orden a mercado. Ni escalera ni
+# la cantidad arbitraria de la alerta — solo datos fluyendo al mínimo riesgo.
+MODO_TESTIGO_QTY = 1
 
 
 def _cancel_after_seconds(config: dict) -> int:
@@ -96,12 +107,19 @@ class PayloadBuilder:
         # signal_role is used as a secondary signal for reversal/entry classification.
         is_exit = signal.action == "exit" or signal.signal_role in _EXIT_ROLES
 
-        # MR-5c — asimetría de lado: cortos reducidos (mínimo 1 — reducidos,
-        # NO eliminados). Solo entradas; las salidas cierran completo.
-        quantity = signal.quantity
+        # SIZING-GATEWAY (doctrina del operador 2026-07-21) — la cantidad de
+        # una ENTRADA la decide NTEXECG, JAMÁS la alerta. build() solo alcanza
+        # entradas FUERA de execute/live (design_only/off/ausente, o el
+        # fallback de un execute con config rota) — el reparto del estudio vive
+        # en build_scaled. En todos esos caminos rige el MODO TESTIGO: 1 micro
+        # a mercado (mínimo de riesgo, datos fluyendo, sin escalera). El
+        # short_size_factor (MR-5c) se aplica con piso 1: un corto testigo NO
+        # baja de 1. La quantity de la alerta viaja SOLO como traza forense en
+        # extras.signal_quantity (patrón omitted_quantity). Las salidas cierran
+        # completo (sin quantity) más abajo (P0-EXIT-PARCIAL).
         factor = _short_size_factor(config)
-        if (factor is not None and not is_exit and signal.action == "sell"
-                and quantity):
+        quantity = MODO_TESTIGO_QTY
+        if factor is not None and signal.action == "sell":
             quantity = max(1, int(round(quantity * factor)))
 
         payload: dict = {
@@ -184,6 +202,12 @@ class PayloadBuilder:
             # P0-EXIT-PARCIAL — traza forense, SIN efecto en la orden: la
             # cantidad que habría viajado (alerta o estimado, según el camino).
             payload["extras"]["omitted_quantity"] = signal.quantity
+        else:
+            # SIZING-GATEWAY — la quantity de la alerta NUNCA viaja en el campo
+            # de la orden (la decide NTEXECG: MODO TESTIGO 1 micro). Queda AQUÍ
+            # como traza forense — para cotejar qué pedía el backtest de LuxAlgo
+            # contra lo que NTEXECG realmente despachó.
+            payload["extras"]["signal_quantity"] = signal.quantity
 
         return payload
 
