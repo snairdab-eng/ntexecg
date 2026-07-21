@@ -50,6 +50,22 @@ En `PayloadBuilder.build_scaled` y `build_rearm_leg`, para las piernas i>0
 - **Pendiente de verificar**: comportamiento de `add` en posiciones CORTAS
   (las sondas fueron sobre un long). Probar antes de dar el fix por cerrado.
 
+## HITO — la escalera EXISTE en el broker (2026-07-20, tras desplegar el fix)
+
+Primera entrada escalonada real de la historia del sistema, verificada en las
+DOS cuentas:
+
+| Destino | C1 (mercado) | C2 (límite) | C3 (límite) | Bracket |
+|---|---|---|---|---|
+| base | 5 micros, llenado | 3 @ 7504.75 VIVA | 2 @ 7494.25 VIVA | TP 7568.00 / SL 7425.00 (+10s) |
+| APEXsim | 1 micro, llenado | 1 @ 7504.75 VIVA | — (reparto 0) | mismo bracket (+2s) |
+
+Confirma de una vez: `add` crea las órdenes de trabajo · el reparto por
+perfil escala correctamente en escalonada (cada cuenta con su tamaño) · el
+bracket común cubre el total potencial · `cancelAfter` corriendo sobre las
+piernas. El corazón del diseño Luxy — mejorar el precio de entrada con
+compras escalonadas — pasó de estudio a ejecución real.
+
 ## Estado verificado del sistema al cierre de la jornada
 
 - P0-EXIT-PARCIAL: **arreglado y verificado en vivo** (cierra completo).

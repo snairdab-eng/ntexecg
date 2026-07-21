@@ -150,3 +150,36 @@ def test_string_exacto_del_add_como_las_sondas():
         '"provider": null}}'
     )
     assert '"sentiment"' not in body               # jamás en un add (sonda B1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5) STRING EXACTO del RE-ENVÍO — la forma de la pierna re-armada es la de la
+#    SONDA C (la que SÍ creó orden en vivo: add + límite + bracket, sin
+#    sentiment y sin signalPrice). REARM-LISTO revisión 2026-07-21: la única
+#    diferencia con la pierna de escalera es signalPrice ausente (la sonda C
+#    tampoco lo llevaba — informativo, no operativo) y los extras propios.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_string_exacto_del_rearm_como_sonda_c():
+    leg = PayloadBuilder().build_rearm_leg(
+        symbol="MESU2026", side="long",
+        leg_state={"leg_index": 3, "side": "long", "level_atr": 3.0,
+                   "limit_price": 7495.0, "qty": 1, "cycle_n": 1,
+                   "last_client_id": None, "last_sent_at": "x",
+                   "state": "working", "death_reason": None},
+        config=_cfg([3, 1, 1], [2.0, 3.0]),
+        sl_price=7419.5, tp_price=7569.5, strategy_id="esc",
+        signal_id="sig", client_id="sig-r2", cycle_n=2)
+    body = tp_dumps(leg)
+    assert body == (
+        '{"ticker": "MESU2026", "action": "add", "quantity": 1, '
+        '"orderType": "limit", "limitPrice": 7495.0, '
+        '"cancelAfter": 3600, '
+        '"stopLoss": {"type": "stop", "stopPrice": 7419.5}, '
+        '"takeProfit": {"type": "limit", "limitPrice": 7569.5}, '
+        '"extras": {"strategy_id": "esc", "signal_id": "sig", '
+        '"leg_index": 3, "leg_quantity": 1, "level_atr": 3.0, '
+        '"rearm_cycle": 2, "client_id": "sig-r2"}}'
+    )
+    assert '"sentiment"' not in body               # add lo RECHAZA (sonda B1)
+    assert '"signalPrice"' not in body             # forma sonda C, verificada
